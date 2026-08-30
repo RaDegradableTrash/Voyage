@@ -23,7 +23,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public float maxExtension = 0.95f;
     public float springStrength = 42000f;
     public float damper = 11000f;
-    public float maxSuspensionForce = 70000f;
     public float landingBounceStrength = 0.10f;
     public float tireRadius = 0.38f;
     public float wheelGroundClearance = 0.045f;
@@ -346,8 +345,7 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             float spring = Mathf.Max(0f, wheel.suspensionTravel) * springStrength;
             float damping = spring > 0f ? -Vector3.Dot(pointVelocity, up) * damper : 0f;
             float supportLimit = body.mass * Physics.gravity.magnitude * 3f / grounded;
-            wheel.suspensionForce = Mathf.Clamp(spring + damping, 0f,
-                Mathf.Min(maxSuspensionForce, supportLimit));
+            wheel.suspensionForce = Mathf.Clamp(spring + damping, 0f, supportLimit);
             body.AddForceAtPosition(up * wheel.suspensionForce, wheel.contactPoint, ForceMode.Force);
 
             if (wheel.landingContact && landingBounceStrength > 0f)
