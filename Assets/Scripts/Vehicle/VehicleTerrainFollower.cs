@@ -16,6 +16,7 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public float steeringAngle = 24f;
     public float highSpeedSteeringLimit = 0.5f;
     public float airDrag = 0.12f;
+    public float angularDamping = 1.2f;
 
     [Header("Suspension")]
     public float suspensionLength = 0.62f;
@@ -194,7 +195,7 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         body.mass = vehicleMass;
         body.centerOfMass = centerOfMass;
         body.linearDamping = 0.15f;
-        body.angularDamping = 0f;
+        body.angularDamping = angularDamping;
         body.interpolation = RigidbodyInterpolation.Interpolate;
         body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
         body.solverIterations = 12;
@@ -375,14 +376,11 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             float loadShare = totalLoad > 1f ? normalLoad / totalLoad : 1f / grounded;
             float lateralLimit = Mathf.Min(tractionLimit, rolloverLimit * loadShare);
             float longitudinal = Mathf.Clamp(drive + brake, -tractionLimit, tractionLimit);
-            // Longitudinal drive must not consume all of the tire's ability to
-            // cancel lateral slip.  Otherwise a steering release while under
-            // throttle leaves no lateral force at the contact patches, so the
-            // yaw already created by the turn continues for several seconds.
-            // This still limits lateral force by normal load and rollover
-            // margin, but lets the tire physically oppose the existing yaw.
+            float availableLateral = Mathf.Sqrt(Mathf.Max(0f,
+                tractionLimit * tractionLimit - longitudinal * longitudinal));
             float lateral = Mathf.Clamp(-sideSpeed * body.mass * lateralFriction,
-                -lateralLimit, lateralLimit);
+                -Mathf.Min(lateralLimit, availableLateral),
+                Mathf.Min(lateralLimit, availableLateral));
             wheel.tireForce = forward * longitudinal + side * lateral;
             body.AddForceAtPosition(wheel.tireForce, wheel.contactPoint, ForceMode.Force);
 
@@ -397,7 +395,24 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     void ApplyDamping()
     {
         body.linearDamping = GroundedCount >= 2 ? 0.15f : airDrag;
-        body.angularDamping = 0f;
+        body.angularDamping = angularDamping;
+
+        if (GroundedCount < 2) return;
+
+        Vector3 up = AverageNormal;
+        float yawRate = Vector3.Dot(body.angularVelocity, up);
+        // Dampen yaw only through the vehicle's vertical axis. Roll and pitch
+        // are left to suspension forces and the Rigidbody's normal damping.
+        body.AddTorque(-up * yawRate * body.mass * 0.35f, ForceMode.Force);
+
+        Vector3 forward = Vector3.ProjectOnPlane(ForwardDirection, up);
+        Vector3 velocity = Vector3.ProjectOnPlane(body.linearVelocity, up);
+        if (Mathf.Abs(requestedSteer) < 0.01f && velocity.sqrMagnitude > 4f
+            && velocity.sqrMagnitude > 0.001f && Vector3.Dot(velocity.normalized, forward.normalized) > 0.96f)
+        {
+            float headingError = Vector3.SignedAngle(forward, velocity, up) * Mathf.Deg2Rad;
+            body.AddTorque(up * headingError * body.mass * 0.45f, ForceMode.Force);
+        }
     }
 
     void UpdateState()
