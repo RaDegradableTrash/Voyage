@@ -229,13 +229,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         SnapToTerrainNow();
     }
 
-    // Compatibility entry point used by PlayerCar and older scene bootstrap code.
-    // Keep terrain binding in one implementation.
-    public void SetTerrain(Terrain terrain)
-    {
-        BindTerrain(terrain);
-    }
-
     void FixedUpdate()
     {
         SampleWheels();

@@ -139,7 +139,7 @@ public class PlayerCar : MonoBehaviour
     {
         if (terrainFollower == null) terrainFollower = GetComponent<VehicleTerrainFollower>();
         if (terrainFollower == null) terrainFollower = gameObject.AddComponent<VehicleTerrainFollower>();
-        terrainFollower.SetTerrain(terrain);
+        terrainFollower.BindTerrain(terrain);
     }
     public bool IsAirborne
     {
