@@ -65,8 +65,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public float groundDetectionDistance = 32f;
 
     [Header("Stability")]
-    [Tooltip("Selective stability damping around the ground-up axis only. It does not damp roll or pitch.")]
-    public float stabilityYawDamping = 4f;
     // Retained for serialized compatibility; the controller no longer caps
     // angular velocity as a stability aid.
     public float maxAngularVelocity = 100f;
@@ -419,7 +417,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                 + " maxExtension=" + maxExtension.ToString("F3"));
         }
         ApplyWheelForces();
-        ApplyStabilityDamping();
         ApplyAirControl();
         UpdateState();
         if (diagnosticLogging)
@@ -647,6 +644,17 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         // and left the chassis box with excessive angular damping, which made
         // a one-wheel vehicle appear unnaturally balanced.
         float steerAngle = EffectiveSteeringAngle();
+        float totalNormalLoad = 0f;
+        for (int i = 0; i < wheels.Length; i++)
+        {
+            WheelData wheel = wheels[i];
+            if (wheel != null && wheel.grounded && wheel.contactFresh)
+                totalNormalLoad += Mathf.Max(0f, wheel.suspensionForce);
+        }
+        float comHeight = Mathf.Max(0.35f, Mathf.Abs(centerOfMass.y));
+        float rolloverForceLimit = totalNormalLoad > 1f
+            ? body.mass * Physics.gravity.magnitude * trackWidth / (2f * comHeight) * 0.9f
+            : float.MaxValue;
         for (int i = 0; i < wheels.Length; i++)
         {
             WheelData wheel = wheels[i];
@@ -711,7 +719,9 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             // loaded tires, while retaining the measured spring load when it
             // is available.
             float normalLoad = Mathf.Max(0f, wheel.suspensionForce);
-            float lateralLimit = normalLoad * tireGrip * requestedTraction;
+            float loadShare = totalNormalLoad > 1f ? normalLoad / totalNormalLoad : 0f;
+            float rolloverLateralLimit = rolloverForceLimit * loadShare;
+            float lateralLimit = Mathf.Min(normalLoad * tireGrip * requestedTraction, rolloverLateralLimit);
             float lateral = Mathf.Clamp(-sideSpeed * body.mass * lateralFriction, -lateralLimit, lateralLimit);
             float tractionLimit = normalLoad * tireGrip * requestedTraction;
             drive = Mathf.Clamp(drive, -tractionLimit, tractionLimit);
@@ -737,23 +747,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     {
         float speed = Mathf.Abs(Vector3.Dot(body.linearVelocity, ForwardDirection));
         return Mathf.Lerp(steeringAngle, steeringAngle * highSpeedSteeringLimit, Mathf.InverseLerp(4f, maxSpeed, speed));
-    }
-
-    void ApplyStabilityDamping()
-    {
-        // Rigidbody.angularDamping affects every rotation axis. Keep it at
-        // zero and damp only unwanted yaw after steering is released, so
-        // rollovers and recovery retain their physical angular speed.
-        if (stabilityYawDamping <= 0f || FreshGroundedCount < 2 || Mathf.Abs(requestedSteer) > 0.04f)
-            return;
-
-        Vector3 yawAxis = AverageNormal.sqrMagnitude > 0.001f
-            ? AverageNormal.normalized
-            : Vector3.up;
-        float lateralSpeed = Mathf.Abs(Vector3.Dot(body.linearVelocity, transform.forward));
-        float slipFactor = Mathf.InverseLerp(0.35f, 1.5f, lateralSpeed);
-        float yawRate = Vector3.Dot(body.angularVelocity, yawAxis);
-        body.AddTorque(-yawAxis * yawRate * body.mass * stabilityYawDamping * (1f - slipFactor), ForceMode.Force);
     }
 
     void ApplyAirControl()
