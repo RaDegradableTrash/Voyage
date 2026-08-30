@@ -1,0 +1,123 @@
+using System;
+using UnityEngine;
+
+namespace Voyage.TerrainSystem
+{
+    public enum TerrainHorizontalAxes
+    {
+        XZ,
+        XY
+    }
+
+    public enum TerrainTriangleBoundaryPolicy
+    {
+        AssignToSingleTile,
+        DuplicateToAdjacentTiles,
+        ClipDerivedMesh
+    }
+
+    [CreateAssetMenu(menuName = "Voyage/Terrain System/Chunk Settings", fileName = "TerrainChunkSettings")]
+    public sealed class TerrainChunkSettings : ScriptableObject
+    {
+        [Min(1f)] public float tileSize = 256f;
+        [Min(0f)] public float boundaryOverlap = 0f;
+        public Vector3 worldOrigin = Vector3.zero;
+        public TerrainHorizontalAxes horizontalAxes = TerrainHorizontalAxes.XZ;
+        public TerrainTriangleBoundaryPolicy triangleBoundaryPolicy = TerrainTriangleBoundaryPolicy.ClipDerivedMesh;
+        [Min(0.000001f)] public float boundaryPositionTolerance = 0.0001f;
+        [Min(0.000001f)] public float boundaryHeightPrecision = 0.0001f;
+        [Min(0.001f)] public float sourceMetersPerUnit = 1f;
+        public string tileNameFormat = "Terrain_{0}_{1}";
+        [Tooltip("Rebuild normals on generated terrain meshes so slopes and shadow receiving use the actual derived geometry.")]
+        public bool recalculateNormals = true;
+
+        [Header("LOD distances in metres")]
+        public float lod0Distance = 150f;
+        public float lod1Distance = 400f;
+        public float lod2Distance = 1000f;
+        public float lod3Distance = 3000f;
+        [Range(0.01f, 1f)] public float lod1Quality = 0.5f;
+        [Range(0.01f, 1f)] public float lod2Quality = 0.25f;
+        [Range(0.01f, 1f)] public float lod3Quality = 0.1f;
+        public bool useCrossFade = true;
+        public bool generateHlod = true;
+        public bool generateSkirts = true;
+        [Min(0f)] public float skirtDepth = 2f;
+        [Range(0, 3)] public int maxNeighborLodDifference = 1;
+
+        [Header("Streaming")]
+        [Min(1f)] public float streamingCellSize = 512f;
+        [Min(0)] public int loadedRadius = 1;
+        [Min(0)] public int preloadRadius = 2;
+        [Min(1)] public int unloadRadius = 3;
+        [Min(1)] public int maxConcurrentLoads = 2;
+        [Min(0.1f)] public float retryDelay = 2f;
+        [Min(0)] public int maxLoadRetries = 3;
+        public bool prioritizeForward = true;
+        public bool enableCollisionWhenLoaded = true;
+        [Min(0)] public int collisionRadius = 2;
+
+        [Header("View-driven visual streaming")]
+        [Min(0f)] public float visualDistanceOverride = 0f;
+        [Min(0f)] public float visualTileMargin = 256f;
+
+        public Vector2Int WorldToTile(Vector3 worldPosition)
+        {
+            Vector3 local = worldPosition - worldOrigin;
+            float horizontal = horizontalAxes == TerrainHorizontalAxes.XZ ? local.x : local.x;
+            float depth = horizontalAxes == TerrainHorizontalAxes.XZ ? local.z : local.y;
+            return new Vector2Int(Mathf.FloorToInt(horizontal / tileSize), Mathf.FloorToInt(depth / tileSize));
+        }
+
+        public Bounds GetTileBounds(Vector2Int coordinate, float padding = 0f)
+        {
+            float minHorizontal = worldOrigin.x + coordinate.x * tileSize - padding;
+            float minDepth = (horizontalAxes == TerrainHorizontalAxes.XZ ? worldOrigin.z : worldOrigin.y) + coordinate.y * tileSize - padding;
+            Vector3 center;
+            Vector3 size;
+            if (horizontalAxes == TerrainHorizontalAxes.XZ)
+            {
+                center = new Vector3(minHorizontal + (tileSize + padding * 2f) * 0.5f, worldOrigin.y, minDepth + (tileSize + padding * 2f) * 0.5f);
+                size = new Vector3(tileSize + padding * 2f, 100000f, tileSize + padding * 2f);
+            }
+            else
+            {
+                center = new Vector3(minHorizontal + (tileSize + padding * 2f) * 0.5f, minDepth + (tileSize + padding * 2f) * 0.5f, worldOrigin.z);
+                size = new Vector3(tileSize + padding * 2f, tileSize + padding * 2f, 100000f);
+            }
+            return new Bounds(center, size);
+        }
+
+        public float GetLodDistance(int lod)
+        {
+            switch (lod)
+            {
+                case 0: return lod0Distance;
+                case 1: return lod1Distance;
+                case 2: return lod2Distance;
+                default: return lod3Distance;
+            }
+        }
+
+        public float GetLodQuality(int lod)
+        {
+            switch (lod)
+            {
+                case 0: return 1f;
+                case 1: return lod1Quality;
+                case 2: return lod2Quality;
+                default: return lod3Quality;
+            }
+        }
+
+        private void OnValidate()
+        {
+            lod1Distance = Mathf.Max(lod0Distance, lod1Distance);
+            lod2Distance = Mathf.Max(lod1Distance, lod2Distance);
+            lod3Distance = Mathf.Max(lod2Distance, lod3Distance);
+            preloadRadius = Mathf.Max(loadedRadius, preloadRadius);
+            unloadRadius = Mathf.Max(preloadRadius + 1, unloadRadius);
+            collisionRadius = Mathf.Clamp(collisionRadius, 0, preloadRadius);
+        }
+    }
+}
