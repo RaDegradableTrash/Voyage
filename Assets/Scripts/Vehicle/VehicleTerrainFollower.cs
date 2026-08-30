@@ -12,7 +12,7 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     // Keep the physical center of mass below the chassis origin so lateral
     // tire forces have a smaller rollover moment during hard cornering.
     public Vector3 centerOfMass = new Vector3(0f, -1.10f, 0f);
-    public float maxSpeed = 22f;
+    public float maxSpeed = 32f;
     public float acceleration = 18000f;
     public float brakeForce = 22000f;
     public float steeringAngle = 24f;
@@ -20,8 +20,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public float airControlStrength = 0.35f;
     [Tooltip("Aerodynamic drag while airborne. This reduces excessive flight inertia without applying any roll correction.")]
     public float airDrag = 0.12f;
-    [Tooltip("Extra gravity while all four tires are off the ground. It shortens flight time without changing normal driving.")]
-    public float airGravityMultiplier = 1f;
     public float boostAcceleration = 10f;
 
     [Header("Suspension")]
@@ -717,7 +715,13 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             float lateral = Mathf.Clamp(-sideSpeed * body.mass * lateralFriction, -lateralLimit, lateralLimit);
             float tractionLimit = normalLoad * tireGrip * requestedTraction;
             drive = Mathf.Clamp(drive, -tractionLimit, tractionLimit);
-            float longitudinalForce = drive + brake;
+            // A tire has one finite friction budget. Longitudinal drive and
+            // lateral cornering share it; allowing both to reach their full
+            // limits creates an artificial lateral rollover moment.
+            float longitudinalForce = Mathf.Clamp(drive + brake, -tractionLimit, tractionLimit);
+            float lateralAfterDrive = Mathf.Sqrt(Mathf.Max(0f,
+                tractionLimit * tractionLimit - longitudinalForce * longitudinalForce));
+            lateral = Mathf.Clamp(lateral, -lateralAfterDrive, lateralAfterDrive);
             wheel.tireForce = forward * longitudinalForce + side * lateral;
             body.AddForceAtPosition(wheel.tireForce, wheel.contactPoint, ForceMode.Force);
             if (debugDraw)
