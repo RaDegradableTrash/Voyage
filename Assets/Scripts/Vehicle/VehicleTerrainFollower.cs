@@ -229,6 +229,13 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         SnapToTerrainNow();
     }
 
+    // Compatibility entry point used by PlayerCar and older scene bootstrap code.
+    // Keep terrain binding in one implementation.
+    public void SetTerrain(Terrain terrain)
+    {
+        BindTerrain(terrain);
+    }
+
     void FixedUpdate()
     {
         SampleWheels();
@@ -375,10 +382,14 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             float loadShare = totalLoad > 1f ? normalLoad / totalLoad : 1f / grounded;
             float lateralLimit = Mathf.Min(tractionLimit, rolloverLimit * loadShare);
             float longitudinal = Mathf.Clamp(drive + brake, -tractionLimit, tractionLimit);
-            float availableLateral = Mathf.Sqrt(Mathf.Max(0f,
-                tractionLimit * tractionLimit - longitudinal * longitudinal));
+            // Longitudinal drive must not consume all of the tire's ability to
+            // cancel lateral slip.  Otherwise a steering release while under
+            // throttle leaves no lateral force at the contact patches, so the
+            // yaw already created by the turn continues for several seconds.
+            // This still limits lateral force by normal load and rollover
+            // margin, but lets the tire physically oppose the existing yaw.
             float lateral = Mathf.Clamp(-sideSpeed * body.mass * lateralFriction,
-                -Mathf.Min(lateralLimit, availableLateral), Mathf.Min(lateralLimit, availableLateral));
+                -lateralLimit, lateralLimit);
             wheel.tireForce = forward * longitudinal + side * lateral;
             body.AddForceAtPosition(wheel.tireForce, wheel.contactPoint, ForceMode.Force);
 
