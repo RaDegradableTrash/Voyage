@@ -17,10 +17,8 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public float brakeForce = 22000f;
     public float steeringAngle = 24f;
     public float highSpeedSteeringLimit = 0.5f;
-    public float airControlStrength = 0.35f;
     [Tooltip("Aerodynamic drag while airborne. This reduces excessive flight inertia without applying any roll correction.")]
     public float airDrag = 0.12f;
-    public float boostAcceleration = 10f;
 
     [Header("Suspension")]
     public float suspensionLength = 0.62f;
@@ -116,7 +114,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     float requestedBrake;
     float requestedTraction = 1f;
     bool handbrake;
-    bool boostActive;
     bool wasGrounded;
     float flippedTimer;
     float stuckTimer;
@@ -159,7 +156,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public void SetSteering(float value) { requestedSteer = Mathf.Clamp(value, -1f, 1f); }
     public void SetBrake(float value) { requestedBrake = Mathf.Clamp01(value); }
     public void SetHandbrake(bool value) { handbrake = value; }
-    public void SetBoost(bool value) { boostActive = value; }
     public void SetTraction(float value) { requestedTraction = Mathf.Clamp(value, 0.15f, 1.25f); }
 
     public void ConfigureWheelTransforms(Transform[] sourceWheels) { ConfigureWheelTransforms(sourceWheels, true, false); }
@@ -417,7 +413,7 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                 + " maxExtension=" + maxExtension.ToString("F3"));
         }
         ApplyWheelForces();
-        ApplyAirControl();
+        ApplyDamping();
         UpdateState();
         if (diagnosticLogging)
         {
@@ -676,9 +672,15 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             float criticalDamper = 2f * Mathf.Sqrt(Mathf.Max(0f, springStrength * effectiveMassPerWheel));
             float dampingCoefficient = Mathf.Max(damper, criticalDamper * suspensionDampingRatio);
             float dampingForce = springForce > 0f ? -springVelocity * dampingCoefficient : 0f;
+            // Suspension cannot create an arbitrary impulse at one corner.
+            // Limit each live tire to its share of a finite whole-vehicle
+            // load; terrain seams then produce slip/compression, not a launch
+            // torque that rolls the chassis.
+            float supportLimit = body.mass * Physics.gravity.magnitude * 3f
+                / Mathf.Max(1f, FreshGroundedCount);
             wheel.suspensionForce = Mathf.Clamp(
                 springForce + dampingForce,
-                0f, maxSuspensionForce);
+                0f, Mathf.Min(maxSuspensionForce, supportLimit));
             body.AddForceAtPosition(up * wheel.suspensionForce, wheel.contactPoint, ForceMode.Force);
             if (wheel.landingContact && landingBounceStrength > 0f)
             {
@@ -700,8 +702,8 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             // Use a softer velocity controller so the chassis does not
             // repeatedly overshoot its target speed and feed that oscillation
             // back into the wheel suspension.
-            float driveAcceleration = acceleration + (boostActive ? boostAcceleration * body.mass : 0f);
-            float drive = Mathf.Clamp((targetSpeed - forwardSpeed) * body.mass * 3.5f, -driveAcceleration, driveAcceleration);
+            float drive = Mathf.Clamp((targetSpeed - forwardSpeed) * body.mass * 3.5f,
+                -acceleration, acceleration);
             drive *= requestedTraction;
             bool brakingActive = handbrake || requestedBrake > 0.05f;
             float brakeInput = handbrake ? 1f : requestedBrake;
@@ -749,21 +751,10 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         return Mathf.Lerp(steeringAngle, steeringAngle * highSpeedSteeringLimit, Mathf.InverseLerp(4f, maxSpeed, speed));
     }
 
-    void ApplyAirControl()
+    void ApplyDamping()
     {
-        // Moderate damping reduces endless drift and spin, but remains far
-        // below the old anti-roll value that prevented the vehicle flipping.
         body.linearDamping = FreshGroundedCount >= 2 ? 0.15f : airDrag;
-        // Anti-roll resistance acts on angle; damping stays low so a real flip
-        // is not merely slowed down.
         body.angularDamping = 0f;
-        // A one-wheel or two-wheel contact is still a grounded vehicle. Do not
-        // add airborne steering torque on top of tire contact forces, otherwise
-        // a transient raycast miss turns a normal corner into a spin.
-        if (GroundedCount == 0)
-        {
-            body.AddTorque(transform.up * requestedSteer * airControlStrength * body.mass, ForceMode.Force);
-        }
     }
 
     void UpdateState()

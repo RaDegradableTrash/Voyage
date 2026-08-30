@@ -1031,7 +1031,6 @@ public class PlayerCar : MonoBehaviour
         }
 
         terrainFollower.SetTraction(traction * (differentialLock ? 1.08f : 1f));
-        terrainFollower.SetBoost(boost);
         terrainFollower.SetDriveVelocity(targetVelocity);
         terrainFollower.SetSteering(steer);
         terrainFollower.SetBrake(braking ? 1f : 0f);
