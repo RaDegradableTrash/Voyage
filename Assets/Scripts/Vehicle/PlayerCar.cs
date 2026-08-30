@@ -127,7 +127,7 @@ public class PlayerCar : MonoBehaviour
         rb.useGravity = true;
         rb.detectCollisions = true;
         rb.linearDamping = 0.15f;
-        rb.angularDamping = 1.2f;
+        rb.angularDamping = 0.35f;
         rb.interpolation = RigidbodyInterpolation.Interpolate;
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
         rb.solverIterations = 12;

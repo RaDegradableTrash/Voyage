@@ -14,9 +14,9 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public float acceleration = 18000f;
     public float brakeForce = 22000f;
     public float steeringAngle = 24f;
-    public float highSpeedSteeringLimit = 0.5f;
+    public float highSpeedSteeringLimit = 0.75f;
     public float airDrag = 0.12f;
-    public float angularDamping = 1.2f;
+    public float angularDamping = 0.35f;
 
     [Header("Suspension")]
     public float suspensionLength = 0.62f;
@@ -368,6 +368,12 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             float targetSpeed = Vector3.Dot(requestedVelocity, forward);
             float drive = Mathf.Clamp((targetSpeed - forwardSpeed) * body.mass * 3.5f,
                 -acceleration, acceleration) * requestedTraction;
+            // During a turn, reserve the front tires for lateral force. Keep
+            // the total requested drive approximately unchanged by shifting
+            // the unused front share to the rear tires.
+            float steeringLoad = Mathf.Abs(requestedSteer);
+            float frontDriveScale = Mathf.Lerp(1f, 0.35f, steeringLoad);
+            drive *= wheel.isFront ? frontDriveScale : 2f - frontDriveScale;
             float brakeInput = handbrake ? 1f : requestedBrake;
             float brake = Mathf.Clamp(-forwardSpeed * brakeForce * brakeInput,
                 -brakeForce * brakeInput, brakeForce * brakeInput);
@@ -403,7 +409,7 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         float yawRate = Vector3.Dot(body.angularVelocity, up);
         // Dampen yaw only through the vehicle's vertical axis. Roll and pitch
         // are left to suspension forces and the Rigidbody's normal damping.
-        body.AddTorque(-up * yawRate * body.mass * 0.35f, ForceMode.Force);
+        body.AddTorque(-up * yawRate * body.mass * 0.08f, ForceMode.Force);
 
         Vector3 forward = Vector3.ProjectOnPlane(ForwardDirection, up);
         Vector3 velocity = Vector3.ProjectOnPlane(body.linearVelocity, up);
