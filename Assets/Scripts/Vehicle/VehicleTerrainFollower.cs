@@ -40,14 +40,10 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public float wheelGroundClearance = 0.045f;
     public float suspensionVisualSmoothTime = 0.14f;
     public float contactSmoothing = 10f;
-    [Tooltip("Smooths the physical spring input so terrain triangle seams do not shake the chassis.")]
-    public float suspensionTravelSmoothing = 18f;
     [Tooltip("Keeps a wheel supported for a very short gap when a terrain triangle seam misses one raycast.")]
     public float contactGraceTime = 0.12f;
     [Tooltip("Extra extension required before a contact is visually released.")]
     public float contactReleaseMargin = 0.25f;
-    [Tooltip("Small spherical probe that bridges terrain triangle seams without changing the tire radius.")]
-    public float wheelContactProbeRadius = 0.08f;
     public float wheelBase = 2.84f;
     public float trackWidth = 1.84f;
     public float tireGrip = 1f;
@@ -82,20 +78,14 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         public bool isFront;
         public bool grounded;
         [System.NonSerialized] public RaycastHit hit;
-        public float compression;
         public float suspensionTravel;
         public float suspensionForce;
         public Vector3 tireForce;
         public Vector3 contactPoint;
         public Vector3 groundNormal;
-        [System.NonSerialized] public Vector3 visualPosition;
-        [System.NonSerialized] public Vector3 visualVelocity;
-        [System.NonSerialized] public bool hasVisualPosition;
         [System.NonSerialized] public float visualTravel;
         [System.NonSerialized] public bool hasVisualTravel;
         [System.NonSerialized] public bool visualTravelLogged;
-        [System.NonSerialized] public float filteredSuspensionTravel;
-        [System.NonSerialized] public bool hasFilteredSuspensionTravel;
         [System.NonSerialized] public bool groundDiagnosticLogged;
         [System.NonSerialized] public Vector3 filteredContactPoint;
         [System.NonSerialized] public Vector3 filteredGroundNormal;
@@ -439,7 +429,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             wheel.grounded = false;
             wheel.contactFresh = false;
             wheel.landingContact = false;
-            wheel.compression = 0f;
             wheel.suspensionForce = 0f;
             wheel.tireForce = Vector3.zero;
             // Ground contact is sampled vertically. Casting along the current
@@ -515,7 +504,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                     wheel.contactPoint = terrainPoint;
                     wheel.groundNormal = terrainNormal;
                     UpdateSuspensionTravel(wheel, terrainTravel);
-                    wheel.compression = SuspensionCompression(wheel.suspensionTravel);
                     if (debugDraw) Debug.DrawLine(origin, terrainPoint, Color.green);
                     continue;
                 }
@@ -571,7 +559,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                     wheel.groundNormal = wheel.filteredGroundNormal;
                     float filteredDistance = Vector3.Dot(origin - wheel.filteredContactPoint, Vector3.up);
                     UpdateSuspensionTravel(wheel, suspensionLength - (filteredDistance - tireRadius));
-                    wheel.compression = SuspensionCompression(wheel.suspensionTravel);
                 }
                 else
                 {
@@ -602,7 +589,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                 wheel.groundNormal = wheel.filteredGroundNormal;
                 float filteredDistance = Vector3.Dot(origin - wheel.contactPoint, Vector3.up);
                 UpdateSuspensionTravel(wheel, suspensionLength - (filteredDistance - tireRadius));
-                wheel.compression = SuspensionCompression(wheel.suspensionTravel);
             }
             if (debugDraw) Debug.DrawLine(origin, origin + Vector3.down * castLength, wheel.grounded ? Color.green : Color.red);
         }
@@ -617,16 +603,7 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         // back up. Visual wheel motion has its own smoothing in
         // GetWheelVisualPosition, so the physical state does not need this
         // second lagging filter.
-        wheel.filteredSuspensionTravel = targetTravel;
-        wheel.hasFilteredSuspensionTravel = true;
         wheel.suspensionTravel = targetTravel;
-    }
-
-    float SuspensionCompression(float travel)
-    {
-        // Negative travel is extension, not compression. Treating it as a
-        // non-zero compression was the impulse that launched the chassis.
-        return Mathf.Clamp01(Mathf.InverseLerp(0f, maxCompression, Mathf.Max(0f, travel)));
     }
 
     bool IsExternalCollider(Collider collider) { return collider != null && collider.transform != transform && !collider.transform.IsChildOf(transform); }
