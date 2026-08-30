@@ -127,7 +127,7 @@ public class PlayerCar : MonoBehaviour
         rb.useGravity = true;
         rb.detectCollisions = true;
         rb.linearDamping = 0.15f;
-        rb.angularDamping = 0.05f;
+        rb.angularDamping = 0f;
         rb.interpolation = RigidbodyInterpolation.Interpolate;
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
         rb.solverIterations = 12;
@@ -965,6 +965,11 @@ public class PlayerCar : MonoBehaviour
             handbrake = true;
         }
 
+        // Shift is a sustained accelerator, not an instant speed multiplier.
+        // It can also drive the vehicle by itself when W is not pressed.
+        if (boost && throttle >= 0f)
+            throttle = 1f;
+
         if (!controlStateLogged)
         {
             controlStateLogged = true;
@@ -996,12 +1001,16 @@ public class PlayerCar : MonoBehaviour
         if (directionChange) throttle = 0f;
 
         float traction = surfaceGripValue;
-        // 32 m/s is the normal-road target (~115 km/h); the previous 22 m/s
-        // hard-coded value made full throttle feel capped even on flat ground.
-        float maxTargetSpeed = 22f * (lowRange ? 0.72f : 1f) * (boost ? 1.2f : 1f) * externalSpeedMultiplier;
+        // Normal road speed is 32 m/s (~115 km/h). Shift progressively adds
+        // a small high-speed reserve instead of applying a fixed 1.2x cap.
+        float maxTargetSpeed = 32f * (lowRange ? 0.72f : 1f)
+            * (boost ? 1.5f : 1f) * externalSpeedMultiplier;
         if (fuelStarved) maxTargetSpeed *= 0.35f;
         float suspensionSteer = Mathf.Lerp(1f, 0.55f, suspensionUpgradeLevel / 3f);
-        steer = Mathf.MoveTowards(steer, Mathf.Clamp(inputSteer + damageSteerBias * suspensionSteer, -1f, 1f), Time.fixedDeltaTime * 8f);
+        // Steering is an input direction, not stored momentum. Releasing A/D
+        // must immediately leave the front wheels straight; only actual tire
+        // slip may then change the vehicle heading.
+        steer = Mathf.Clamp(inputSteer + damageSteerBias * suspensionSteer, -1f, 1f);
         throttleLoad = Mathf.Abs(throttle) * (boost ? 1.5f : 1f);
         grounded = terrainFollower.IsGrounded;
         groundNormal = terrainFollower.GroundNormal;

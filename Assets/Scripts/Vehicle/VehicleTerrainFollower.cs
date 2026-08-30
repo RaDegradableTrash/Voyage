@@ -9,7 +9,9 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
 
     [Header("Vehicle")]
     public float vehicleMass = 1000f;
-    public Vector3 centerOfMass = new Vector3(0f, -0.55f, 0f);
+    // Keep the physical center of mass below the chassis origin so lateral
+    // tire forces have a smaller rollover moment during hard cornering.
+    public Vector3 centerOfMass = new Vector3(0f, -1.10f, 0f);
     public float maxSpeed = 22f;
     public float acceleration = 18000f;
     public float brakeForce = 22000f;
@@ -29,12 +31,12 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     // between wheel samples. Keep enough extension to preserve four contacts
     // over crests and seams instead of dropping a wheel into airborne mode.
     public float maxExtension = 0.95f;
-    public float springStrength = 32000f;
-    public float damper = 8200f;
+    public float springStrength = 42000f;
+    public float damper = 11000f;
     [Range(0.1f, 1f)]
     [Tooltip("Suspension damping relative to critical damping. Lower values make landings feel heavier and less cushioned.")]
     public float suspensionDampingRatio = 1f;
-    public float maxSuspensionForce = 52000f;
+    public float maxSuspensionForce = 70000f;
     [Tooltip("Small one-shot rebound impulse on wheel landing.")]
     public float landingBounceStrength = 0.10f;
     public float tireRadius = 0.38f;
@@ -65,6 +67,8 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public float groundDetectionDistance = 32f;
 
     [Header("Stability")]
+    [Tooltip("Selective stability damping around the ground-up axis only. It does not damp roll or pitch.")]
+    public float stabilityYawDamping = 4f;
     // Retained for serialized compatibility; the controller no longer caps
     // angular velocity as a stability aid.
     public float maxAngularVelocity = 100f;
@@ -366,7 +370,7 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         body.mass = vehicleMass;
         body.centerOfMass = centerOfMass;
         body.linearDamping = 0.15f;
-        body.angularDamping = 0.05f;
+        body.angularDamping = 0f;
         body.interpolation = RigidbodyInterpolation.Interpolate;
         body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
         body.solverIterations = 12;
@@ -417,6 +421,7 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                 + " maxExtension=" + maxExtension.ToString("F3"));
         }
         ApplyWheelForces();
+        ApplyStabilityDamping();
         ApplyAirControl();
         UpdateState();
         if (diagnosticLogging)
@@ -730,6 +735,23 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         return Mathf.Lerp(steeringAngle, steeringAngle * highSpeedSteeringLimit, Mathf.InverseLerp(4f, maxSpeed, speed));
     }
 
+    void ApplyStabilityDamping()
+    {
+        // Rigidbody.angularDamping affects every rotation axis. Keep it at
+        // zero and damp only unwanted yaw after steering is released, so
+        // rollovers and recovery retain their physical angular speed.
+        if (stabilityYawDamping <= 0f || FreshGroundedCount < 2 || Mathf.Abs(requestedSteer) > 0.04f)
+            return;
+
+        Vector3 yawAxis = AverageNormal.sqrMagnitude > 0.001f
+            ? AverageNormal.normalized
+            : Vector3.up;
+        float lateralSpeed = Mathf.Abs(Vector3.Dot(body.linearVelocity, transform.forward));
+        float slipFactor = Mathf.InverseLerp(0.35f, 1.5f, lateralSpeed);
+        float yawRate = Vector3.Dot(body.angularVelocity, yawAxis);
+        body.AddTorque(-yawAxis * yawRate * body.mass * stabilityYawDamping * (1f - slipFactor), ForceMode.Force);
+    }
+
     void ApplyAirControl()
     {
         // Moderate damping reduces endless drift and spin, but remains far
@@ -737,7 +759,7 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         body.linearDamping = FreshGroundedCount >= 2 ? 0.15f : airDrag;
         // Anti-roll resistance acts on angle; damping stays low so a real flip
         // is not merely slowed down.
-        body.angularDamping = FreshGroundedCount >= 2 ? 0.05f : 0.03f;
+        body.angularDamping = 0f;
         // A one-wheel or two-wheel contact is still a grounded vehicle. Do not
         // add airborne steering torque on top of tire contact forces, otherwise
         // a transient raycast miss turns a normal corner into a spin.
