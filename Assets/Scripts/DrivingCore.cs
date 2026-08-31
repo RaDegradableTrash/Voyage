@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using Voyage.TerrainSystem;
+using RVSystem;
 
 /// <summary>Only the vehicle, terrain, camera and pause loop.</summary>
 public sealed class DrivingCore : MonoBehaviour
@@ -61,6 +62,14 @@ public sealed class DrivingCore : MonoBehaviour
         Player.EnsureVehiclePhysics();
         Player.BuildVisuals(vehicleBody, vehicleGlass, vehicleTail, vehicleHead);
         Player.BindTerrain(null);
+        RVController rvController = carObject.GetComponent<RVController>();
+        if (rvController == null) rvController = carObject.AddComponent<RVController>();
+        RVCameraController rvCamera = carObject.GetComponent<RVCameraController>();
+        if (rvCamera == null) rvCamera = carObject.AddComponent<RVCameraController>();
+        RVStateMachine rvState = carObject.GetComponent<RVStateMachine>();
+        if (rvState == null) rvState = carObject.AddComponent<RVStateMachine>();
+        rvState.controller = rvController;
+        rvState.SetState(RVState.Active);
         Camera camera = Camera.main;
         if (camera != null)
         {

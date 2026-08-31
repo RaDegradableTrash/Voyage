@@ -73,6 +73,10 @@ public class PlayerCar : MonoBehaviour
     float cachedKeyboardSteer;
     bool cachedBoost;
     bool cachedHandbrake;
+    bool rvInputOverride;
+    float rvThrottle;
+    float rvSteer;
+    bool rvBraking;
     [Header("Diagnostics")]
     public bool diagnosticLogging = false;
     string surfaceType = "GROUND";
@@ -895,6 +899,12 @@ public class PlayerCar : MonoBehaviour
     {
         if (terrainFollower == null) return;
 
+        if (rvInputOverride)
+        {
+            ApplyDrivingInputs(rvThrottle, rvSteer, rvBraking, rvBraking);
+            return;
+        }
+
 
         Vector2 pad = cachedPadStick;
         float keyboardThrottle = cachedKeyboardThrottle;
@@ -984,6 +994,54 @@ public class PlayerCar : MonoBehaviour
         float lateralSpeed = transform.InverseTransformDirection(velocity).z;
         UpdateTailLights(throttle, forwardSpeed);
         UpdateBodyVisuals(throttle, lateralSpeed);
+        UpdateEngineAudio(throttle, forwardSpeed);
+        UpdateTerrainAudio();
+    }
+
+    /// <summary>Input bridge used by the RV state machine.</summary>
+    public void ApplyRVInputs(float throttle, float steerInput, bool braking)
+    {
+        rvInputOverride = true;
+        rvThrottle = Mathf.Clamp(throttle, -1f, 1f);
+        rvSteer = Mathf.Clamp(steerInput, -1f, 1f);
+        rvBraking = braking;
+    }
+
+    public void ReleaseRVInputOverride()
+    {
+        rvInputOverride = false;
+    }
+
+    public void StopVehicle()
+    {
+        rvInputOverride = true;
+        rvThrottle = 0f;
+        rvSteer = 0f;
+        rvBraking = true;
+        if (terrainFollower != null) terrainFollower.StopImmediately();
+    }
+
+    void ApplyDrivingInputs(float throttle, float steerInput, bool braking, bool handbrake)
+    {
+        steer = Mathf.Clamp(steerInput, -1f, 1f);
+        throttleLoad = Mathf.Abs(throttle);
+        Vector3 velocity = terrainFollower.CurrentVelocity;
+        Vector3 forward = terrainFollower.ForwardDirection;
+        float forwardSpeed = Vector3.Dot(velocity, forward);
+        bool directionChange = (throttle < -0.1f && forwardSpeed > 1.5f)
+            || (throttle > 0.1f && forwardSpeed < -1.5f);
+        if (directionChange) throttle = 0f;
+        Vector3 driveForward = Vector3.ProjectOnPlane(forward, Vector3.up);
+        if (driveForward.sqrMagnitude < 0.01f) driveForward = forward;
+        driveForward.Normalize();
+        float targetSpeed = 32f * (lowRange ? 0.72f : 1f) * externalSpeedMultiplier;
+        if (fuelStarved) targetSpeed *= 0.35f;
+        terrainFollower.SetTraction(surfaceGripValue * (differentialLock ? 1.08f : 1f));
+        terrainFollower.SetDriveVelocity(driveForward * (throttle * targetSpeed));
+        terrainFollower.SetSteering(steer);
+        terrainFollower.SetBrake(braking || directionChange ? 1f : 0f);
+        terrainFollower.SetHandbrake(handbrake);
+        UpdateTailLights(throttle, forwardSpeed);
         UpdateEngineAudio(throttle, forwardSpeed);
         UpdateTerrainAudio();
     }
