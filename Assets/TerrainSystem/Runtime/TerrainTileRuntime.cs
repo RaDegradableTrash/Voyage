@@ -146,7 +146,6 @@ namespace Voyage.TerrainSystem
             currentLod = lod;
             for (int i = 0; i < lodRoots.Length; i++)
                 if (lodRoots[i] != null) lodRoots[i].SetActive(i == lod);
-            ConfigureLighting();
         }
     }
 }

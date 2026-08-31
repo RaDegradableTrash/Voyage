@@ -3,11 +3,14 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using Voyage.TerrainSystem;
-using RVSystem;
 
 /// <summary>Only the vehicle, terrain, camera and pause loop.</summary>
 public sealed class DrivingCore : MonoBehaviour
 {
+    // Orientation used by the RV1.0 instance in Cementery/Main_Persistent.
+    // The original input sign and WheelCollider spin direction are authored
+    // for this prefab orientation.
+    static readonly Quaternion ReferenceVehicleRotation = Quaternion.Euler(0f, -152.683f, 0f);
     public static DrivingCore Instance { get; private set; }
     public PlayerCar Player { get; private set; }
     public bool HudPaused { get; private set; }
@@ -38,11 +41,6 @@ public sealed class DrivingCore : MonoBehaviour
 
     void Start()
     {
-        // The custom suspension samples terrain in FixedUpdate. A shorter
-        // fixed step reduces the distance between samples; the vehicle also
-        // has a swept chassis guard for any remaining high-speed fall.
-        Time.fixedDeltaTime = 1f / 120f;
-        Time.maximumDeltaTime = 0.05f;
         CreateVehicleMaterials();
         StartCoroutine(StartDriving());
     }
@@ -55,21 +53,19 @@ public sealed class DrivingCore : MonoBehaviour
         Vector3 spawnBase = new Vector3(-24f, 1000f, -24f);
         float y = Physics.Raycast(spawnBase, Vector3.down, out ground, 2000f)
             ? ground.point.y + 3.2f : 3.2f;
-        GameObject carObject = PrefabRuntime.Spawn("PlayerCar", "PLAYER VEHICLE", new Vector3(-24f, y, -24f), Quaternion.identity);
+        // Use the original Cementery vehicle hierarchy. It contains the real
+        // six WheelColliders and the reference chassis instead of a generated
+        // four-wheel approximation.
+        GameObject carObject = PrefabRuntime.Spawn("RV1.0", "PLAYER VEHICLE", new Vector3(-24f, y, -24f), ReferenceVehicleRotation);
         if (carObject == null) yield break;
         Player = carObject.GetComponent<PlayerCar>();
         if (Player == null) Player = carObject.AddComponent<PlayerCar>();
+        ReferenceVehicleRuntimeBinder binder = carObject.GetComponent<ReferenceVehicleRuntimeBinder>();
+        if (binder == null) binder = carObject.AddComponent<ReferenceVehicleRuntimeBinder>();
+        binder.Bind();
+        // Binder creates CarControl first so PlayerCar's legacy physics
+        // initializer cannot overwrite RV1.0's 25000kg chassis settings.
         Player.EnsureVehiclePhysics();
-        Player.BuildVisuals(vehicleBody, vehicleGlass, vehicleTail, vehicleHead);
-        Player.BindTerrain(null);
-        RVController rvController = carObject.GetComponent<RVController>();
-        if (rvController == null) rvController = carObject.AddComponent<RVController>();
-        RVCameraController rvCamera = carObject.GetComponent<RVCameraController>();
-        if (rvCamera == null) rvCamera = carObject.AddComponent<RVCameraController>();
-        RVStateMachine rvState = carObject.GetComponent<RVStateMachine>();
-        if (rvState == null) rvState = carObject.AddComponent<RVStateMachine>();
-        rvState.controller = rvController;
-        rvState.SetState(RVState.Active);
         Camera camera = Camera.main;
         if (camera != null)
         {
@@ -103,7 +99,7 @@ public sealed class DrivingCore : MonoBehaviour
         RaycastHit ground;
         float y = Physics.Raycast(new Vector3(-24f, 1000f, -24f), Vector3.down, out ground, 2000f)
             ? ground.point.y + 3.2f : 3.2f;
-        Player.ResetCar(new Vector3(-24f, y, -24f));
+        Player.ResetCar(Player.transform.position);
         resetCooldown = 0.25f;
     }
 

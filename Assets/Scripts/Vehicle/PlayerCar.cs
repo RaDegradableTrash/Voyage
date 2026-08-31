@@ -10,11 +10,14 @@ public class PlayerCar : MonoBehaviour
     // geometry change so the open Unity editor reloads the latest assembly.
     [Header("Vehicle Model")]
     public GameObject vehicleModel;
-    [Tooltip("Vehicle.fbx uses its negative local Z side as the front axle.")]
+    [Tooltip("Legacy fallback only: Vehicle.fbx uses its negative local X side as the front axle.")]
     public bool modelFrontIsPositiveZ = false;
     [Tooltip("Used when the FBX wheelbase is along X. The current Vehicle.fbx uses negative X as its front axle.")]
-    public bool modelFrontIsPositiveX = true;
-    [Tooltip("The current modeled vehicle faces negative local Z. Rotate the visual model so vehicle +Z is its front.")]
+    // Vehicle.fbx and VehicleManual are authored with the nose toward local
+    // -X. Keep this aligned with the marked prefab so front/rear wheel roles
+    // match the reference vehicle.
+    public bool modelFrontIsPositiveX = false;
+    [Tooltip("Legacy fallback only: the authored vehicle nose is local -X.")]
     public bool modelFrontFacesNegativeZ = true;
     Rigidbody rb;
     Light leftHeadlight;
@@ -112,12 +115,20 @@ public class PlayerCar : MonoBehaviour
     public string SurfaceType { get { return surfaceType; } }
     public float SurfaceGrip { get { return surfaceGripValue; } }
     public string DriveMode { get { return (lowRange ? "LOW" : "HIGH") + (differentialLock ? " / LOCK" : " / OPEN"); } }
-    public float speedKmh { get { return terrainFollower != null ? terrainFollower.CurrentVelocity.magnitude * 3.6f : (rb == null ? 0 : rb.linearVelocity.magnitude * 3.6f); } }
-    public float LateralSpeedKmh { get { Vector3 velocity = terrainFollower != null ? terrainFollower.CurrentVelocity : (rb == null ? Vector3.zero : rb.linearVelocity); return Mathf.Abs(transform.InverseTransformDirection(velocity).z) * 3.6f; } }
+    public float speedKmh { get { return terrainFollower != null && terrainFollower.enabled ? terrainFollower.CurrentVelocity.magnitude * 3.6f : (rb == null ? 0 : rb.linearVelocity.magnitude * 3.6f); } }
+    public float LateralSpeedKmh { get { Vector3 velocity = terrainFollower != null && terrainFollower.enabled ? terrainFollower.CurrentVelocity : (rb == null ? Vector3.zero : rb.linearVelocity); return Mathf.Abs(transform.InverseTransformDirection(velocity).z) * 3.6f; } }
     public float SteeringAmount { get { return Mathf.Abs(steer); } }
     public void EnsureVehiclePhysics()
     {
         rb = GetComponent<Rigidbody>();
+        // RV1.0 already owns the reference Rigidbody configuration. This
+        // adapter must never replace its mass, damping, interpolation or
+        // rotation constraints with the retired raycast-car settings.
+        if (GetComponent<CarControl>() != null || GetComponent<ReferenceVehicleRuntimeBinder>() != null)
+        {
+            if (rb == null) rb = gameObject.AddComponent<Rigidbody>();
+            return;
+        }
         if (rb == null) rb = gameObject.AddComponent<Rigidbody>();
         rb.mass = 1000f;
         rb.isKinematic = false;
@@ -139,6 +150,7 @@ public class PlayerCar : MonoBehaviour
     }
     public void BindTerrain(Terrain terrain)
     {
+        if (GetComponent<CarControl>() != null) return;
         if (terrainFollower == null) terrainFollower = GetComponent<VehicleTerrainFollower>();
         if (terrainFollower == null) terrainFollower = gameObject.AddComponent<VehicleTerrainFollower>();
         terrainFollower.BindTerrain(terrain);
@@ -166,8 +178,11 @@ public class PlayerCar : MonoBehaviour
         if (visualsBuilt) return;
         EnsureVehiclePhysics();
         terrainFollower = GetComponent<VehicleTerrainFollower>();
-        if (terrainFollower == null) terrainFollower = gameObject.AddComponent<VehicleTerrainFollower>();
-        terrainFollower.enabled = true;
+        if (GetComponent<CarControl>() == null)
+        {
+            if (terrainFollower == null) terrainFollower = gameObject.AddComponent<VehicleTerrainFollower>();
+            terrainFollower.enabled = true;
+        }
         ResolveVehicleModelReference();
         wheels.Clear();
         wheelIsFront.Clear();
@@ -299,7 +314,7 @@ public class PlayerCar : MonoBehaviour
                 maxZ = Mathf.Max(maxZ, p.z);
             }
             wheelZMid /= wheelTransforms.Count;
-            // VehicleManual is authored with local X+ as the front. Do not
+            // VehicleManual is authored with local X- as the front. Do not
             // infer the longitudinal axis from the model's overall bounds:
             // body proportions and imported child rotations can make Z look
             // longer and silently swap front/rear behavior.
@@ -438,7 +453,7 @@ public class PlayerCar : MonoBehaviour
 
         hasModelAxleLayout = true;
         modelForwardAlongX = true;
-        modelFrontIsPositiveAxis = true;
+        modelFrontIsPositiveAxis = false;
         modelAxleMidZ = 0f;
         if (terrainFollower != null)
             terrainFollower.ConfigureWheelTransforms(wheels.ToArray(), wheelIsFront.ToArray());
@@ -882,6 +897,7 @@ public class PlayerCar : MonoBehaviour
     }
     void FixedUpdate()
     {
+        if (GetComponent<CarControl>() != null) return;
         RunDrivingControl();
         return;
     }
@@ -891,7 +907,7 @@ public class PlayerCar : MonoBehaviour
         // Physics runs at a fixed rate, but wheel visuals must be sampled at
         // the render rate. Updating them only in FixedUpdate makes the tires
         // visibly snap from one suspension sample to the next.
-        if (visualsBuilt && terrainFollower != null)
+        if (visualsBuilt && terrainFollower != null && GetComponent<CarControl>() == null)
             UpdateWheelVisuals();
     }
 
