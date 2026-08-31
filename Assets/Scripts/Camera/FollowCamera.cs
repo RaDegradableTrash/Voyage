@@ -5,6 +5,7 @@ using UnityEngine.InputSystem;
 /// Original vehicle camera framing with an independent orbit around the vehicle.
 /// Camera yaw/pitch never feeds back into vehicle input or vehicle rotation.
 /// </summary>
+[DefaultExecutionOrder(1000)]
 public class FollowCamera : MonoBehaviour
 {
     [Header("Target and distance")]
@@ -53,6 +54,7 @@ public class FollowCamera : MonoBehaviour
     PlayerCar targetCar;
     float baseFov = 67f;
     bool reportedPose;
+    readonly RaycastHit[] cameraCollisionHits = new RaycastHit[32];
 
     public bool HoodView { get { return hoodView; } }
     public float CameraYaw { get { return desiredYaw; } }
@@ -84,6 +86,24 @@ public class FollowCamera : MonoBehaviour
     {
         target = value;
         targetCar = target != null ? target.GetComponent<PlayerCar>() : null;
+        if (target != null && target.GetComponent<ReferenceVehicleRuntimeBinder>() != null)
+        {
+            // FollowCamera runs in LateUpdate while the RV1.0 is moved by
+            // WheelColliders in FixedUpdate. Interpolation prevents the
+            // third-person camera from sampling the same physics pose for
+            // several render frames, which appears as camera judder.
+            Rigidbody targetBody = target.GetComponent<Rigidbody>();
+            if (targetBody != null)
+                targetBody.interpolation = RigidbodyInterpolation.Interpolate;
+
+            // RV1.0 is the original ~11.5m chassis; the old Voyage framing
+            // was tuned for the small replacement car and clipped the RV roof.
+            distance = 18f;
+            targetHeight = 2.35f;
+            minDistance = 8f;
+            maxDistance = 40f;
+            defaultPitch = 24f;
+        }
         ResetOrbitIfNeeded();
         if (target != null && !onFoot)
             if (diagnosticLogging) Debug.Log("CAMERA SYSTEM // original FollowCamera active on " + name + " target=" + target.name);
@@ -265,17 +285,24 @@ public class FollowCamera : MonoBehaviour
         float length = ray.magnitude;
         if (length < 0.01f) return desired;
 
-        RaycastHit[] hits = Physics.SphereCastAll(pivot, cameraCollisionRadius, ray / length, length, cameraCollisionLayers, QueryTriggerInteraction.Ignore);
+        int hitCount = Physics.SphereCastNonAlloc(
+            pivot,
+            cameraCollisionRadius,
+            ray / length,
+            cameraCollisionHits,
+            length,
+            cameraCollisionLayers,
+            QueryTriggerInteraction.Ignore);
         float nearest = length;
-        for (int i = 0; i < hits.Length; i++)
+        for (int i = 0; i < hitCount; i++)
         {
-            Transform hitTransform = hits[i].collider != null ? hits[i].collider.transform : null;
+            Transform hitTransform = cameraCollisionHits[i].collider != null ? cameraCollisionHits[i].collider.transform : null;
             if (hitTransform == target || (hitTransform != null && hitTransform.IsChildOf(target))) continue;
 
             // A ground triangle below the vehicle is not a camera obstruction. Treating
             // it as one collapses the original rear camera into the vehicle or terrain.
-            if (hits[i].normal.y > 0.55f && hits[i].point.y <= pivot.y + 0.2f) continue;
-            nearest = Mathf.Min(nearest, hits[i].distance);
+            if (cameraCollisionHits[i].normal.y > 0.55f && cameraCollisionHits[i].point.y <= pivot.y + 0.2f) continue;
+            nearest = Mathf.Min(nearest, cameraCollisionHits[i].distance);
         }
 
         float targetCollisionDistance = nearest < length ? Mathf.Max(1.5f, nearest - cameraCollisionPadding) : length;
