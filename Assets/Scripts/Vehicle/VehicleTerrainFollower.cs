@@ -17,6 +17,9 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public float highSpeedSteeringLimit = 0.75f;
     public float airDrag = 0.12f;
     public float angularDamping = 0.35f;
+    public float steeringResponse = 8f;
+    public float lateralVelocityResponse = 18f;
+    public float lowSpeedSteeringSpeed = 2.5f;
 
     [Header("Suspension")]
     public float suspensionLength = 0.62f;
@@ -24,16 +27,20 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public float maxExtension = 0.95f;
     public float springStrength = 42000f;
     public float damper = 11000f;
-    public float landingBounceStrength = 0.10f;
+    // Raycast suspension already supplies the landing support. Extra bounce
+    // makes a turning car launch when contact changes between terrain tiles.
+    public float landingBounceStrength = 0f;
     public float tireRadius = 0.38f;
     public float wheelGroundClearance = 0.045f;
-    public float suspensionVisualSmoothTime = 0.14f;
 
     [Header("Tires")]
     public float wheelBase = 2.84f;
     public float trackWidth = 1.84f;
-    public float tireGrip = 1f;
-    public float lateralFriction = 1.5f;
+    public float tireGrip = 1.1f;
+    // Strong lateral response is intentional: this is an arcade-style
+    // raycast tire, so it must cancel body side velocity before the vehicle
+    // feels like it is skating across the ground.
+    public float lateralFriction = 8f;
     public LayerMask groundLayers = ~0;
     public float groundDetectionDistance = 32f;
 
@@ -55,8 +62,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         public Vector3 tireForce;
         public Vector3 contactPoint;
         public Vector3 groundNormal;
-        [System.NonSerialized] public float visualTravel;
-        [System.NonSerialized] public bool hasVisualTravel;
         [System.NonSerialized] public bool contactFresh;
         [System.NonSerialized] public bool landingContact;
     }
@@ -169,7 +174,11 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         if (radiusSum > 0.01f) tireRadius = Mathf.Clamp(radiusSum / 4f, 0.15f, 2.5f);
         wheelBase = Mathf.Abs(wheels[0].localHardpoint.z - wheels[2].localHardpoint.z);
         trackWidth = Mathf.Abs(wheels[0].localHardpoint.x - wheels[1].localHardpoint.x);
-        if (frontAxisIsX) wheelBase = Mathf.Abs(wheels[0].localHardpoint.x - wheels[2].localHardpoint.x);
+        if (frontAxisIsX)
+        {
+            wheelBase = Mathf.Abs(wheels[0].localHardpoint.x - wheels[2].localHardpoint.x);
+            trackWidth = Mathf.Abs(wheels[0].localHardpoint.z - wheels[1].localHardpoint.z);
+        }
         if (body != null) body.centerOfMass = centerOfMass;
     }
 
@@ -230,12 +239,44 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         SnapToTerrainNow();
     }
 
+    // Keep compatibility with older bootstrap/prefab assemblies while all
+    // current callers use BindTerrain.
+    public void SetTerrain(Terrain terrain)
+    {
+        BindTerrain(terrain);
+    }
+
     void FixedUpdate()
     {
         SampleWheels();
+        ResolveWheelPenetration();
         ApplyWheelForces();
         ApplyDamping();
         UpdateState();
+    }
+
+    void ResolveWheelPenetration()
+    {
+        // This vehicle intentionally has no chassis Collider. Forces alone
+        // cannot undo a deep penetration after a fast terrain step, so keep
+        // the tire center above the maximum suspension-compression plane.
+        float deepest = 0f;
+        for (int i = 0; i < wheels.Length; i++)
+        {
+            WheelData wheel = wheels[i];
+            if (wheel == null || !wheel.grounded) continue;
+            Vector3 origin = transform.TransformPoint(wheel.localHardpoint);
+            float distance = origin.y - wheel.contactPoint.y;
+            float minimumDistance = suspensionLength - maxCompression + tireRadius;
+            deepest = Mathf.Max(deepest, minimumDistance - distance);
+        }
+
+        if (deepest <= 0f) return;
+        float correction = Mathf.Min(deepest, 0.35f);
+        body.position += Vector3.up * correction;
+        if (body.linearVelocity.y < 0f) body.linearVelocity = new Vector3(
+            body.linearVelocity.x, 0f, body.linearVelocity.z);
+        Physics.SyncTransforms();
     }
 
     void SampleWheels()
@@ -254,8 +295,11 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             wheel.tireForce = Vector3.zero;
 
             Vector3 castOrigin = origin + Vector3.up * groundDetectionDistance;
-            int hitCount = Physics.RaycastNonAlloc(castOrigin, Vector3.down, raycastBuffer,
-                castLength + groundDetectionDistance, groundLayers, QueryTriggerInteraction.Ignore);
+            // Sweep a small tire area so a generated-mesh seam cannot make a
+            // wheel lose contact for one frame.
+            int hitCount = Physics.SphereCastNonAlloc(castOrigin, tireRadius * 0.35f,
+                Vector3.down, raycastBuffer, castLength + groundDetectionDistance,
+                groundLayers, QueryTriggerInteraction.Ignore);
             float nearest = float.MaxValue;
             for (int h = 0; h < hitCount; h++)
             {
@@ -323,20 +367,10 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     {
         int grounded = GroundedCount;
         if (grounded == 0) return;
-        float totalLoad = 0f;
-        for (int i = 0; i < wheels.Length; i++)
-        {
-            WheelData wheel = wheels[i];
-            if (wheel.grounded && wheel.contactFresh)
-                totalLoad += Mathf.Max(0f, wheel.suspensionTravel) * springStrength;
-        }
 
         float speed = Mathf.Abs(Vector3.Dot(body.linearVelocity, ForwardDirection));
         float steerAngle = Mathf.Lerp(steeringAngle, steeringAngle * highSpeedSteeringLimit,
             Mathf.InverseLerp(4f, maxSpeed, speed));
-        float rolloverLimit = body.mass * Physics.gravity.magnitude * trackWidth
-            / (2f * Mathf.Max(0.35f, Mathf.Abs(centerOfMass.y))) * 0.9f;
-
         for (int i = 0; i < wheels.Length; i++)
         {
             WheelData wheel = wheels[i];
@@ -345,16 +379,33 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             Vector3 pointVelocity = body.GetPointVelocity(wheel.contactPoint);
             float spring = Mathf.Max(0f, wheel.suspensionTravel) * springStrength;
             float damping = spring > 0f ? -Vector3.Dot(pointVelocity, up) * damper : 0f;
-            float supportLimit = body.mass * Physics.gravity.magnitude * 3f / grounded;
-            wheel.suspensionForce = Mathf.Clamp(spring + damping, 0f, supportLimit);
-            body.AddForceAtPosition(up * wheel.suspensionForce, wheel.contactPoint, ForceMode.Force);
+            // On a slope, a force equal to the vehicle weight has a smaller
+            // vertical component because it follows the surface normal. Scale
+            // the per-wheel load by the average normal's vertical component
+            // so gravity cannot slowly push the body through the terrain.
+            // The flat-ground limit remains exactly one vehicle weight.
+            float slopeSupportScale = 1f / Mathf.Max(0.35f, Vector3.Dot(AverageNormal, Vector3.up));
+            float supportLimit = body.mass * Physics.gravity.magnitude * slopeSupportScale / grounded;
+            // A raycast wheel has no Collider contact normal. At full
+            // extension the spring term is zero even though the ray has a
+            // valid ground contact, which previously made both drive and
+            // steering traction collapse to zero while GroundedCount still
+            // reported four wheels. Give every live wheel its share of the
+            // vehicle weight, then add measured suspension load on top.
+            float staticLoad = body.mass * Physics.gravity.magnitude * slopeSupportScale / grounded;
+            wheel.suspensionForce = Mathf.Clamp(
+                Mathf.Max(staticLoad, spring + damping), 0f, supportLimit);
+            // Apply the arcade support at the rigidbody center. Contact-point
+            // application creates roll torque when one ray changes state,
+            // which makes the other wheels alternately lose and regain grip.
+            body.AddForce(up * wheel.suspensionForce, ForceMode.Force);
 
             if (wheel.landingContact && landingBounceStrength > 0f)
             {
                 float impactSpeed = Mathf.Max(0f, -Vector3.Dot(pointVelocity, up));
                 if (impactSpeed > 0.5f)
-                    body.AddForceAtPosition(up * body.mass * impactSpeed * landingBounceStrength,
-                        wheel.contactPoint, ForceMode.Impulse);
+                    body.AddForce(up * body.mass * impactSpeed * landingBounceStrength,
+                        ForceMode.Impulse);
             }
 
             Vector3 forward = Vector3.ProjectOnPlane(ForwardDirection, up);
@@ -372,23 +423,31 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             // the total requested drive approximately unchanged by shifting
             // the unused front share to the rear tires.
             float steeringLoad = Mathf.Abs(requestedSteer);
-            float frontDriveScale = Mathf.Lerp(1f, 0.35f, steeringLoad);
+            float frontDriveScale = Mathf.Lerp(1f, 0.15f, steeringLoad);
             drive *= wheel.isFront ? frontDriveScale : 2f - frontDriveScale;
             float brakeInput = handbrake ? 1f : requestedBrake;
             float brake = Mathf.Clamp(-forwardSpeed * brakeForce * brakeInput,
                 -brakeForce * brakeInput, brakeForce * brakeInput);
             float normalLoad = Mathf.Max(0f, wheel.suspensionForce);
             float tractionLimit = normalLoad * tireGrip * requestedTraction;
-            float loadShare = totalLoad > 1f ? normalLoad / totalLoad : 1f / grounded;
-            float lateralLimit = Mathf.Min(tractionLimit, rolloverLimit * loadShare);
-            float longitudinal = Mathf.Clamp(drive + brake, -tractionLimit, tractionLimit);
-            float availableLateral = Mathf.Sqrt(Mathf.Max(0f,
-                tractionLimit * tractionLimit - longitudinal * longitudinal));
+            // Reserve the tire budget for correcting side slip first. The
+            // previous order let W consume nearly all traction, leaving the
+            // front tires with no cornering force during a turn. Do not apply
+            // the old per-wheel rollover limit here: it divided the available
+            // lateral force by loadShare once more (about 0.25 per wheel on a
+            // flat four-wheel stance), making steering almost ineffective.
+            float lateralLimit = tractionLimit;
             float lateral = Mathf.Clamp(-sideSpeed * body.mass * lateralFriction,
-                -Mathf.Min(lateralLimit, availableLateral),
-                Mathf.Min(lateralLimit, availableLateral));
+                -lateralLimit, lateralLimit);
+            // Keep forward acceleration independent from lateral correction.
+            // A friction-circle clamp here made minor side velocity consume
+            // nearly all of the available W drive.
+            float longitudinal = Mathf.Clamp(drive + brake, -acceleration, acceleration);
             wheel.tireForce = forward * longitudinal + side * lateral;
-            body.AddForceAtPosition(wheel.tireForce, wheel.contactPoint, ForceMode.Force);
+            // Keep tire forces torque-free as well. Steering yaw is controlled
+            // explicitly below, so wheel contact offsets must not lift a
+            // single corner of this raycast-only vehicle.
+            body.AddForce(wheel.tireForce, ForceMode.Force);
 
             if (debugDraw)
             {
@@ -413,8 +472,44 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
 
         Vector3 forward = Vector3.ProjectOnPlane(ForwardDirection, up);
         Vector3 velocity = Vector3.ProjectOnPlane(body.linearVelocity, up);
+        if (forward.sqrMagnitude > 0.001f)
+        {
+            forward.Normalize();
+            // This is an arcade raycast vehicle, not a WheelCollider setup.
+            // Explicitly remove the component of velocity perpendicular to
+            // the car's current heading so the body cannot keep skating after
+            // the steering input is released or while only two tires are
+            // temporarily touching an uneven terrain tile.
+            Vector3 lateralVelocity = velocity - forward * Vector3.Dot(velocity, forward);
+            float lateralBlend = 1f - Mathf.Exp(-lateralVelocityResponse * Time.fixedDeltaTime);
+            body.linearVelocity -= lateralVelocity * lateralBlend;
+            velocity = Vector3.ProjectOnPlane(body.linearVelocity, up);
+            float forwardSpeed = Mathf.Abs(Vector3.Dot(velocity, forward));
+            // Steering authority must not disappear when the vehicle is
+            // crawling or is temporarily supported by only two raycast
+            // wheels. Without a floor, desiredYawRate is almost zero and a
+            // valid A/D input looks broken until the car reaches speed.
+            float steeringSpeed = Mathf.Max(forwardSpeed, lowSpeedSteeringSpeed);
+            float effectiveAngle = Mathf.Lerp(steeringAngle,
+                steeringAngle * highSpeedSteeringLimit,
+                Mathf.InverseLerp(4f, maxSpeed, forwardSpeed)) * Mathf.Deg2Rad;
+            float desiredYawRate = requestedSteer * steeringSpeed
+                * Mathf.Tan(effectiveAngle) / Mathf.Max(0.5f, wheelBase);
+            desiredYawRate = Mathf.Clamp(desiredYawRate, -3.5f, 3.5f);
+
+            // Tire forces remove lateral slip. Follow the requested yaw rate
+            // directly because this raycast vehicle has no native wheel
+            // contact constraint whose steering torque can be relied on.
+            // Using MoveTowards here avoids requiring visible side slip before
+            // the body can begin turning, while preserving roll and pitch.
+            float yawBlend = 1f - Mathf.Exp(-steeringResponse * Time.fixedDeltaTime);
+            Vector3 nonYawAngularVelocity = body.angularVelocity - up * yawRate;
+            float correctedYawRate = Mathf.Lerp(yawRate, desiredYawRate, yawBlend);
+            body.angularVelocity = nonYawAngularVelocity + up * correctedYawRate;
+        }
         if (Mathf.Abs(requestedSteer) < 0.01f && velocity.sqrMagnitude > 4f
-            && velocity.sqrMagnitude > 0.001f && Vector3.Dot(velocity.normalized, forward.normalized) > 0.96f)
+            && forward.sqrMagnitude > 0.001f
+            && Vector3.Dot(velocity.normalized, forward.normalized) > 0.96f)
         {
             float headingError = Vector3.SignedAngle(forward, velocity, up) * Mathf.Deg2Rad;
             body.AddTorque(up * headingError * body.mass * 0.45f, ForceMode.Force);
@@ -458,19 +553,6 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         return true;
     }
 
-    public Vector3 GetWheelVisualPosition(int index)
-    {
-        if (index < 0 || index >= wheels.Length || wheels[index] == null) return transform.position;
-        WheelData wheel = wheels[index];
-        float target = wheel.grounded ? Mathf.Clamp(wheel.suspensionTravel, -maxExtension, maxCompression) : -maxExtension;
-        float blend = wheel.hasVisualTravel
-            ? 1f - Mathf.Exp(-Time.deltaTime / Mathf.Max(0.01f, suspensionVisualSmoothTime)) : 1f;
-        wheel.visualTravel = wheel.hasVisualTravel ? Mathf.Lerp(wheel.visualTravel, target, blend) : target;
-        wheel.hasVisualTravel = true;
-        return transform.TransformPoint(wheel.localHardpoint - Vector3.up *
-            (suspensionLength - Mathf.Clamp(wheel.visualTravel, -maxExtension, maxCompression)));
-    }
-
     public void StopImmediately()
     {
         if (body != null)
@@ -502,8 +584,9 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         {
             Vector3 origin = transform.TransformPoint(wheels[i].localHardpoint);
             Vector3 castOrigin = origin + Vector3.up * groundDetectionDistance;
-            int hitCount = Physics.RaycastNonAlloc(castOrigin, Vector3.down, raycastBuffer,
-                groundDetectionDistance * 2f, groundLayers, QueryTriggerInteraction.Ignore);
+            int hitCount = Physics.SphereCastNonAlloc(castOrigin, tireRadius * 0.35f,
+                Vector3.down, raycastBuffer, groundDetectionDistance * 2f,
+                groundLayers, QueryTriggerInteraction.Ignore);
             float nearest = float.MaxValue;
             Vector3 hitPoint = Vector3.zero;
             for (int h = 0; h < hitCount; h++)

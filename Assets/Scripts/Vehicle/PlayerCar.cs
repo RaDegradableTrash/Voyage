@@ -68,6 +68,11 @@ public class PlayerCar : MonoBehaviour
     bool visualsBuilt;
     bool wheelRuntimeGeometryLogged;
     bool driveCommandLogged;
+    Vector2 cachedPadStick;
+    float cachedKeyboardThrottle;
+    float cachedKeyboardSteer;
+    bool cachedBoost;
+    bool cachedHandbrake;
     [Header("Diagnostics")]
     public bool diagnosticLogging = false;
     string surfaceType = "GROUND";
@@ -75,7 +80,6 @@ public class PlayerCar : MonoBehaviour
     float externalSpeedMultiplier = 1f;
     float surfaceProbeClock;
     bool grounded;
-    Vector3 groundNormal = Vector3.up;
     bool cachedAirborne;
     float nextAirborneProbe;
     readonly RaycastHit[] airborneHits = new RaycastHit[16];
@@ -109,17 +113,6 @@ public class PlayerCar : MonoBehaviour
     public float SteeringAmount { get { return Mathf.Abs(steer); } }
     public void EnsureVehiclePhysics()
     {
-        BoxCollider body = GetComponent<BoxCollider>();
-        if (body == null) body = gameObject.AddComponent<BoxCollider>();
-        // VehicleManual and the wheel solver use local X as forward.
-        body.size = new Vector3(4.3f, 0.8f, 2.1f);
-        body.center = new Vector3(0f, 0.15f, 0f);
-        // Keep the chassis as a real collider. The wheel solver provides the
-        // suspension forces, but a trigger chassis has no collision response;
-        // when the raycast suspension briefly misses, the whole car sinks
-        // through the terrain and cannot recover.
-        body.isTrigger = false;
-
         rb = GetComponent<Rigidbody>();
         if (rb == null) rb = gameObject.AddComponent<Rigidbody>();
         rb.mass = 1000f;
@@ -133,7 +126,12 @@ public class PlayerCar : MonoBehaviour
         rb.solverIterations = 12;
         rb.solverVelocityIterations = 8;
         rb.sleepThreshold = 0.005f;
-        rb.constraints = RigidbodyConstraints.None;
+        // The raycast suspension has no physical wheel joints to balance roll
+        // and pitch. Letting the rigidbody rotate on X/Z makes one tire lose
+        // contact, then the next suspension step kicks it back down. Keep
+        // only yaw free; steering remains fully controlled by the vehicle
+        // solver and the four wheel rays stay on one stable chassis plane.
+        rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
     }
     public void BindTerrain(Terrain terrain)
     {
@@ -356,25 +354,6 @@ public class PlayerCar : MonoBehaviour
             pristineBodyColor = bodyMaterial.color;
             Bounds bounds = renderers[0].bounds;
             for (int i = 1; i < renderers.Length; i++) bounds.Encapsulate(renderers[i].bounds);
-            BoxCollider rootBox = GetComponent<BoxCollider>();
-            if (rootBox != null)
-            {
-                Bounds chassisBounds = new Bounds();
-                bool hasChassisBounds = false;
-                for (int i = 0; i < renderers.Length; i++)
-                {
-                    if (IsWheelPart(renderers[i].transform)) continue;
-                    if (!hasChassisBounds) { chassisBounds = renderers[i].bounds; hasChassisBounds = true; }
-                    else chassisBounds.Encapsulate(renderers[i].bounds);
-                }
-                if (hasChassisBounds)
-                {
-                    rootBox.enabled = true;
-                    rootBox.center = transform.InverseTransformPoint(chassisBounds.center);
-                    rootBox.size = chassisBounds.size + Vector3.one * 0.04f;
-                }
-            }
-            KeepBodyColliderAboveTires();
             AddModelMeshColliders(model);
         }
     }
@@ -470,56 +449,7 @@ public class PlayerCar : MonoBehaviour
 
         bodyMaterial = renderers[0].material;
         pristineBodyColor = bodyMaterial.color;
-        BoxCollider rootBox = GetComponent<BoxCollider>();
-        if (rootBox != null)
-        {
-            Bounds chassisBounds = new Bounds();
-            bool hasChassisBounds = false;
-            for (int i = 0; i < renderers.Length; i++)
-            {
-                if (IsWheelPart(renderers[i].transform)) continue;
-                if (!hasChassisBounds) { chassisBounds = renderers[i].bounds; hasChassisBounds = true; }
-                else chassisBounds.Encapsulate(renderers[i].bounds);
-            }
-            if (hasChassisBounds)
-            {
-                rootBox.enabled = true;
-                rootBox.center = transform.InverseTransformPoint(chassisBounds.center);
-                rootBox.size = chassisBounds.size + Vector3.one * 0.04f;
-            }
-        }
-        KeepBodyColliderAboveTires();
         AddModelMeshColliders(model);
-    }
-
-    void KeepBodyColliderAboveTires()
-    {
-        BoxCollider body = GetComponent<BoxCollider>();
-        if (body == null || terrainFollower == null || wheels.Count < 4) return;
-
-        float highestTireBottom = float.MinValue;
-        for (int i = 0; i < wheels.Count; i++)
-        {
-            if (wheels[i] == null) continue;
-            float wheelCenterY = transform.InverseTransformPoint(wheels[i].position).y;
-            highestTireBottom = Mathf.Max(highestTireBottom, wheelCenterY - Mathf.Max(0.05f, terrainFollower.tireRadius));
-        }
-        if (highestTireBottom == float.MinValue) return;
-
-        // The chassis must not become a second support surface below the
-        // tires. Raise only the bottom of the root body box; the suspension
-        // then supports the car through the tires as intended.
-        // Use the highest tire bottom, not the lowest one. On a slope this
-        // keeps the solid chassis above every wheel contact and prevents it
-        // from becoming an unintended second support point.
-        float safeBottom = highestTireBottom + 0.22f;
-        float currentBottom = body.center.y - body.size.y * 0.5f;
-        if (currentBottom < safeBottom)
-        {
-            float top = body.center.y + body.size.y * 0.5f;
-            body.center = new Vector3(body.center.x, (safeBottom + top) * 0.5f, body.center.z);
-            body.size = new Vector3(body.size.x, Mathf.Max(0.1f, top - safeBottom), body.size.z);
-        }
     }
 
     void DisableEmbeddedCameras(GameObject model)
@@ -775,8 +705,6 @@ public class PlayerCar : MonoBehaviour
                 bounceCombine = PhysicsMaterialCombine.Minimum
             };
         }
-        BoxCollider rootBox = GetComponent<BoxCollider>();
-        if (rootBox != null) rootBox.sharedMaterial = vehicleBodyPhysicsMaterial;
         MeshFilter[] meshes = model.GetComponentsInChildren<MeshFilter>(true);
         int colliderCount = 0;
         int wheelColliderCount = 0;
@@ -786,9 +714,8 @@ public class PlayerCar : MonoBehaviour
             if (meshFilter.sharedMesh == null) continue;
             MeshCollider meshCollider = meshFilter.GetComponent<MeshCollider>();
             if (meshCollider == null) meshCollider = meshFilter.gameObject.AddComponent<MeshCollider>();
-            // Use only the root chassis box for body collision. Imported mesh
-            // colliders can touch the terrain before the tire suspension does,
-            // making the body press the tires below the surface.
+            // The vehicle is raycast-only; imported mesh colliders must never
+            // become a second ground response.
             meshCollider.enabled = false;
             if (IsWheelPart(meshFilter.transform)) wheelColliderCount++;
             else colliderCount++;
@@ -930,6 +857,25 @@ public class PlayerCar : MonoBehaviour
         if (leftHeadlight != null) leftHeadlight.enabled = enabled;
         if (rightHeadlight != null) rightHeadlight.enabled = enabled;
     }
+    void Update()
+    {
+        // Read devices on the render/input update. FixedUpdate can run more
+        // than once per rendered frame, and polling keyboard state only there
+        // can make steering appear intermittent or absent with the new input
+        // backend.
+        cachedPadStick = Gamepad.current != null
+            ? Gamepad.current.leftStick.ReadValue() : Vector2.zero;
+        cachedKeyboardThrottle =
+            (ReadKey(KeyCode.W) || ReadKey(KeyCode.UpArrow) ? 1f : 0f)
+            - (ReadKey(KeyCode.S) || ReadKey(KeyCode.DownArrow) ? 1f : 0f);
+        cachedKeyboardSteer =
+            (ReadKey(KeyCode.D) || ReadKey(KeyCode.RightArrow) ? 1f : 0f)
+            - (ReadKey(KeyCode.A) || ReadKey(KeyCode.LeftArrow) ? 1f : 0f);
+        cachedBoost = ReadKey(KeyCode.LeftShift) || ReadKey(KeyCode.RightShift)
+            || (Gamepad.current != null && Gamepad.current.rightTrigger.isPressed);
+        cachedHandbrake = ReadKey(KeyCode.Space)
+            || (Gamepad.current != null && Gamepad.current.leftShoulder.isPressed);
+    }
     void FixedUpdate()
     {
         RunDrivingControl();
@@ -950,13 +896,13 @@ public class PlayerCar : MonoBehaviour
         if (terrainFollower == null) return;
 
 
-        Vector2 pad = Gamepad.current != null ? Gamepad.current.leftStick.ReadValue() : Vector2.zero;
-        float keyboardThrottle = (ReadKey(KeyCode.W) || ReadKey(KeyCode.UpArrow) ? 1f : 0f) - (ReadKey(KeyCode.S) || ReadKey(KeyCode.DownArrow) ? 1f : 0f);
-        float keyboardSteer = (ReadKey(KeyCode.D) || ReadKey(KeyCode.RightArrow) ? 1f : 0f) - (ReadKey(KeyCode.A) || ReadKey(KeyCode.LeftArrow) ? 1f : 0f);
+        Vector2 pad = cachedPadStick;
+        float keyboardThrottle = cachedKeyboardThrottle;
+        float keyboardSteer = cachedKeyboardSteer;
         float throttle = Mathf.Abs(pad.y) > 0.12f ? pad.y : keyboardThrottle;
         float inputSteer = Mathf.Abs(pad.x) > 0.12f ? pad.x : keyboardSteer;
-        bool boost = ReadKey(KeyCode.LeftShift) || ReadKey(KeyCode.RightShift) || (Gamepad.current != null && Gamepad.current.rightTrigger.isPressed);
-        bool handbrake = ReadKey(KeyCode.Space) || (Gamepad.current != null && Gamepad.current.leftShoulder.isPressed);
+        bool boost = cachedBoost;
+        bool handbrake = cachedHandbrake;
 
         if (!controlEnabled)
         {
@@ -1013,7 +959,6 @@ public class PlayerCar : MonoBehaviour
         steer = Mathf.Clamp(inputSteer + damageSteerBias * suspensionSteer, -1f, 1f);
         throttleLoad = Mathf.Abs(throttle) * (boost ? 1.5f : 1f);
         grounded = terrainFollower.IsGrounded;
-        groundNormal = terrainFollower.GroundNormal;
         // Keep the driver's requested heading stable across terrain triangles.
         // Projecting onto the instantaneous contact normal made the target
         // velocity rotate whenever a wheel found a new triangle, causing
@@ -1038,7 +983,7 @@ public class PlayerCar : MonoBehaviour
 
         float lateralSpeed = transform.InverseTransformDirection(velocity).z;
         UpdateTailLights(throttle, forwardSpeed);
-        UpdateBodyVisuals(throttle, inputSteer, lateralSpeed);
+        UpdateBodyVisuals(throttle, lateralSpeed);
         UpdateEngineAudio(throttle, forwardSpeed);
         UpdateTerrainAudio();
     }
@@ -1077,7 +1022,7 @@ public class PlayerCar : MonoBehaviour
         }
     }
 
-    void UpdateBodyVisuals(float throttle, float inputSteer, float lateralSpeed)
+    void UpdateBodyVisuals(float throttle, float lateralSpeed)
     {
         if (visualBody == null) return;
         float targetMud = isInMud ? 1f : 0f;
@@ -1085,22 +1030,6 @@ public class PlayerCar : MonoBehaviour
         mudVisualLevel = Mathf.MoveTowards(mudVisualLevel, targetMud, Time.fixedDeltaTime * (targetMud > mudVisualLevel ? 0.22f : cleanRate));
         if (bodyMaterial != null) bodyMaterial.color = Color.Lerp(pristineBodyColor, new Color(0.19f, 0.095f, 0.035f), mudVisualLevel);
         UpdateTerrainFeedbackVisuals(throttle, lateralSpeed);
-        // Calculate visual pitch and roll from terrain normal and driving forces.
-        float pitchAngle = 0f;
-        float rollAngle = 0f;
-        if (terrainFollower != null && terrainFollower.IsGrounded)
-        {
-            Vector3 localNormal = transform.InverseTransformDirection(groundNormal);
-            pitchAngle = -localNormal.x * 22f - throttle * 3.5f;
-            rollAngle = localNormal.z * 22f + inputSteer * 4.5f;
-        }
-        Quaternion bodyTarget = Quaternion.Euler(rollAngle, 0f, pitchAngle);
-        visualBody.localRotation = Quaternion.Slerp(visualBody.localRotation, bodyTarget, Time.fixedDeltaTime * 8f);
-        if (visualCabin != null)
-        {
-            Quaternion cabinTarget = Quaternion.Euler(rollAngle * 1.15f, 0f, pitchAngle * 1.15f);
-            visualCabin.localRotation = Quaternion.Slerp(visualCabin.localRotation, cabinTarget, Time.fixedDeltaTime * 5f);
-        }
     }
 
     void UpdateTerrainFeedbackVisuals(float throttle, float lateralSpeed)
@@ -1170,11 +1099,6 @@ public class PlayerCar : MonoBehaviour
         {
             var wheel = wheels[i];
             if (wheel == null) continue;
-            // Apply only the filtered suspension travel along the chassis up
-            // axis. The pivot remains centered on the wheel Transform origin;
-            // raw terrain contact points never move it sideways.
-            if (terrainFollower != null && i < 4)
-                wheel.position = terrainFollower.GetWheelVisualPosition(i);
             if (!wheelRuntimeGeometryLogged && usingVehicleModel)
             {
                 Renderer wheelRenderer = wheel.GetComponentInChildren<Renderer>(true);
