@@ -29,6 +29,7 @@ public sealed class DrivingCore : MonoBehaviour
     Material vehicleTail;
     Material vehicleHead;
     TerrainTileIndex terrainIndex;
+    GrassInteractionSystem grassInteraction;
     readonly Dictionary<Vector2Int, GameObject> loadedTerrainTiles = new Dictionary<Vector2Int, GameObject>();
     Vector2Int streamedCenter;
     bool hasStreamedCenter;
@@ -36,6 +37,9 @@ public sealed class DrivingCore : MonoBehaviour
     void Awake()
     {
         Instance = this;
+        grassInteraction = GetComponent<GrassInteractionSystem>();
+        if (grassInteraction == null) grassInteraction = GrassInteractionSystem.Instance;
+        if (grassInteraction == null) grassInteraction = gameObject.AddComponent<GrassInteractionSystem>();
         if (GetComponent<VoyageHUD>() == null) gameObject.AddComponent<VoyageHUD>();
     }
 
@@ -66,6 +70,8 @@ public sealed class DrivingCore : MonoBehaviour
         // Binder creates CarControl first so PlayerCar's legacy physics
         // initializer cannot overwrite RV1.0's 25000kg chassis settings.
         Player.EnsureVehiclePhysics();
+        grassInteraction.SetTarget(Player.transform);
+        grassInteraction.RegisterVehicle(Player.gameObject);
         Camera camera = Camera.main;
         if (camera != null)
         {
@@ -130,7 +136,14 @@ public sealed class DrivingCore : MonoBehaviour
         if (terrainIndex == null || terrainIndex.settings == null) return;
         TerrainChunkSettings settings = terrainIndex.settings;
         Vector2Int center = settings.WorldToTile(position);
-        if (!force && hasStreamedCenter && center == streamedCenter) return;
+        // LOD selection is distance-based and must continue while the player
+        // moves inside the same streaming cell. Only tile load/unload work is
+        // gated by the cell change below.
+        if (!force && hasStreamedCenter && center == streamedCenter)
+        {
+            UpdateLoadedTerrainLods(position, settings, center);
+            return;
+        }
         streamedCenter = center;
         hasStreamedCenter = true;
 
@@ -154,21 +167,14 @@ public sealed class DrivingCore : MonoBehaviour
             TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
             if (tile != null)
             {
-                tile.Initialize(record, settings, false);
+                tile.Initialize(record, settings, false, position);
                 int distance = Mathf.Max(Mathf.Abs(record.coordinate.x - center.x), Mathf.Abs(record.coordinate.y - center.y));
                 tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
             }
             loadedTerrainTiles.Add(record.coordinate, tileObject);
         }
 
-        foreach (KeyValuePair<Vector2Int, GameObject> pair in loadedTerrainTiles)
-        {
-            TerrainTileRuntime tile = pair.Value == null ? null : pair.Value.GetComponent<TerrainTileRuntime>();
-            if (tile == null) continue;
-            int distance = Mathf.Max(Mathf.Abs(pair.Key.x - center.x), Mathf.Abs(pair.Key.y - center.y));
-            tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
-            tile.UpdateLod(position);
-        }
+        UpdateLoadedTerrainLods(position, settings, center);
 
         List<Vector2Int> stale = new List<Vector2Int>();
         foreach (KeyValuePair<Vector2Int, GameObject> pair in loadedTerrainTiles)
@@ -181,6 +187,18 @@ public sealed class DrivingCore : MonoBehaviour
             GameObject tile = loadedTerrainTiles[stale[i]];
             if (tile != null) Destroy(tile);
             loadedTerrainTiles.Remove(stale[i]);
+        }
+    }
+
+    void UpdateLoadedTerrainLods(Vector3 position, TerrainChunkSettings settings, Vector2Int center)
+    {
+        foreach (KeyValuePair<Vector2Int, GameObject> pair in loadedTerrainTiles)
+        {
+            TerrainTileRuntime tile = pair.Value == null ? null : pair.Value.GetComponent<TerrainTileRuntime>();
+            if (tile == null) continue;
+            int distance = Mathf.Max(Mathf.Abs(pair.Key.x - center.x), Mathf.Abs(pair.Key.y - center.y));
+            tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
+            tile.UpdateLod(position);
         }
     }
 

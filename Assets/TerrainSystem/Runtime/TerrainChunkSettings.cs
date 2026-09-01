@@ -31,6 +31,18 @@ namespace Voyage.TerrainSystem
         [Tooltip("Rebuild normals on generated terrain meshes so slopes and shadow receiving use the actual derived geometry.")]
         public bool recalculateNormals = true;
 
+        [Header("Baked grass")]
+        [Tooltip("Create one pre-baked grass mesh per terrain tile during terrain baking.")]
+        public bool bakeGrass = true;
+        [Min(0.25f)] public float grassClusterSpacing = 1f;
+        [Min(1)] public int grassBladesPerCluster = 8;
+        [Min(0.05f)] public float grassClusterRadius = 0.6f;
+        [Min(0.1f)] public float grassBladeHeight = 1.1f;
+        [Range(0f, 1f)] public float grassDensity = 0.85f;
+        [Min(1)] public int grassClusterBudget = 36000;
+        [Range(0f, 89f)] public float grassFullDensityBelowSlope = 28f;
+        [Range(1f, 90f)] public float grassNoGrassAboveSlope = 58f;
+
         [Header("LOD distances in metres")]
         public float lod0Distance = 150f;
         public float lod1Distance = 400f;
@@ -118,6 +130,14 @@ namespace Voyage.TerrainSystem
             preloadRadius = Mathf.Max(loadedRadius, preloadRadius);
             unloadRadius = Mathf.Max(preloadRadius + 1, unloadRadius);
             collisionRadius = Mathf.Clamp(collisionRadius, 0, preloadRadius);
+            grassClusterSpacing = Mathf.Max(0.25f, grassClusterSpacing);
+            grassBladesPerCluster = Mathf.Clamp(grassBladesPerCluster, 1, 32);
+            grassClusterRadius = Mathf.Max(0.05f, grassClusterRadius);
+            grassBladeHeight = Mathf.Max(0.1f, grassBladeHeight);
+            grassDensity = Mathf.Clamp01(grassDensity);
+            grassClusterBudget = Mathf.Max(1, grassClusterBudget);
+            grassFullDensityBelowSlope = Mathf.Clamp(grassFullDensityBelowSlope, 0f, 89f);
+            grassNoGrassAboveSlope = Mathf.Clamp(grassNoGrassAboveSlope, grassFullDensityBelowSlope + 1f, 90f);
         }
     }
 }
