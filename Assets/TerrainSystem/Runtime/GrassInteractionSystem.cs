@@ -53,8 +53,6 @@ namespace Voyage.TerrainSystem
         const int MaxShaderWheels = 8;
         readonly Vector4[] shaderWheelPositions = new Vector4[MaxShaderWheels];
         readonly Vector4[] shaderWheelDirections = new Vector4[MaxShaderWheels];
-        readonly float[] shaderWheelRadii = new float[MaxShaderWheels];
-        readonly float[] shaderWheelStrengths = new float[MaxShaderWheels];
         RenderTexture field;
         RenderTexture scratch;
         RenderTexture permanentField;
@@ -133,8 +131,6 @@ namespace Voyage.TerrainSystem
             target.SetVector("_VoyageGrassInteractionWorld", WorldToUv);
             target.SetVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
             target.SetVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
-            target.SetFloatArray("_VoyageGrassWheelRadii", shaderWheelRadii);
-            target.SetFloatArray("_VoyageGrassWheelStrengths", shaderWheelStrengths);
             target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
             target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
         }
@@ -564,24 +560,22 @@ namespace Voyage.TerrainSystem
                     Vector3 velocity = wheel.pressingThisFrame ? wheel.shaderMotionVelocity : Vector3.zero;
                     velocity.y = 0f;
                     Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized : Vector3.forward;
-                    shaderWheelPositions[i] = new Vector4(position.x, position.z, 0f, 0f);
                     shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);
-                    shaderWheelRadii[i] = Mathf.Max(0.45f, wheel.radius * 1.8f);
-                    shaderWheelStrengths[i] = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
+                    float radius = Mathf.Max(0.45f, wheel.radius * 1.8f);
+                    float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
+                    // Keep all wheel parameters in a Vector4. This avoids
+                    // platform-specific float-array material binding issues.
+                    shaderWheelPositions[i] = new Vector4(position.x, position.z, radius, strength);
                 }
                 else
                 {
                     shaderWheelPositions[i] = Vector4.zero;
                     shaderWheelDirections[i] = new Vector4(0f, 0f, 0f, 1f);
-                    shaderWheelRadii[i] = 0f;
-                    shaderWheelStrengths[i] = 0f;
                 }
             }
             Shader.SetGlobalVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
             Shader.SetGlobalVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
             Shader.SetGlobalFloat("_VoyageGrassWheelCount", count);
-            Shader.SetGlobalFloatArray("_VoyageGrassWheelRadii", shaderWheelRadii);
-            Shader.SetGlobalFloatArray("_VoyageGrassWheelStrengths", shaderWheelStrengths);
             Shader.SetGlobalFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
         }
 

@@ -53,8 +53,6 @@ Shader "Voyage/Grass/InteractiveLit"
             float4 _VoyageGrassInteractionWorld;
             float4 _VoyageGrassWheelPositions[8];
             float4 _VoyageGrassWheelDirections[8];
-            float _VoyageGrassWheelRadii[8];
-            float _VoyageGrassWheelStrengths[8];
             float _VoyageGrassWheelCount;
             float _VoyageGrassDebugStateMachine;
             float4 _Color;
@@ -145,11 +143,11 @@ Shader "Voyage/Grass/InteractiveLit"
                 for (int i = 0; i < 8; i++)
                 {
                     if (i >= wheelCount) break;
-                    float radius = max(_VoyageGrassWheelRadii[i], 0.001);
+                    float radius = max(_VoyageGrassWheelPositions[i].z, 0.001);
                     float2 delta = positionWS.xz - _VoyageGrassWheelPositions[i].xy;
                     float influence = saturate(1.0 - length(delta) / radius);
                     influence *= influence;
-                    result += _VoyageGrassWheelDirections[i].xy * influence * _VoyageGrassWheelStrengths[i];
+                    result += _VoyageGrassWheelDirections[i].xy * influence * _VoyageGrassWheelPositions[i].w;
                 }
                 return result;
             }
