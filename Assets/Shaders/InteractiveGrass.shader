@@ -248,11 +248,11 @@ Shader "Voyage/Grass/InteractiveLit"
                 // that signal before converting it to an angle so a tire
                 // impression remains visibly pressed at LOD1/LOD2 instead
                 // of looking identical to wind-only motion.
-                float interactionAmount = saturate(length(interactionBend) * 2.6);
+                float interactionAmount = saturate(length(interactionBend) * 4.0);
                 float windAmount = saturate(length(wind) * 1.05);
                 // Make a live tire pass visually unambiguous: the blade root
                 // remains planted while the tip can approach horizontal.
-                float bendAngle = saturate(interactionAmount * 2.8 + windAmount * 0.28) * 1.50;
+                float bendAngle = saturate(interactionAmount * 3.2 + windAmount * 0.28) * 1.56;
                 float2 bendDirection = normalize(interactionBend + wind * 0.38 + float2(0.0001, 0.0001));
                 float angleAtVertex = bendAngle * bendTip;
                 float bladeHeight = max(0.0, positionWS.y - bladeRootWS.y);
