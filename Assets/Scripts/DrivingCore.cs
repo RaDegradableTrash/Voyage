@@ -72,14 +72,6 @@ public sealed class DrivingCore : MonoBehaviour
         Player.EnsureVehiclePhysics();
         grassInteraction.SetTarget(Player.transform);
         grassInteraction.RegisterVehicle(Player.gameObject);
-        // The playable demo spawns RV1.0 directly instead of using
-        // TerrainVehicleBootstrap. Keep a body emitter as a reliable fallback
-        // for continuous grass pressure when a WheelCollider is airborne or
-        // its contact is temporarily unavailable.
-        GrassInteractionEmitter grassEmitter = carObject.GetComponent<GrassInteractionEmitter>();
-        if (grassEmitter == null) grassEmitter = carObject.AddComponent<GrassInteractionEmitter>();
-        grassEmitter.radius = 1.6f;
-        grassInteraction.RegisterEmitter(grassEmitter.transform, grassEmitter.radius, grassEmitter.minimumTravel);
         Camera camera = Camera.main;
         if (camera != null)
         {
