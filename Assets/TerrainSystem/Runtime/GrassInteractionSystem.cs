@@ -153,7 +153,15 @@ namespace Voyage.TerrainSystem
             vehicles.Add(vehicle.transform);
             WheelCollider[] colliders = vehicle.GetComponentsInChildren<WheelCollider>(true);
             for (int i = 0; i < colliders.Length; i++)
-                wheelStates.Add(new WheelState { wheel = colliders[i].transform });
+            {
+                Transform wheel = colliders[i].transform;
+                wheelStates.Add(new WheelState { wheel = wheel });
+                // Rendering interaction must not disappear just because a
+                // wheel briefly loses WheelHit on uneven terrain. The wheel
+                // transform still follows the vehicle, so keep a lightweight
+                // positional emitter for every wheel as a visual fallback.
+                RegisterEmitter(wheel, Mathf.Max(0.35f, colliders[i].radius), 0.01f);
+            }
         }
 
         public void RegisterEmitter(Transform target, float radius, float minimumTravel)
@@ -194,6 +202,12 @@ namespace Voyage.TerrainSystem
                     if (permanentTrackStore != null) permanentTrackStore.ForgetSource(wheel);
                     wheelStates.RemoveAt(i);
                 }
+            }
+            for (int i = emitters.Count - 1; i >= 0; i--)
+            {
+                Transform emitter = emitters[i].target;
+                if (emitter == null || emitter == root || emitter.IsChildOf(root))
+                    emitters.RemoveAt(i);
             }
         }
 
