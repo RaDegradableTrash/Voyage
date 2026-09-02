@@ -179,7 +179,7 @@ namespace Voyage.TerrainSystem
             if (!runtimeMaterial.enableInstancing) return;
             // Retain a continuous mid/far meadow; the shader handles the
             // color/alpha transition and very low LOD density becomes noise.
-            float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.75f : 0.42f;
+            float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.58f : 0.24f;
             int visibleCount = Mathf.Clamp(Mathf.CeilToInt(instanceMatrices.Length * lodDensity), 1, instanceMatrices.Length);
             // The instance array is generated in grid order. Copying the first
             // visibleCount entries would therefore remove an entire spatial
@@ -231,7 +231,7 @@ namespace Voyage.TerrainSystem
             indirectCullingShader.SetVector("_CameraPosition", camera.transform.position);
             indirectCullingShader.SetVectorArray("_FrustumPlanes", planeVectors);
             indirectCullingShader.SetFloat("_MaxDistance", Mathf.Max(fadeEnd, 1f));
-            indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.75f : 0.42f);
+            indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.58f : 0.24f);
             indirectCullingShader.SetFloat("_InstanceRadius", Mathf.Max(1f, bladeHeight + clusterRadius));
             indirectCullingShader.Dispatch(indirectKernel, Mathf.CeilToInt(instanceMatrices.Length / 64f), 1, 1);
             ComputeBuffer.CopyCount(indirectVisibleBuffer, indirectArgsBuffer, sizeof(uint));
@@ -294,7 +294,10 @@ namespace Voyage.TerrainSystem
                                                   prototype.clusterMesh.vertexCount < bladesPerCluster * 4 * 8;
             if (prototype == null || prototype.clusterMesh == null || prototypeNeedsExpandedGeometry)
                 runtimeClusterMesh = BuildClusterMesh(new System.Random(seed ^ unchecked((int)0x5F3759DF)));
-            int nextPublishCount = 64;
+            // Publish one early batch for responsive streaming, then use
+            // larger batches to avoid repeatedly allocating/copying the full
+            // instance matrix array while the tile is still being sampled.
+            int nextPublishCount = 256;
             int processedClusters = 0;
             for (int z = 0; z < countZ && clusterPositions.Count < runtimeClusterBudget; z += candidateStep) for (int x = 0; x < countX && clusterPositions.Count < runtimeClusterBudget; x += candidateStep)
             {
@@ -363,7 +366,7 @@ namespace Voyage.TerrainSystem
                 if (clusterPositions.Count >= nextPublishCount)
                 {
                     PublishRuntimeInstances(clusterPositions, clusterRotations, clusterScales);
-                    nextPublishCount += 64;
+                    nextPublishCount = clusterPositions.Count + 1024;
                 }
             }
             if (clusterPositions.Count == 0)
