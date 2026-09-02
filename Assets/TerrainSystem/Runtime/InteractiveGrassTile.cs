@@ -141,8 +141,10 @@ namespace Voyage.TerrainSystem
         void LateUpdate()
         {
             GrassInteractionSystem interaction = GrassInteractionSystem.Instance;
+            float nearest;
+            int pressing;
             if (interaction != null && interaction.IsReady)
-                DebugState = interaction.GetDebugState(debugWorldBounds, out float nearest, out int pressing);
+                DebugState = interaction.GetDebugState(debugWorldBounds, out nearest, out pressing);
             else
             {
                 DebugState = GrassInteractionSystem.GrassDebugState.Outside;
