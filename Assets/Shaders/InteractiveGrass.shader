@@ -176,12 +176,15 @@ Shader "Voyage/Grass/InteractiveLit"
                 float tip = saturate(input.uv.y);
                 float temporaryWeight;
                 float recoveryAge;
-                float2 interactionBend = SampleBend(FieldUV(positionWS), temporaryWeight, recoveryAge);
+                // Keep sampling the field for diagnostics/recovery telemetry,
+                // but do not let a stale or reprojected texel bend an entire
+                // streamed tile. Actual deformation below is wheel-local.
+                SampleBend(FieldUV(positionWS), temporaryWeight, recoveryAge);
                 // Direct wheel-space influence is intentionally local and is
                 // evaluated from world coordinates, so a bad tile/field
                 // reprojection can never flatten an entire grass chunk.
                 float2 immediateWheelBend = SampleImmediateWheelBend(positionWS);
-                interactionBend += immediateWheelBend * 1.8;
+                float2 interactionBend = immediateWheelBend * 1.8;
 
                 // The interaction texture alpha is the recovery timer. Follow
                 // it directly so pressed grass stands back up smoothly.
