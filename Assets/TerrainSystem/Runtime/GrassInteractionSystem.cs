@@ -304,10 +304,23 @@ namespace Voyage.TerrainSystem
                 Vector3 delta = current - state.previous;
                 float distance = new Vector2(delta.x, delta.z).magnitude;
                 if (distance > maxTeleportDistance) state.previous = current;
-                else if (distance > minimumWheelTravel && IsVehicleMoving(state.body, distance))
+                else if (IsVehicleMoving(state.body, distance))
                 {
                     Transform wheelSource = state.wheel;
-                    QueueSegment(state.previous, current, state.radius, wheelSource);
+                    // On a WheelCollider the reported contact point can stay
+                    // almost fixed while the rigidbody travels over a smooth
+                    // triangle. Use the contact point as the footprint anchor
+                    // and the body velocity to reconstruct the tire path in
+                    // that case. This also keeps the path directional instead
+                    // of degenerating into an upward-facing point stamp.
+                    Vector3 from = state.previous;
+                    if (state.body != null && distance <= minimumWheelTravel)
+                    {
+                        Vector3 velocity = state.body.linearVelocity;
+                        velocity.y = 0f;
+                        from = current - velocity * Time.deltaTime;
+                    }
+                    QueueSegment(from, current, state.radius, wheelSource);
                 }
                 state.previous = current;
             }
