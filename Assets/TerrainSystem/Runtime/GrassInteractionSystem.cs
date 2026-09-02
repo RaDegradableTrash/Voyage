@@ -402,6 +402,16 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalTexture("_VoyageGrassInteraction", field);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", WorldToUv);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", permanentField);
+            if (followTarget != null)
+            {
+                Vector3 forward = followTarget.forward;
+                Shader.SetGlobalVector("_VoyageGrassVehicle", new Vector4(
+                    followTarget.position.x, followTarget.position.z, forward.x, forward.z));
+            }
+            else
+            {
+                Shader.SetGlobalVector("_VoyageGrassVehicle", Vector4.zero);
+            }
         }
 
         void BeginPermanentFieldRebuild(Vector3 previousCenter, bool onlyNewArea)
@@ -508,6 +518,7 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalTexture("_VoyageGrassInteraction", null);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", null);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", Vector4.zero);
+            Shader.SetGlobalVector("_VoyageGrassVehicle", Vector4.zero);
         }
 
         void OnDestroy()
@@ -516,6 +527,7 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalTexture("_VoyageGrassInteraction", null);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", null);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", Vector4.zero);
+            Shader.SetGlobalVector("_VoyageGrassVehicle", Vector4.zero);
             if (field != null) field.Release();
             if (scratch != null) scratch.Release();
             if (permanentField != null) permanentField.Release();

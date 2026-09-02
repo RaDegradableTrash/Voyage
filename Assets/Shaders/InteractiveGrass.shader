@@ -62,6 +62,7 @@ Shader "Voyage/Grass/InteractiveLit"
             float _FadeStart;
             float _FadeEnd;
             float4 _VoyageGrassWind;
+            float4 _VoyageGrassVehicle;
             #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
             StructuredBuffer<float4x4> _VoyageGrassMatrices;
             void ConfigureProcedural()
@@ -154,6 +155,17 @@ Shader "Voyage/Grass/InteractiveLit"
                 float recoveryStrength = saturate(1.0 - recoveryAge);
                 interactionBend *= recoveryStrength * _InteractionEnabled * _BendStrength * 1.8;
 
+                // Immediate vehicle wake: the texture leaves a persistent
+                // track, while this local signal guarantees that grass under
+                // and beside the vehicle visibly falls during the current
+                // frame even if the wheel contact texture is one frame late.
+                float2 vehiclePosition = _VoyageGrassVehicle.xy;
+                float vehicleDirectionLength = length(_VoyageGrassVehicle.zw);
+                float2 vehicleDirection = normalize(_VoyageGrassVehicle.zw + float2(0.0001, 0.0001));
+                float vehicleDistance = distance(positionWS.xz, vehiclePosition);
+                float vehicleWeight = (1.0 - smoothstep(1.2, 3.4, vehicleDistance)) * step(0.001, vehicleDirectionLength);
+                interactionBend += vehicleDirection * vehicleWeight * _InteractionEnabled * 1.35;
+
                 float2 globalWindDirection = normalize(_VoyageGrassWind.xy + float2(0.0001, 0.0001));
                 float globalWindSpeed = _VoyageGrassWind.z > 0.0 ? _VoyageGrassWind.z : 1.0;
                 float globalGustStrength = saturate(_VoyageGrassWind.w);
@@ -165,7 +177,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 float gust = 0.78 + 0.22 * sin(alongWind * 0.012 + acrossWind * 0.017 + _Time.y * 0.38);
                 float windVariation = lerp(0.74, 1.26, input.instanceRandom.x);
                 float windDistanceAttenuation = lerp(1.0, 0.28, farBlend);
-                float2 wind = globalWindDirection * wave * _WindStrength * windDistanceAttenuation *
+                float2 wind = globalWindDirection * wave * _WindStrength * 1.35 * windDistanceAttenuation *
                               lerp(1.0, gust, globalGustStrength) * windVariation;
                 float bendTip = tip * tip * (0.35 + 0.65 * tip);
                 float2 totalOffset = interactionBend + wind;
