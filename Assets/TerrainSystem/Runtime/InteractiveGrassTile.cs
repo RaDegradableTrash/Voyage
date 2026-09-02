@@ -366,6 +366,7 @@ namespace Voyage.TerrainSystem
             var normals = new List<Vector3>(vertices.Capacity);
             var uvs = new List<Vector2>(bladesPerCluster * 8);
             var randoms = new List<Vector2>(bladesPerCluster * 8);
+            var bladeData = new List<Vector2>(bladesPerCluster * 8);
             var triangles = new List<int>(bladesPerCluster * 6);
             for (int blade = 0; blade < bladesPerCluster; blade++)
             {
@@ -376,17 +377,17 @@ namespace Voyage.TerrainSystem
                 float w = h * (0.15f + (float)random.NextDouble() * 0.07f);
                 float yaw = (float)random.NextDouble() * Mathf.PI;
                 float variation = (float)random.NextDouble();
-                AddBlade(vertices, normals, uvs, randoms, triangles, local, h, w, yaw, variation);
-                AddBlade(vertices, normals, uvs, randoms, triangles, local, h, w, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
-                AddBlade(vertices, normals, uvs, randoms, triangles, local, h, w, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw, variation);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
             }
             var result = new Mesh { name = "Interactive Grass Cluster Mesh" };
-            result.SetVertices(vertices); result.SetNormals(normals); result.SetUVs(0, uvs); result.SetUVs(1, randoms); result.SetTriangles(triangles, 0, true); result.RecalculateBounds();
+            result.SetVertices(vertices); result.SetNormals(normals); result.SetUVs(0, uvs); result.SetUVs(1, randoms); result.SetUVs(2, bladeData); result.SetTriangles(triangles, 0, true); result.RecalculateBounds();
             result.UploadMeshData(true);
             return result;
         }
 
-        static void AddBlade(List<Vector3> v, List<Vector3> normals, List<Vector2> uv, List<Vector2> randoms, List<int> t, Vector3 p, float h, float w, float yaw, float variation)
+        static void AddBlade(List<Vector3> v, List<Vector3> normals, List<Vector2> uv, List<Vector2> randoms, List<Vector2> bladeData, List<int> t, Vector3 p, float h, float w, float yaw, float variation)
         {
             Vector3 side = new Vector3(Mathf.Cos(yaw), 0f, Mathf.Sin(yaw)) * w;
             Vector3 faceNormal = Vector3.Cross(side, Vector3.up).normalized;
@@ -398,6 +399,8 @@ namespace Voyage.TerrainSystem
             uv.Add(new Vector2(0, 0)); uv.Add(new Vector2(1, 0)); uv.Add(new Vector2(0.5f, 1));
             Vector2 instanceRandom = new Vector2(Mathf.Repeat(variation, 1f), Mathf.Repeat(variation * 2.17f + 0.37f, 1f));
             randoms.Add(instanceRandom); randoms.Add(instanceRandom); randoms.Add(instanceRandom);
+            Vector2 authoredBladeData = new Vector2(h, 0f);
+            bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData);
             // Cull Off in the grass shader already renders both sides.
             t.Add(start); t.Add(start + 1); t.Add(start + 2);
         }
@@ -450,6 +453,7 @@ namespace Voyage.TerrainSystem
                 runtimeMaterial.SetFloat("_AlphaClip", alphaClip);
                 runtimeMaterial.SetFloat("_FadeStart", fadeStart);
                 runtimeMaterial.SetFloat("_FadeEnd", fadeEnd);
+                runtimeMaterial.SetFloat("_BladeHeight", bladeHeight);
             }
         }
 

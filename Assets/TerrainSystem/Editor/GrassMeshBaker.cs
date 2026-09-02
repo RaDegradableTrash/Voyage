@@ -147,6 +147,7 @@ namespace Voyage.TerrainSystem.Editor
             var normals = new List<Vector3>(vertices.Capacity);
             var uvs = new List<Vector2>(vertices.Capacity);
             var randoms = new List<Vector2>(vertices.Capacity);
+            var bladeData = new List<Vector2>(vertices.Capacity);
             var indices = new List<int>(clusterCount * settings.grassBladesPerCluster * 6);
             System.Random random = new System.Random(unchecked(coordinate.x * 73856093 ^ coordinate.y * 19349663));
             int accepted = 0;
@@ -178,9 +179,9 @@ namespace Voyage.TerrainSystem.Editor
                     float width = height * (0.15f + (float)random.NextDouble() * 0.07f);
                     float yaw = (float)random.NextDouble() * Mathf.PI;
                     float variation = (float)random.NextDouble();
-                    AddBlade(vertices, normals, uvs, randoms, indices, local, height, width, yaw, variation);
-                    AddBlade(vertices, normals, uvs, randoms, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
-                    AddBlade(vertices, normals, uvs, randoms, indices, local, height, width, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw, variation);
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
                 }
             }
 
@@ -191,12 +192,13 @@ namespace Voyage.TerrainSystem.Editor
             mesh.SetNormals(normals);
             mesh.SetUVs(0, uvs);
             mesh.SetUVs(1, randoms);
+            mesh.SetUVs(2, bladeData);
             mesh.SetTriangles(indices, 0, true);
             mesh.RecalculateBounds();
             return mesh;
         }
 
-        static void AddBlade(List<Vector3> vertices, List<Vector3> normals, List<Vector2> uvs, List<Vector2> randoms, List<int> indices, Vector3 position, float height, float width, float yaw, float variation)
+        static void AddBlade(List<Vector3> vertices, List<Vector3> normals, List<Vector2> uvs, List<Vector2> randoms, List<Vector2> bladeData, List<int> indices, Vector3 position, float height, float width, float yaw, float variation)
         {
             Vector3 side = new Vector3(Mathf.Cos(yaw), 0f, Mathf.Sin(yaw)) * width;
             Vector3 faceNormal = Vector3.Cross(side, Vector3.up).normalized;
@@ -210,6 +212,8 @@ namespace Voyage.TerrainSystem.Editor
             uvs.Add(new Vector2(0f, 0f)); uvs.Add(new Vector2(1f, 0f)); uvs.Add(new Vector2(0.5f, 1f));
             Vector2 random = new Vector2(Mathf.Repeat(variation, 1f), Mathf.Repeat(variation * 2.17f + 0.37f, 1f));
             randoms.Add(random); randoms.Add(random); randoms.Add(random);
+            Vector2 authoredBladeData = new Vector2(height, 0f);
+            bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData);
             // InteractiveGrass.shader uses Cull Off, so one winding is enough
             // to rasterize both sides and lets SV_IsFrontFace select the
             // backside palette. Duplicating the reverse winding doubles the

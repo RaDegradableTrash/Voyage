@@ -22,6 +22,7 @@ Shader "Voyage/Grass/InteractiveLit"
         _Density ("Density", Range(0,1)) = 1
         _AmbientStrength ("Ambient Strength", Range(0,2)) = 0.75
         _DirectLightStrength ("Direct Light Strength", Range(0,2)) = 1.0
+        _BladeHeight ("Blade Height", Float) = 1.0
     }
     SubShader
     {
@@ -109,6 +110,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 float3 normalOS : NORMAL;
                 float2 uv : TEXCOORD0;
                 float2 instanceRandom : TEXCOORD1;
+                float2 bladeData : TEXCOORD2;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -193,7 +195,13 @@ Shader "Voyage/Grass/InteractiveLit"
                 Varyings output;
                 float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
                 float3 instanceOriginWS = float3(unity_ObjectToWorld._m03, unity_ObjectToWorld._m13, unity_ObjectToWorld._m23);
-                float3 bladeRootWS = TransformObjectToWorld(float3(input.positionOS.x, 0.0, input.positionOS.z));
+                // The mesh is placed in world-relative tile space, so the
+                // root must be reconstructed from the authored ground vertex.
+                // Older meshes have no TEXCOORD2 and use the material height
+                // as a safe fallback; new meshes carry their exact blade H.
+                float authoredBladeHeight = input.bladeData.x > 0.001 ? input.bladeData.x : _BladeHeight;
+                float rootLocalY = input.positionOS.y - input.uv.y * authoredBladeHeight;
+                float3 bladeRootWS = TransformObjectToWorld(float3(input.positionOS.x, rootLocalY, input.positionOS.z));
                 float cameraDistance = distance(instanceOriginWS, GetCameraPositionWS());
                 float farBlend = smoothstep(_FadeStart * 0.35, max(_FadeStart * 0.35 + 0.01, _FadeEnd * 0.78), cameraDistance);
                 // Replace distant tiny cards with visually broader clumps.
@@ -202,6 +210,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 positionWS = instanceOriginWS + float3(localFromOrigin.x * farClusterScale,
                                                         localFromOrigin.y * lerp(1.0, 1.18, farBlend),
                                                         localFromOrigin.z * farClusterScale);
+                float originalVertexY = positionWS.y;
                 float3 rootFromOrigin = bladeRootWS - instanceOriginWS;
                 bladeRootWS = instanceOriginWS + float3(rootFromOrigin.x * farClusterScale,
                                                          rootFromOrigin.y * lerp(1.0, 1.18, farBlend),
@@ -217,10 +226,6 @@ Shader "Voyage/Grass/InteractiveLit"
                 // evaluated from world coordinates, so a bad tile/field
                 // reprojection can never flatten an entire grass chunk.
                 float2 immediateWheelBend = SampleImmediateWheelBend(positionWS);
-                // F11 diagnostic: if this produces red, vertex deformation and
-                // the draw path work, so remaining failures are wheel binding.
-                if (_VoyageGrassDebugStateMachine > 1.5)
-                    immediateWheelBend = float2(1.0, 0.0);
                 // The wheel array is the authoritative footprint. Do not add
                 // a second body-derived footprint here: its inferred axle
                 // spacing can overlap an adjacent streamed tile and make a
@@ -294,6 +299,13 @@ Shader "Voyage/Grass/InteractiveLit"
                 positionWS = bladeRootWS + rootWidthOffset +
                              arcDirection * (sin(angleAtVertex) * bladeHeight);
                 positionWS.y = bladeRootWS.y + cos(angleAtVertex) * bladeHeight;
+                // A bent blade may never rise above its authored tip or sink
+                // below its planted root. This protects against malformed
+                // slope normals/instance transforms producing grass in the
+                // sky while preserving the intended root-to-tip arc.
+                float minBladeY = min(bladeRootWS.y, originalVertexY);
+                float maxBladeY = max(bladeRootWS.y, originalVertexY);
+                positionWS.y = clamp(positionWS.y, minBladeY, maxBladeY);
 
                 output.positionWS = positionWS;
                 output.positionCS = TransformWorldToHClip(positionWS);
@@ -357,8 +369,7 @@ Shader "Voyage/Grass/InteractiveLit"
                     float4 fieldSample = SAMPLE_TEXTURE2D_LOD(_VoyageGrassInteraction,
                                                                sampler_VoyageGrassInteraction,
                                                                FieldUV(input.positionWS), 0);
-                    if (_VoyageGrassDebugStateMachine > 1.5) color = half3(1.0, 0.0, 1.0);
-                    else if (input.directBendAmount > 0.08) color = half3(1.0, 0.05, 0.02);
+                    if (input.directBendAmount > 0.08) color = half3(1.0, 0.05, 0.02);
                     else if (input.bendAmount > 0.08) color = half3(1.0, 0.55, 0.02);
                     else if (fieldSample.b > 0.025) color = half3(0.05, 0.25, 1.0);
                     else color = half3(0.42, 0.42, 0.42);
