@@ -116,7 +116,8 @@ Shader "Voyage/Grass/InteractiveLit"
                 float windVariation = lerp(0.74, 1.26, input.instanceRandom.x);
                 float2 wind = normalize(broadWave + float2(0.001, 0.001)) * _WindStrength * gust * windVariation;
                 float bendTip = tip * tip * (0.35 + 0.65 * tip);
-                positionWS.xz += (interactionBend + wind) * bendTip;
+                float2 totalOffset = interactionBend + wind;
+                positionWS.xz += totalOffset * bendTip;
                 // A pressed blade must lean and lose height at the tip. An
                 // XZ-only offset reads as sliding grass rather than flattened
                 // grass, especially from the vehicle camera.
@@ -126,7 +127,14 @@ Shader "Voyage/Grass/InteractiveLit"
                 output.positionWS = positionWS;
                 output.positionCS = TransformWorldToHClip(positionWS);
                 float3 normalOS = dot(input.normalOS, input.normalOS) > 0.01 ? input.normalOS : float3(0, 1, 0);
-                output.normalWS = NormalizeNormalPerVertex(TransformObjectToWorldNormal(normalOS));
+                float3 baseNormalWS = NormalizeNormalPerVertex(TransformObjectToWorldNormal(normalOS));
+                // Keep lighting coherent with the displaced blade. Without a
+                // dynamic normal, wind and pressed grass move but retain the
+                // original face lighting, which reads as an unlit object.
+                float3 normalTilt = float3(-totalOffset.x * 0.72,
+                                           abs(totalOffset.x) * 0.24 + abs(totalOffset.y) * 0.24,
+                                           -totalOffset.y * 0.72);
+                output.normalWS = NormalizeNormalPerVertex(normalize(baseNormalWS + normalTilt));
                 output.uv = input.uv;
                 output.instanceRandom = input.instanceRandom;
                 output.shadowCoord = TransformWorldToShadowCoord(positionWS);
