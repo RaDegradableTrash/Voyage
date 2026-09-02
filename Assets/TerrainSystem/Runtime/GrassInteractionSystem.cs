@@ -55,6 +55,8 @@ namespace Voyage.TerrainSystem
         readonly Vector4[] shaderWheelDirections = new Vector4[MaxShaderWheels];
         Vector4 shaderVehicleData;
         Vector4 shaderVehicleParams;
+        Vector3 previousFollowTargetPosition;
+        bool hasPreviousFollowTargetPosition;
         RenderTexture field;
         RenderTexture scratch;
         RenderTexture permanentField;
@@ -200,6 +202,8 @@ namespace Voyage.TerrainSystem
         {
             if (followTarget == target) return;
             followTarget = target;
+            previousFollowTargetPosition = target != null ? target.position : Vector3.zero;
+            hasPreviousFollowTargetPosition = target != null;
             // A new target means the old wheel contact baselines are not
             // spatially continuous. Force a fresh world-space anchor and let
             // the next valid WheelCollider hit establish new baselines.
@@ -647,12 +651,18 @@ namespace Voyage.TerrainSystem
                 if (forward.sqrMagnitude < 0.001f) forward = Vector3.forward;
                 forward.Normalize();
                 Vector3 velocity = follower != null ? follower.CurrentVelocity : Vector3.zero;
+                Vector3 rootDeltaVelocity = hasPreviousFollowTargetPosition
+                    ? (followTarget.position - previousFollowTargetPosition) / Mathf.Max(Time.deltaTime, 0.0001f)
+                    : Vector3.zero;
+                if (velocity.sqrMagnitude < 0.01f) velocity = rootDeltaVelocity;
                 velocity.y = 0f;
                 float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
                 shaderVehicleData = new Vector4(followTarget.position.x, followTarget.position.z, forward.x, forward.z);
                 // PlayerCar's runtime vehicle uses local X as its forward
                 // axis and local Z as its axle width.
                 shaderVehicleParams = new Vector4(1.35f, 1.02f, 0.95f, strength);
+                previousFollowTargetPosition = followTarget.position;
+                hasPreviousFollowTargetPosition = true;
             }
             Shader.SetGlobalVector("_VoyageGrassVehicleData", shaderVehicleData);
             Shader.SetGlobalVector("_VoyageGrassVehicleParams", shaderVehicleParams);
