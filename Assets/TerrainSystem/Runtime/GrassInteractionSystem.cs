@@ -142,6 +142,7 @@ namespace Voyage.TerrainSystem
             target.SetVector("_VoyageGrassInteractionWorld", WorldToUv);
             target.SetVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
             target.SetVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
+            SetIndividualWheelProperties(target);
             target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
             target.SetVector("_VoyageGrassVehicleData", shaderVehicleData);
             target.SetVector("_VoyageGrassVehicleParams", shaderVehicleParams);
@@ -156,10 +157,43 @@ namespace Voyage.TerrainSystem
             target.SetVector("_VoyageGrassInteractionWorld", WorldToUv);
             target.SetVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
             target.SetVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
+            SetIndividualWheelProperties(target);
             target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
             target.SetVector("_VoyageGrassVehicleData", shaderVehicleData);
             target.SetVector("_VoyageGrassVehicleParams", shaderVehicleParams);
             target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
+        }
+
+        void SetIndividualWheelProperties(Material target)
+        {
+            target.SetVector("_VoyageGrassWheel0", shaderWheelPositions[0]);
+            target.SetVector("_VoyageGrassWheel1", shaderWheelPositions[1]);
+            target.SetVector("_VoyageGrassWheel2", shaderWheelPositions[2]);
+            target.SetVector("_VoyageGrassWheel3", shaderWheelPositions[3]);
+            target.SetVector("_VoyageGrassWheel4", shaderWheelPositions[4]);
+            target.SetVector("_VoyageGrassWheel5", shaderWheelPositions[5]);
+            target.SetVector("_VoyageGrassWheelDirection0", shaderWheelDirections[0]);
+            target.SetVector("_VoyageGrassWheelDirection1", shaderWheelDirections[1]);
+            target.SetVector("_VoyageGrassWheelDirection2", shaderWheelDirections[2]);
+            target.SetVector("_VoyageGrassWheelDirection3", shaderWheelDirections[3]);
+            target.SetVector("_VoyageGrassWheelDirection4", shaderWheelDirections[4]);
+            target.SetVector("_VoyageGrassWheelDirection5", shaderWheelDirections[5]);
+        }
+
+        void SetIndividualWheelProperties(MaterialPropertyBlock target)
+        {
+            target.SetVector("_VoyageGrassWheel0", shaderWheelPositions[0]);
+            target.SetVector("_VoyageGrassWheel1", shaderWheelPositions[1]);
+            target.SetVector("_VoyageGrassWheel2", shaderWheelPositions[2]);
+            target.SetVector("_VoyageGrassWheel3", shaderWheelPositions[3]);
+            target.SetVector("_VoyageGrassWheel4", shaderWheelPositions[4]);
+            target.SetVector("_VoyageGrassWheel5", shaderWheelPositions[5]);
+            target.SetVector("_VoyageGrassWheelDirection0", shaderWheelDirections[0]);
+            target.SetVector("_VoyageGrassWheelDirection1", shaderWheelDirections[1]);
+            target.SetVector("_VoyageGrassWheelDirection2", shaderWheelDirections[2]);
+            target.SetVector("_VoyageGrassWheelDirection3", shaderWheelDirections[3]);
+            target.SetVector("_VoyageGrassWheelDirection4", shaderWheelDirections[4]);
+            target.SetVector("_VoyageGrassWheelDirection5", shaderWheelDirections[5]);
         }
 
         public GrassDebugState GetDebugState(Vector3 position)

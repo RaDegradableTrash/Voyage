@@ -53,6 +53,18 @@ Shader "Voyage/Grass/InteractiveLit"
             float4 _VoyageGrassInteractionWorld;
             float4 _VoyageGrassWheelPositions[8];
             float4 _VoyageGrassWheelDirections[8];
+            float4 _VoyageGrassWheel0;
+            float4 _VoyageGrassWheel1;
+            float4 _VoyageGrassWheel2;
+            float4 _VoyageGrassWheel3;
+            float4 _VoyageGrassWheel4;
+            float4 _VoyageGrassWheel5;
+            float4 _VoyageGrassWheelDirection0;
+            float4 _VoyageGrassWheelDirection1;
+            float4 _VoyageGrassWheelDirection2;
+            float4 _VoyageGrassWheelDirection3;
+            float4 _VoyageGrassWheelDirection4;
+            float4 _VoyageGrassWheelDirection5;
             float _VoyageGrassWheelCount;
             float4 _VoyageGrassVehicleData;
             float4 _VoyageGrassVehicleParams;
@@ -141,17 +153,16 @@ Shader "Voyage/Grass/InteractiveLit"
 
             float2 SampleImmediateWheelBend(float3 positionWS)
             {
+                float2 p = positionWS.xz;
                 float2 result = 0.0;
-                int wheelCount = min((int)_VoyageGrassWheelCount, 8);
-                for (int i = 0; i < 8; i++)
-                {
-                    if (i >= wheelCount) break;
-                    float radius = max(_VoyageGrassWheelPositions[i].z, 0.001);
-                    float2 delta = positionWS.xz - _VoyageGrassWheelPositions[i].xy;
-                    float influence = saturate(1.0 - length(delta) / radius);
-                    influence *= influence;
-                    result += _VoyageGrassWheelDirections[i].xy * influence * _VoyageGrassWheelPositions[i].w;
-                }
+                float2 d;
+                float influence;
+                d = p - _VoyageGrassWheel0.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel0.z, 0.001)); result += _VoyageGrassWheelDirection0.xy * influence * influence * _VoyageGrassWheel0.w;
+                d = p - _VoyageGrassWheel1.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel1.z, 0.001)); result += _VoyageGrassWheelDirection1.xy * influence * influence * _VoyageGrassWheel1.w;
+                d = p - _VoyageGrassWheel2.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel2.z, 0.001)); result += _VoyageGrassWheelDirection2.xy * influence * influence * _VoyageGrassWheel2.w;
+                d = p - _VoyageGrassWheel3.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel3.z, 0.001)); result += _VoyageGrassWheelDirection3.xy * influence * influence * _VoyageGrassWheel3.w;
+                d = p - _VoyageGrassWheel4.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel4.z, 0.001)); result += _VoyageGrassWheelDirection4.xy * influence * influence * _VoyageGrassWheel4.w;
+                d = p - _VoyageGrassWheel5.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel5.z, 0.001)); result += _VoyageGrassWheelDirection5.xy * influence * influence * _VoyageGrassWheel5.w;
                 return result;
             }
 
