@@ -349,7 +349,10 @@ namespace Voyage.TerrainSystem
             Vector2 center = new Vector2((fieldCenter.x - worldSize * 0.5f), (fieldCenter.z - worldSize * 0.5f));
             Vector2 a = (new Vector2(from.x, from.z) - center) / worldSize;
             Vector2 b = (new Vector2(to.x, to.z) - center) / worldSize;
-            Vector2 dir = (b - a).sqrMagnitude > 0.000001f ? (b - a).normalized : Vector2.up;
+            // Grass is displaced away from the moving object, not in front of
+            // it. This also makes permanent tire tracks use the same physical
+            // orientation as the temporary pressed-grass field.
+            Vector2 dir = (b - a).sqrMagnitude > 0.000001f ? -(b - a).normalized : Vector2.up;
             float strength = Mathf.Lerp(0.28f, 1f, Mathf.Clamp01(speed / speedForFullBend));
             if (recordPermanentTracks && permanentTrackStore != null)
                 permanentTrackStore.RecordSegment(from, to, radius, strength, source);

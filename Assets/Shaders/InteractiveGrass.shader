@@ -116,6 +116,11 @@ Shader "Voyage/Grass/InteractiveLit"
                 float2 wind = normalize(broadWave + float2(0.001, 0.001)) * _WindStrength * gust;
                 float bendTip = tip * tip * (0.35 + 0.65 * tip);
                 positionWS.xz += (interactionBend + wind) * bendTip;
+                // A pressed blade must lean and lose height at the tip. An
+                // XZ-only offset reads as sliding grass rather than flattened
+                // grass, especially from the vehicle camera.
+                float interactionAmount = saturate(length(interactionBend));
+                positionWS.y -= interactionAmount * 0.62 * bendTip;
 
                 output.positionWS = positionWS;
                 output.positionCS = TransformWorldToHClip(positionWS);
