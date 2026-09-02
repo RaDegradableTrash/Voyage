@@ -168,7 +168,10 @@ namespace Voyage.TerrainSystem
                 // Keep the jittered grid as the coverage scaffold, then use a
                 // stable world-space noise field to create natural density
                 // patches without introducing visible rows or large holes.
-                float densityNoise = Mathf.Lerp(0.55f, 1.15f, Mathf.PerlinNoise(world.x * 0.035f, world.z * 0.035f));
+                // Use noise for subtle clumping only. A 0.55 minimum created
+                // broad bare patches even with authored density near 1.0,
+                // which read as missing grass instead of natural variation.
+                float densityNoise = Mathf.Lerp(0.88f, 1.08f, Mathf.PerlinNoise(world.x * 0.035f, world.z * 0.035f));
                 if (random.NextDouble() > density * densityNoise) continue;
                 Ray ray = new Ray(new Vector3(world.x, rayTop, world.z), Vector3.down);
                 RaycastHit groundHit;
