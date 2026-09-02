@@ -547,7 +547,18 @@ namespace Voyage.TerrainSystem
         Vector3 GetWheelAnchor(WheelState state)
         {
             if (state != null && state.terrainFollower != null && state.followerWheelIndex >= 0)
-                return state.terrainFollower.GetGrassInteractionWheelPosition(state.followerWheelIndex);
+            {
+                // PlayerCar can expose six visual wheels while the raycast
+                // follower owns only four suspension records. Never index the
+                // follower with the extra visual wheels: invalid indices fall
+                // back to the vehicle root and make unrelated grass respond
+                // as if it were under a tire. The visual wheel pivot is the
+                // authoritative XZ footprint for every axle; Y is irrelevant
+                // to the world-space grass field and shader footprint.
+                Vector3 visualWheelPosition = state.wheel != null ? state.wheel.position : state.terrainFollower.transform.position;
+                visualWheelPosition.y -= state.terrainFollower.tireRadius;
+                return visualWheelPosition;
+            }
             if (state != null && state.wheel != null)
             {
                 WheelCollider collider = state.wheel.GetComponent<WheelCollider>();
