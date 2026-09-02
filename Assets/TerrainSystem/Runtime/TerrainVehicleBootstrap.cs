@@ -73,6 +73,11 @@ namespace Voyage.TerrainSystem
             }
             vehicleInstance = Instantiate(vehiclePrefab, spawn, Quaternion.identity);
             vehicleInstance.name = "TerrainSystem Player Vehicle";
+            GrassInteractionSystem grassInteraction = GrassInteractionSystem.Instance;
+            if (grassInteraction == null) grassInteraction = FindAnyObjectByType<GrassInteractionSystem>();
+            if (grassInteraction == null) grassInteraction = gameObject.AddComponent<GrassInteractionSystem>();
+            grassInteraction.SetTarget(vehicleInstance.transform);
+            grassInteraction.RegisterVehicle(vehicleInstance);
             PlayerCar car = vehicleInstance.GetComponent<PlayerCar>();
             if (car != null) car.BuildVisuals(CreateMaterial(new Color(0.08f, 0.3f, 0.75f)), CreateMaterial(new Color(0.15f, 0.7f, 0.85f)), CreateMaterial(new Color(0.8f, 0.05f, 0.04f)), CreateMaterial(new Color(1f, 0.75f, 0.25f)));
 

@@ -1,6 +1,6 @@
 # Interactive Grass
 
-当前版本的草地交互不包含上色，草片使用白色材质，重点验证姿态、轨迹和流式生命周期。
+当前版本的草地交互使用受光的草材质，重点验证密度、风场、车辆轨迹、姿态恢复和流式生命周期。
 
 ## 自动接入
 
@@ -20,7 +20,7 @@
 
 ## 运行时参数
 
-`GrassInteractionSystem` 控制交互纹理分辨率、覆盖范围、衰减、轨迹插值预算和永久样本重建预算。`InteractiveGrassTile` 控制草丛间距、每丛叶片数量、丛半径、密度、株高、局部坡度阈值、分帧生成预算和地面 LayerMask。
+`GrassInteractionSystem` 控制交互纹理分辨率、覆盖范围、衰减、轨迹插值预算和永久样本重建预算。`InteractiveGrassTile` 控制草丛间距、每丛叶片数量、丛半径、密度、株高、局部坡度阈值、分帧生成预算和地面 LayerMask。草 Shader 使用世界空间风场、主光源/环境光、阴影和临时/永久交互场。
 
 地形重新烘焙时，`TerrainChunkSettings.bakeGrass` 只生成一个共享的 `GrassPrototypeAsset`：它保存一次草丛原型 Mesh，所有 Tile 通过引用共享。Tile 不再保存 `GrassChunkAsset` 的完整位置数组，而是在进入近景 LOD 后根据 Tile 坐标和碰撞面分帧生成轻量 GPU 实例矩阵。运行时通过 GPU instancing 分批绘制（每批最多 1023 个草丛），不创建逐根草对象。草丛预算由 `grassClusterBudget` 限制，避免大尺寸 Tile 因细间距生成过量几何体。
 

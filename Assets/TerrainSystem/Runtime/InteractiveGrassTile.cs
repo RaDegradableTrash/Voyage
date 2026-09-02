@@ -24,6 +24,8 @@ namespace Voyage.TerrainSystem
         public Mesh bakedMesh;
         [Tooltip("Optional clustered asset. It is drawn with GPU instancing and takes precedence over bakedMesh.")]
         public GrassChunkAsset bakedClusters;
+        [Tooltip("Keep using the legacy per-tile cache. Disabled by default so old prefabs migrate to the dense runtime path.")]
+        public bool useLegacyBakedClusters;
         [Tooltip("Shared cluster geometry. Tile placement is generated on demand and is not serialized per tile.")]
         public GrassPrototypeAsset prototype;
         public Vector2Int tileCoordinate;
@@ -71,7 +73,7 @@ namespace Voyage.TerrainSystem
             if (runtimeMaterial != null) runtimeMaterial.enableInstancing = true;
             meshRenderer.sharedMaterial = runtimeMaterial;
             meshRenderer.enabled = false;
-            if (bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0)
+            if (useLegacyBakedClusters && bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0)
             {
                 instanceMatrices = new Matrix4x4[bakedClusters.Count];
                 for (int i = 0; i < instanceMatrices.Length; i++)
@@ -101,9 +103,14 @@ namespace Voyage.TerrainSystem
 
         void LateUpdate()
         {
-            bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
+            bool hasBakedClusters = useLegacyBakedClusters && bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
             Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : runtimeClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
+            // Generated prefabs may carry a material serialized before the
+            // instanced grass path existed. Enforce this immediately before
+            // drawing so stale material state cannot disable the whole pass.
+            if (!runtimeMaterial.enableInstancing) runtimeMaterial.enableInstancing = true;
+            if (!runtimeMaterial.enableInstancing) return;
             if (instanceProperties == null) instanceProperties = new MaterialPropertyBlock();
             float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.55f : 0.2f;
             int visibleCount = Mathf.Clamp(Mathf.CeilToInt(instanceMatrices.Length * lodDensity), 1, instanceMatrices.Length);
@@ -112,7 +119,7 @@ namespace Voyage.TerrainSystem
                 int count = Mathf.Min(1023, visibleCount - start);
                 System.Array.Copy(instanceMatrices, start, instanceBatch, 0, count);
                 Graphics.DrawMeshInstanced(drawMesh, 0, runtimeMaterial, instanceBatch, count, instanceProperties,
-                    UnityEngine.Rendering.ShadowCastingMode.Off, false, gameObject.layer, null, UnityEngine.Rendering.LightProbeUsage.Off);
+                    UnityEngine.Rendering.ShadowCastingMode.On, true, gameObject.layer, null, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
             }
         }
 
@@ -123,9 +130,7 @@ namespace Voyage.TerrainSystem
             int countX = Mathf.Max(1, Mathf.FloorToInt(worldBounds.size.x / clusterSpacing));
             int countZ = Mathf.Max(1, Mathf.FloorToInt(worldBounds.size.z / clusterSpacing));
             int totalCandidates = countX * countZ;
-            int candidateStep = totalCandidates <= runtimeClusterBudget * 4
-                ? 1
-                : Mathf.Max(1, Mathf.CeilToInt(Mathf.Sqrt((float)totalCandidates / (runtimeClusterBudget * 4f))));
+            int candidateStep = Mathf.Max(1, Mathf.CeilToInt(Mathf.Sqrt((float)totalCandidates / Mathf.Max(1, runtimeClusterBudget))));
             // TerrainChunkSettings uses a very tall Y extent as an XZ-only
             // bounds sentinel. Use the real collision bounds when available
             // so each generated blade does not cast through an unnecessary
@@ -139,7 +144,7 @@ namespace Voyage.TerrainSystem
             int seed = unchecked(tileCoordinate.x * 73856093 ^ tileCoordinate.y * 19349663);
             System.Random random = new System.Random(seed);
             int processedClusters = 0;
-            for (int z = 0; z < countZ; z += candidateStep) for (int x = 0; x < countX; x += candidateStep)
+            for (int z = 0; z < countZ && clusterPositions.Count < runtimeClusterBudget; z += candidateStep) for (int x = 0; x < countX && clusterPositions.Count < runtimeClusterBudget; x += candidateStep)
             {
                 processedClusters++;
                 if (processedClusters >= clustersPerFrame)
@@ -214,6 +219,7 @@ namespace Voyage.TerrainSystem
         Mesh BuildClusterMesh(System.Random random)
         {
             var vertices = new List<Vector3>(bladesPerCluster * 8);
+            var normals = new List<Vector3>(vertices.Capacity);
             var uvs = new List<Vector2>(bladesPerCluster * 8);
             var randoms = new List<Vector2>(bladesPerCluster * 8);
             var triangles = new List<int>(bladesPerCluster * 12);
@@ -226,20 +232,22 @@ namespace Voyage.TerrainSystem
                 float w = h * (0.10f + (float)random.NextDouble() * 0.05f);
                 float yaw = (float)random.NextDouble() * Mathf.PI;
                 float variation = (float)random.NextDouble();
-                AddBlade(vertices, uvs, randoms, triangles, local, h, w, yaw, variation);
-                AddBlade(vertices, uvs, randoms, triangles, local, h, w, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                AddBlade(vertices, normals, uvs, randoms, triangles, local, h, w, yaw, variation);
+                AddBlade(vertices, normals, uvs, randoms, triangles, local, h, w, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
             }
             var result = new Mesh { name = "Interactive Grass Cluster Mesh" };
-            result.SetVertices(vertices); result.SetUVs(0, uvs); result.SetUVs(1, randoms); result.SetTriangles(triangles, 0, true); result.RecalculateBounds();
+            result.SetVertices(vertices); result.SetNormals(normals); result.SetUVs(0, uvs); result.SetUVs(1, randoms); result.SetTriangles(triangles, 0, true); result.RecalculateBounds();
             result.UploadMeshData(true);
             return result;
         }
 
-        static void AddBlade(List<Vector3> v, List<Vector2> uv, List<Vector2> randoms, List<int> t, Vector3 p, float h, float w, float yaw, float variation)
+        static void AddBlade(List<Vector3> v, List<Vector3> normals, List<Vector2> uv, List<Vector2> randoms, List<int> t, Vector3 p, float h, float w, float yaw, float variation)
         {
             Vector3 side = new Vector3(Mathf.Cos(yaw), 0f, Mathf.Sin(yaw)) * w;
+            Vector3 faceNormal = Vector3.Cross(side, Vector3.up).normalized;
             int start = v.Count;
             v.Add(p - side); v.Add(p + side); v.Add(p + Vector3.up * h);
+            normals.Add(faceNormal); normals.Add(faceNormal); normals.Add(faceNormal);
             uv.Add(new Vector2(0, 0)); uv.Add(new Vector2(1, 0)); uv.Add(new Vector2(0.5f, 1));
             Vector2 instanceRandom = new Vector2(Mathf.Repeat(variation, 1f), Mathf.Repeat(variation * 2.17f + 0.37f, 1f));
             randoms.Add(instanceRandom); randoms.Add(instanceRandom); randoms.Add(instanceRandom);
@@ -249,8 +257,9 @@ namespace Voyage.TerrainSystem
 
         static Material CreateDefaultMaterial()
         {
-            Shader shader = Shader.Find("Voyage/Grass/InteractiveUnlit");
-            return shader == null ? null : new Material(shader) { color = new Color(0.18f, 0.42f, 0.12f, 1f) };
+            Shader shader = Shader.Find("Voyage/Grass/InteractiveLit");
+            if (shader == null) shader = Shader.Find("Voyage/Grass/InteractiveUnlit");
+            return shader == null ? null : new Material(shader) { color = new Color(0.28f, 0.38f, 0.14f, 1f) };
         }
 
         public void SetLod(int lod)
@@ -272,8 +281,12 @@ namespace Voyage.TerrainSystem
             if (runtimeMaterial != null)
             {
                 runtimeMaterial.SetFloat("_InteractionEnabled", interactionNearby && currentLod < 2 ? 1f : 0f);
-                runtimeMaterial.SetFloat("_WindStrength", currentLod == 0 ? 0.08f : currentLod == 1 ? 0.035f : 0f);
-                runtimeMaterial.SetFloat("_Density", currentLod == 0 ? 1f : currentLod == 1 ? 0.55f : 0.2f);
+                runtimeMaterial.SetFloat("_WindStrength", currentLod == 0 ? 0.20f : currentLod == 1 ? 0.11f : 0.05f);
+                runtimeMaterial.SetFloat("_WindSpeed", currentLod == 0 ? 1.0f : currentLod == 1 ? 0.82f : 0.65f);
+                runtimeMaterial.SetFloat("_BendStrength", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.8f : 0.35f);
+                // Density is resolved by placement and LOD instance count.
+                // Clipping individual blades makes dense clumps look sparse.
+                runtimeMaterial.SetFloat("_Density", 1f);
             }
         }
 

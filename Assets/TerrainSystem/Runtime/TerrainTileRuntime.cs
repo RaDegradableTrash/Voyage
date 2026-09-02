@@ -107,14 +107,18 @@ namespace Voyage.TerrainSystem
             // silently fall back to the sparse component defaults. Keep the
             // fallback budget bounded because baking is the preferred path and
             // runtime sampling performs terrain raycasts.
-            if (settings != null && grass.bakedClusters == null)
+            if (settings != null && grass.prototype == null && !grass.useLegacyBakedClusters)
             {
                 grass.clusterSpacing = settings.grassClusterSpacing;
                 grass.bladesPerCluster = settings.grassBladesPerCluster;
                 grass.clusterRadius = settings.grassClusterRadius;
                 grass.bladeHeight = settings.grassBladeHeight;
                 grass.density = settings.grassDensity;
-                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 6000);
+                // The old 6000 cap was useful for the first sparse prototype,
+                // but made the streamed fallback visibly empty. Keep the
+                // budget authored in settings while still protecting against
+                // an accidental unbounded value.
+                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 50000);
                 grass.fullDensityBelowSlope = settings.grassFullDensityBelowSlope;
                 grass.noGrassAboveSlope = settings.grassNoGrassAboveSlope;
             }
