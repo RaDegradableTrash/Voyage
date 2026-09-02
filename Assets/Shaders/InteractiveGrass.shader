@@ -137,6 +137,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 Varyings output;
                 float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
                 float3 instanceOriginWS = float3(unity_ObjectToWorld._m03, unity_ObjectToWorld._m13, unity_ObjectToWorld._m23);
+                float3 bladeRootWS = TransformObjectToWorld(float3(input.positionOS.x, 0.0, input.positionOS.z));
                 float cameraDistance = distance(instanceOriginWS, GetCameraPositionWS());
                 float farBlend = smoothstep(_FadeStart * 0.35, max(_FadeStart * 0.35 + 0.01, _FadeEnd * 0.78), cameraDistance);
                 // Replace distant tiny cards with visually broader clumps.
@@ -145,6 +146,10 @@ Shader "Voyage/Grass/InteractiveLit"
                 positionWS = instanceOriginWS + float3(localFromOrigin.x * farClusterScale,
                                                         localFromOrigin.y * lerp(1.0, 1.18, farBlend),
                                                         localFromOrigin.z * farClusterScale);
+                float3 rootFromOrigin = bladeRootWS - instanceOriginWS;
+                bladeRootWS = instanceOriginWS + float3(rootFromOrigin.x * farClusterScale,
+                                                         rootFromOrigin.y * lerp(1.0, 1.18, farBlend),
+                                                         rootFromOrigin.z * farClusterScale);
                 float tip = saturate(input.uv.y);
                 float temporaryWeight;
                 float recoveryAge;
@@ -152,7 +157,8 @@ Shader "Voyage/Grass/InteractiveLit"
 
                 // The interaction texture alpha is the recovery timer. Follow
                 // it directly so pressed grass stands back up smoothly.
-                float recoveryStrength = saturate(1.0 - recoveryAge);
+                float recoveryVariation = lerp(0.86, 1.14, input.instanceRandom.y);
+                float recoveryStrength = pow(saturate(1.0 - recoveryAge), recoveryVariation);
                 interactionBend *= recoveryStrength * _InteractionEnabled * _BendStrength * 1.8;
 
                 // Immediate vehicle wake: the texture leaves a persistent
@@ -183,13 +189,21 @@ Shader "Voyage/Grass/InteractiveLit"
                 float2 wind = globalWindDirection * wave * _WindStrength * 1.35 * windDistanceAttenuation *
                               lerp(1.0, gust, globalGustStrength) * windVariation;
                 float bendTip = tip * tip * (0.35 + 0.65 * tip);
-                float2 totalOffset = interactionBend + wind;
-                positionWS.xz += totalOffset * bendTip;
-                // A pressed blade must lean and lose height at the tip. An
-                // XZ-only offset reads as sliding grass rather than flattened
-                // grass, especially from the vehicle camera.
-                float interactionAmount = saturate(length(interactionBend) * 1.35);
-                positionWS.y -= interactionAmount * 1.35 * bendTip;
+                float interactionAmount = saturate(length(interactionBend) * 0.86);
+                float windAmount = saturate(length(wind) * 1.05);
+                float bendAngle = saturate(interactionAmount * 1.52 + windAmount * 0.28);
+                float2 bendDirection = normalize(interactionBend + wind * 0.38 + float2(0.0001, 0.0001));
+                float angleAtVertex = bendAngle * bendTip;
+                float bladeHeight = max(0.0, positionWS.y - bladeRootWS.y);
+                float3 rootWidthOffset = float3(positionWS.x - bladeRootWS.x, 0.0, positionWS.z - bladeRootWS.z);
+                float3 arcDirection = float3(bendDirection.x, 0.0, bendDirection.y);
+
+                // Rotate each blade around its planted root. This keeps the
+                // root fixed and preserves the blade length while the tip
+                // approaches the ground like a clock hand.
+                positionWS = bladeRootWS + rootWidthOffset +
+                             arcDirection * (sin(angleAtVertex) * bladeHeight);
+                positionWS.y = bladeRootWS.y + cos(angleAtVertex) * bladeHeight;
 
                 output.positionWS = positionWS;
                 output.positionCS = TransformWorldToHClip(positionWS);
@@ -198,9 +212,10 @@ Shader "Voyage/Grass/InteractiveLit"
                 // Keep lighting coherent with the displaced blade. Without a
                 // dynamic normal, wind and pressed grass move but retain the
                 // original face lighting, which reads as an unlit object.
-                float3 normalTilt = float3(-totalOffset.x * 0.72,
-                                           abs(totalOffset.x) * 0.24 + abs(totalOffset.y) * 0.24,
-                                           -totalOffset.y * 0.72);
+                float2 visibleBend = bendDirection * sin(angleAtVertex);
+                float3 normalTilt = float3(-visibleBend.x * 0.72,
+                                           abs(visibleBend.x) * 0.24 + abs(visibleBend.y) * 0.24,
+                                           -visibleBend.y * 0.72);
                 output.normalWS = NormalizeNormalPerVertex(normalize(baseNormalWS + normalTilt));
                 output.uv = input.uv;
                 output.instanceRandom = input.instanceRandom;
