@@ -114,10 +114,19 @@ namespace Voyage.TerrainSystem
             if (instanceProperties == null) instanceProperties = new MaterialPropertyBlock();
             float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.55f : 0.2f;
             int visibleCount = Mathf.Clamp(Mathf.CeilToInt(instanceMatrices.Length * lodDensity), 1, instanceMatrices.Length);
+            // The instance array is generated in grid order. Copying the first
+            // visibleCount entries would therefore remove an entire spatial
+            // section of the tile at lower LODs. Select evenly across the full
+            // array so density reduction remains spatially uniform.
             for (int start = 0; start < visibleCount; start += 1023)
             {
                 int count = Mathf.Min(1023, visibleCount - start);
-                System.Array.Copy(instanceMatrices, start, instanceBatch, 0, count);
+                for (int batchIndex = 0; batchIndex < count; batchIndex++)
+                {
+                    int sampleIndex = Mathf.Min(instanceMatrices.Length - 1,
+                        (int)(((long)(start + batchIndex) * instanceMatrices.Length) / visibleCount));
+                    instanceBatch[batchIndex] = instanceMatrices[sampleIndex];
+                }
                 Graphics.DrawMeshInstanced(drawMesh, 0, runtimeMaterial, instanceBatch, count, instanceProperties,
                     UnityEngine.Rendering.ShadowCastingMode.On, true, gameObject.layer, null, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
             }
