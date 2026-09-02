@@ -199,7 +199,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 // Keep sampling the field for diagnostics/recovery telemetry,
                 // but do not let a stale or reprojected texel bend an entire
                 // streamed tile. Actual deformation below is wheel-local.
-                SampleBend(FieldUV(positionWS), temporaryWeight, recoveryAge);
+                float2 fieldBend = SampleBend(FieldUV(positionWS), temporaryWeight, recoveryAge);
                 // Direct wheel-space influence is intentionally local and is
                 // evaluated from world coordinates, so a bad tile/field
                 // reprojection can never flatten an entire grass chunk.
@@ -208,7 +208,14 @@ Shader "Voyage/Grass/InteractiveLit"
                 // a second body-derived footprint here: its inferred axle
                 // spacing can overlap an adjacent streamed tile and make a
                 // whole chunk look pressed even though no tire is there.
-                float2 interactionBend = immediateWheelBend * 3.5;
+                float2 liveBend = immediateWheelBend * 3.5;
+                // Preserve a strong, filtered tire impression behind the
+                // vehicle, but reject the weak edge/noise of the field. This
+                // keeps the trail local instead of allowing a stale texel to
+                // flatten an entire streamed tile.
+                float historySignal = smoothstep(0.12, 0.55, temporaryWeight);
+                float2 historyDirection = normalize(fieldBend + float2(0.0001, 0.0001));
+                float2 historyBend = historyDirection * historySignal * 1.35;
 
                 // The interaction texture alpha is the recovery timer. Follow
                 // it directly so pressed grass stands back up smoothly.
@@ -227,8 +234,9 @@ Shader "Voyage/Grass/InteractiveLit"
                 // multiply the live wheel bend down to zero exactly where
                 // the next tire pass is supposed to be visible.
                 float directWheelActive = step(0.001, length(immediateWheelBend));
-                recoveryStrength = max(recoveryStrength, directWheelActive);
-                interactionBend *= recoveryStrength * _InteractionEnabled * _BendStrength * 1.8;
+                float liveRecovery = max(recoveryStrength, directWheelActive);
+                liveBend *= liveRecovery;
+                float2 interactionBend = (liveBend + historyBend) * _InteractionEnabled * _BendStrength * 1.8;
 
                 float2 globalWindDirection = normalize(_VoyageGrassWind.xy + float2(0.0001, 0.0001));
                 float globalWindSpeed = _VoyageGrassWind.z > 0.0 ? _VoyageGrassWind.z : 1.0;
