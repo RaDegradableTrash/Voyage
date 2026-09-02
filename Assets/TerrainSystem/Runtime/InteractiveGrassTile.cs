@@ -163,7 +163,7 @@ namespace Voyage.TerrainSystem
             if (interaction != null && interaction.IsReady)
                 interaction.BindShaderProperties(instanceProperties);
             bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
-            Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : runtimeClusterMesh;
+            Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : runtimeClusterMesh != null ? runtimeClusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : null;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
             // Keep interactive grass on the regular instanced path while the
             // tire field is active. The indirect path uses a separate
@@ -177,7 +177,9 @@ namespace Voyage.TerrainSystem
             // drawing so stale material state cannot disable the whole pass.
             if (!runtimeMaterial.enableInstancing) runtimeMaterial.enableInstancing = true;
             if (!runtimeMaterial.enableInstancing) return;
-            float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.55f : 0.2f;
+            // Retain a continuous mid/far meadow; the shader handles the
+            // color/alpha transition and very low LOD density becomes noise.
+            float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.75f : 0.42f;
             int visibleCount = Mathf.Clamp(Mathf.CeilToInt(instanceMatrices.Length * lodDensity), 1, instanceMatrices.Length);
             // The instance array is generated in grid order. Copying the first
             // visibleCount entries would therefore remove an entire spatial
@@ -229,7 +231,7 @@ namespace Voyage.TerrainSystem
             indirectCullingShader.SetVector("_CameraPosition", camera.transform.position);
             indirectCullingShader.SetVectorArray("_FrustumPlanes", planeVectors);
             indirectCullingShader.SetFloat("_MaxDistance", Mathf.Max(fadeEnd, 1f));
-            indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.55f : 0.2f);
+            indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.75f : 0.42f);
             indirectCullingShader.SetFloat("_InstanceRadius", Mathf.Max(1f, bladeHeight + clusterRadius));
             indirectCullingShader.Dispatch(indirectKernel, Mathf.CeilToInt(instanceMatrices.Length / 64f), 1, 1);
             ComputeBuffer.CopyCount(indirectVisibleBuffer, indirectArgsBuffer, sizeof(uint));
@@ -355,7 +357,13 @@ namespace Voyage.TerrainSystem
                 buildRoutine = null;
                 yield break;
             }
-            if (prototype == null || prototype.clusterMesh == null)
+            // Existing prefabs can still reference the old three-plane
+            // prototype. Build the expanded runtime geometry for those
+            // assets so the visual fix applies without a full terrain rebake.
+            bool prototypeNeedsExpandedGeometry = prototype != null &&
+                                                  prototype.clusterMesh != null &&
+                                                  prototype.clusterMesh.vertexCount < bladesPerCluster * 4 * 3;
+            if (prototype == null || prototype.clusterMesh == null || prototypeNeedsExpandedGeometry)
                 runtimeClusterMesh = BuildClusterMesh(random);
             instanceMatrices = new Matrix4x4[clusterPositions.Count];
             for (int i = 0; i < instanceMatrices.Length; i++)
@@ -381,12 +389,13 @@ namespace Voyage.TerrainSystem
                 float distance = Mathf.Sqrt((float)random.NextDouble()) * clusterRadius;
                 Vector3 local = new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
                 float h = bladeHeight * (0.72f + (float)random.NextDouble() * 0.56f);
-                float w = h * (0.15f + (float)random.NextDouble() * 0.07f);
+                float w = h * (0.20f + (float)random.NextDouble() * 0.10f);
                 float yaw = (float)random.NextDouble() * Mathf.PI;
                 float variation = (float)random.NextDouble();
                 AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw, variation);
                 AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
                 AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI * 0.25f, variation * 0.37f + 0.47f);
             }
             var result = new Mesh { name = "Interactive Grass Cluster Mesh" };
             result.SetVertices(vertices); result.SetNormals(normals); result.SetUVs(0, uvs); result.SetUVs(1, randoms); result.SetUVs(2, bladeData); result.SetTriangles(triangles, 0, true); result.RecalculateBounds();

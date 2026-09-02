@@ -22,12 +22,13 @@ namespace Voyage.TerrainSystem.Editor
                 float distance = Mathf.Sqrt((float)random.NextDouble()) * Mathf.Max(0.05f, settings.grassClusterRadius);
                 Vector3 local = new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
                 float height = settings.grassBladeHeight * (0.72f + (float)random.NextDouble() * 0.56f);
-                float width = height * (0.15f + (float)random.NextDouble() * 0.07f);
+                float width = height * (0.20f + (float)random.NextDouble() * 0.10f);
                 float yaw = (float)random.NextDouble() * Mathf.PI;
                 float variation = (float)random.NextDouble();
                 AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw, variation);
                 AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
                 AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.25f, variation * 0.37f + 0.47f);
             }
             Mesh clusterMesh = new Mesh { name = assetName + " Cluster Mesh" };
             clusterMesh.SetVertices(vertices);
@@ -107,12 +108,13 @@ namespace Voyage.TerrainSystem.Editor
                 float distance = Mathf.Sqrt((float)random.NextDouble()) * Mathf.Max(0.05f, settings.grassClusterRadius);
                 Vector3 local = new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
                 float height = settings.grassBladeHeight * (0.72f + (float)random.NextDouble() * 0.56f);
-                float width = height * (0.15f + (float)random.NextDouble() * 0.07f);
+                float width = height * (0.20f + (float)random.NextDouble() * 0.10f);
                 float yaw = (float)random.NextDouble() * Mathf.PI;
                 float variation = (float)random.NextDouble();
                 AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw, variation);
                 AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
                 AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.25f, variation * 0.37f + 0.47f);
             }
             Mesh clusterMesh = new Mesh { name = assetName + " Cluster Mesh" };
             clusterMesh.indexFormat = vertices.Count > 65535 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16;
@@ -183,12 +185,13 @@ namespace Voyage.TerrainSystem.Editor
                     // once by the vertex and a second time by the matrix.
                     Vector3 local = new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
                     float height = settings.grassBladeHeight * (0.72f + (float)random.NextDouble() * 0.56f);
-                    float width = height * (0.15f + (float)random.NextDouble() * 0.07f);
+                    float width = height * (0.20f + (float)random.NextDouble() * 0.10f);
                     float yaw = (float)random.NextDouble() * Mathf.PI;
                     float variation = (float)random.NextDouble();
                     AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw, variation);
                     AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
                     AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.25f, variation * 0.37f + 0.47f);
                 }
             }
 
