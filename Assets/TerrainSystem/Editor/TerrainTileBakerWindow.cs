@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 using System;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 using Voyage.TerrainSystem;
@@ -55,6 +56,7 @@ namespace Voyage.TerrainSystem.Editor
             {
                 if (GUILayout.Button("Validate Generated Tiles")) status = TerrainTileValidation.Validate(index);
             }
+            if (GUILayout.Button("Remove Legacy Grass Cache")) RemoveLegacyGrassCache();
             if (GUILayout.Button("Clear Generated Assets")) ClearGeneratedAssets();
             EditorGUILayout.Space(8f);
             EditorGUILayout.HelpBox(status, MessageType.None);
@@ -166,6 +168,31 @@ namespace Voyage.TerrainSystem.Editor
             AssetDatabase.DeleteAsset("Assets/TerrainSystem/GeneratedLOD");
             AssetDatabase.Refresh();
             status = "已清理 TerrainSystem 生成目录；源 FBX 未被修改。";
+        }
+
+        private void RemoveLegacyGrassCache()
+        {
+            string[] guids = AssetDatabase.FindAssets("t:GrassChunkAsset", new[] { "Assets/TerrainSystem/GeneratedLOD" });
+            List<string> legacyPaths = new List<string>(guids.Length);
+            for (int i = 0; i < guids.Length; i++)
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guids[i]).Replace('\\', '/');
+                if (path.EndsWith("_Grass.asset", StringComparison.OrdinalIgnoreCase)) legacyPaths.Add(path);
+            }
+            if (legacyPaths.Count == 0)
+            {
+                status = "未找到旧版每地块草资产。";
+                return;
+            }
+            if (!EditorUtility.DisplayDialog("Remove legacy grass cache", "仅删除 " + legacyPaths.Count + " 个旧版 *_Grass.asset，不影响地形 LOD、Prefab 或源 FBX。继续？", "Delete", "Cancel")) return;
+            int deleted = 0;
+            for (int i = 0; i < legacyPaths.Count; i++)
+            {
+                if (AssetDatabase.DeleteAsset(legacyPaths[i])) deleted++;
+            }
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+            status = "已删除 " + deleted + " 个旧版每地块草资产；地形资源未修改。";
         }
 
         private static T CreateAsset<T>(string path) where T : ScriptableObject

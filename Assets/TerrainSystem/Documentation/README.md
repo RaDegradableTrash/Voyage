@@ -14,7 +14,7 @@
 
 项目中的试用源文件为 `Assets/VoyageTerrain_Trial1.fbx`。Unity 完成导入后，可直接从 Project 窗口拖入 Baker；如果 FBX 尚未完成导入，先等待 Inspector 中的模型预览出现。
 
-源 FBX 只通过 `sharedMesh` 读取，原始顶点、法线、UV、材质和索引不会被写回。派生 Mesh 位于 `GeneratedLOD`，Prefab 位于 `GeneratedTiles/Resources`。
+源 FBX 只通过 `sharedMesh` 读取，原始顶点、法线、UV、材质和索引不会被写回。派生地形 Mesh 位于 `GeneratedLOD`，Prefab 位于 `GeneratedTiles/Resources`。草地原型只写入 `Source/GrassPrototype.asset` 并由所有 Tile 共享，Tile 草实例在运行时按需生成，不再写入每 Tile 的 `*_Grass.asset`。
 
 ## 当前边界
 

@@ -80,6 +80,7 @@ namespace Voyage.TerrainSystem.Editor
                     AssetDatabase.DeleteAsset("Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles");
                 }
                 EnsureDirectories();
+                GrassPrototypeAsset grassPrototype = settings.bakeGrass ? BuildSharedGrassPrototype(settings) : null;
                 index.source = descriptor;
                 index.settings = settings;
                 if (onlyCoordinate == null) index.tiles.Clear();
@@ -95,7 +96,7 @@ namespace Voyage.TerrainSystem.Editor
                         throw new OperationCanceledException("地块生成已取消，已生成的派生资源保留，源 FBX 未被修改。");
                     // disabled duplicate progress block
 */
-                    TerrainTileRecord record = BuildTile(pair.Key, pair.Value, settings);
+                    TerrainTileRecord record = BuildTile(pair.Key, pair.Value, settings, grassPrototype);
                     ReplaceRecord(index, record);
                 }
                 EditorUtility.ClearProgressBar();
@@ -236,7 +237,7 @@ namespace Voyage.TerrainSystem.Editor
             data.triangles.Add(triangle);
         }
 
-        private static TerrainTileRecord BuildTile(Vector2Int coordinate, TileData data, TerrainChunkSettings settings)
+        private static TerrainTileRecord BuildTile(Vector2Int coordinate, TileData data, TerrainChunkSettings settings, GrassPrototypeAsset grassPrototype)
         {
             string tileName = string.Format(settings.tileNameFormat, coordinate.x, coordinate.y);
             Vector3 tileOrigin = settings.GetTileBounds(coordinate).center;
@@ -244,7 +245,6 @@ namespace Voyage.TerrainSystem.Editor
             Mesh lod1 = TerrainLodBuilder.Build(lod0, settings.lod1Quality, coordinate, settings, tileName + "_LOD1");
             Mesh lod2 = TerrainLodBuilder.Build(lod0, settings.lod2Quality, coordinate, settings, tileName + "_LOD2");
             Mesh lod3 = TerrainLodBuilder.Build(lod0, settings.lod3Quality, coordinate, settings, tileName + "_LOD3");
-            GrassChunkAsset bakedGrass = settings.bakeGrass ? GrassMeshBaker.BuildAsset(data.triangles, tileOrigin, coordinate, settings, tileName + "_Grass") : null;
             Mesh[] skirts = settings.generateSkirts ? new Mesh[]
             {
                 TerrainSkirtBuilder.Build(lod0, coordinate, settings, settings.skirtDepth, tileName + "_Skirt0"),
@@ -260,19 +260,14 @@ namespace Voyage.TerrainSystem.Editor
             AssetDatabase.CreateAsset(lod1, lodFolder + tileName + "_LOD1.asset");
             AssetDatabase.CreateAsset(lod2, lodFolder + tileName + "_LOD2.asset");
             AssetDatabase.CreateAsset(lod3, lodFolder + tileName + "_LOD3.asset");
-            if (bakedGrass != null)
-            {
-                string grassPath = lodFolder + tileName + "_Grass.asset";
-                AssetDatabase.CreateAsset(bakedGrass, grassPath);
-                if (bakedGrass.clusterMesh != null) AssetDatabase.AddObjectToAsset(bakedGrass.clusterMesh, bakedGrass);
-            }
             for (int i = 0; i < skirts.Length; i++) if (skirts[i] != null) AssetDatabase.CreateAsset(skirts[i], lodFolder + skirts[i].name + ".asset");
             AssetDatabase.SaveAssets();
 
             GameObject prefabRoot = new GameObject(tileName);
             TerrainTileRuntime runtime = prefabRoot.AddComponent<TerrainTileRuntime>();
             InteractiveGrassTile grassRuntime = prefabRoot.AddComponent<InteractiveGrassTile>();
-            grassRuntime.bakedClusters = bakedGrass;
+            grassRuntime.prototype = grassPrototype;
+            grassRuntime.tileCoordinate = coordinate;
             grassRuntime.clusterSpacing = settings.grassClusterSpacing;
             grassRuntime.bladesPerCluster = settings.grassBladesPerCluster;
             grassRuntime.clusterRadius = settings.grassClusterRadius;
@@ -444,6 +439,19 @@ namespace Voyage.TerrainSystem.Editor
         {
             EnsureAssetFolder("Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles/");
             EnsureAssetFolder("Assets/TerrainSystem/GeneratedLOD/");
+        }
+
+        private static GrassPrototypeAsset BuildSharedGrassPrototype(TerrainChunkSettings settings)
+        {
+            const string path = "Assets/TerrainSystem/Source/GrassPrototype.asset";
+            GrassPrototypeAsset previous = AssetDatabase.LoadAssetAtPath<GrassPrototypeAsset>(path);
+            if (previous != null) AssetDatabase.DeleteAsset(path);
+            GrassPrototypeAsset prototype = GrassMeshBaker.BuildPrototype(settings, "GrassPrototype");
+            if (prototype == null) return null;
+            AssetDatabase.CreateAsset(prototype, path);
+            if (prototype.clusterMesh != null) AssetDatabase.AddObjectToAsset(prototype.clusterMesh, prototype);
+            AssetDatabase.SaveAssets();
+            return AssetDatabase.LoadAssetAtPath<GrassPrototypeAsset>(path);
         }
 
         private static void EnsureAssetFolder(string path)
