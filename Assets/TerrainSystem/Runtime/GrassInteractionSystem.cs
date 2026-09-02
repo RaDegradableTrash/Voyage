@@ -286,13 +286,12 @@ namespace Voyage.TerrainSystem
                     wheelStates.RemoveAt(i);
                     continue;
                 }
-                // A wheel owns one interaction stream. The contact point is
-                // preferred because it is the actual tire/ground location;
-                // the wheel pivot is only a fallback while WheelCollider has
-                // no hit on a streamed or temporarily uneven tile.
-                Vector3 current = collider.GetGroundHit(out WheelHit hit)
-                    ? hit.point
-                    : state.wheel.position;
+                // Use the wheel pivot's XZ as the footprint anchor. WheelCollider
+                // contact points are solver results and can remain fixed (or
+                // report no hit) while the chassis is being driven over a
+                // streamed mesh. The pivot follows every axle, so all wheels
+                // produce a continuous world-space tire path.
+                Vector3 current = state.wheel.position;
                 if (!state.valid) { state.previous = current; state.valid = true; continue; }
                 bool currentOutside = IsOutsideField(current, state.radius);
                 bool previousOutside = IsOutsideField(state.previous, state.radius);
@@ -371,6 +370,13 @@ namespace Voyage.TerrainSystem
 
             motionVelocity.y = 0f;
             if (motionVelocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed)
+                return true;
+
+            // A WheelCollider can lag one or more render frames behind the
+            // chassis while suspension/mesh streaming settles. In that
+            // interval the wheel displacement is still authoritative: it is
+            // the actual footprint change that must refresh the grass.
+            if (observedDistance >= minimumWheelTravel)
                 return true;
 
             // Keep transform-driven rigs supported when they have no velocity
