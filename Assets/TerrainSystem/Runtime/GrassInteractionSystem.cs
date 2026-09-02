@@ -43,6 +43,9 @@ namespace Voyage.TerrainSystem
         GrassPermanentTrackStore permanentTrackStore;
         Vector3 fieldCenter;
         Vector3 lastFieldCenter;
+        Vector3 previousFollowPosition;
+        bool hasFollowPosition;
+        bool vehicleMovedThisFrame;
         bool hasFieldCenter;
         bool initialized;
         readonly List<GrassPermanentTrackStore.TrackSample> permanentRebuildSamples = new List<GrassPermanentTrackStore.TrackSample>();
@@ -62,6 +65,7 @@ namespace Voyage.TerrainSystem
             public Vector3 previous;
             public float radius;
             public float minimumTravel;
+            public bool requireVehicleMovement;
             public bool valid;
         }
 
@@ -139,6 +143,7 @@ namespace Voyage.TerrainSystem
             // spatially continuous. Force a fresh world-space anchor and let
             // the next valid WheelCollider hit establish new baselines.
             hasFieldCenter = false;
+            hasFollowPosition = false;
             for (int i = 0; i < wheelStates.Count; i++) wheelStates[i].valid = false;
         }
 
@@ -155,11 +160,11 @@ namespace Voyage.TerrainSystem
                 // wheel briefly loses WheelHit on uneven terrain. The wheel
                 // transform still follows the vehicle, so keep a lightweight
                 // positional emitter for every wheel as a visual fallback.
-                RegisterEmitter(wheel, Mathf.Max(0.35f, colliders[i].radius), 0.01f);
+                RegisterEmitter(wheel, Mathf.Max(0.35f, colliders[i].radius), 0.01f, true);
             }
         }
 
-        public void RegisterEmitter(Transform target, float radius, float minimumTravel)
+        public void RegisterEmitter(Transform target, float radius, float minimumTravel, bool requireVehicleMovement = false)
         {
             if (target == null) return;
             for (int i = 0; i < emitters.Count; i++)
@@ -167,6 +172,7 @@ namespace Voyage.TerrainSystem
                 {
                     emitters[i].radius = Mathf.Max(0.05f, radius);
                     emitters[i].minimumTravel = Mathf.Max(0f, minimumTravel);
+                    emitters[i].requireVehicleMovement = requireVehicleMovement;
                     emitters[i].valid = false;
                     return;
                 }
@@ -174,7 +180,8 @@ namespace Voyage.TerrainSystem
             {
                 target = target,
                 radius = Mathf.Max(0.05f, radius),
-                minimumTravel = Mathf.Max(0f, minimumTravel)
+                minimumTravel = Mathf.Max(0f, minimumTravel),
+                requireVehicleMovement = requireVehicleMovement
             });
         }
 
@@ -209,8 +216,16 @@ namespace Voyage.TerrainSystem
         void LateUpdate()
         {
             if (!initialized) return;
+            vehicleMovedThisFrame = false;
             if (followTarget != null)
             {
+                Vector3 followDelta = followTarget.position - previousFollowPosition;
+                Vector2 followDeltaXZ = new Vector2(followDelta.x, followDelta.z);
+                if (!hasFollowPosition)
+                    hasFollowPosition = true;
+                else if (followDeltaXZ.sqrMagnitude > 0.000025f && followDeltaXZ.sqrMagnitude < maxTeleportDistance * maxTeleportDistance)
+                    vehicleMovedThisFrame = true;
+                previousFollowPosition = followTarget.position;
                 Vector3 targetCenter = followTarget.position;
                 targetCenter.y = 0f;
                 float texelWorldSize = worldSize / Mathf.Max(1, resolution);
@@ -274,6 +289,12 @@ namespace Voyage.TerrainSystem
                 }
                 if (!collider.GetGroundHit(out WheelHit hit)) { state.valid = false; continue; }
                 Vector3 current = hit.point;
+                if (!vehicleMovedThisFrame)
+                {
+                    state.previous = current;
+                    state.valid = true;
+                    continue;
+                }
                 if (!state.valid) { state.previous = current; state.valid = true; continue; }
                 bool currentOutside = IsOutsideField(current, collider.radius);
                 bool previousOutside = IsOutsideField(state.previous, collider.radius);
@@ -301,6 +322,12 @@ namespace Voyage.TerrainSystem
                 EmitterState emitter = emitters[i];
                 if (emitter.target == null) { emitters.RemoveAt(i); continue; }
                 Vector3 current = emitter.target.position;
+                if (emitter.requireVehicleMovement && !vehicleMovedThisFrame)
+                {
+                    emitter.previous = current;
+                    emitter.valid = true;
+                    continue;
+                }
                 if (!emitter.valid)
                 {
                     emitter.previous = current;
