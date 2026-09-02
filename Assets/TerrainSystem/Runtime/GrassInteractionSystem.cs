@@ -23,10 +23,13 @@ namespace Voyage.TerrainSystem
         [Header("Debug")]
         [Tooltip("Color grass by its current wheel interaction state and show wheel state text in Game view.")]
         public bool debugGrassStateMachine;
+        [Tooltip("Diagnostic only: force a visible horizontal bend in the vertex shader. F11 toggles this at runtime.")]
+        public bool debugForceGrassBend;
         [Tooltip("Draw the streamed grass-tile state and wheel influence bounds in the Scene view.")]
         public bool debugDrawTileStates = true;
         [Tooltip("Runtime key used to toggle the debug overlay and shader colors.")]
         public KeyCode debugToggleKey = KeyCode.F10;
+        public KeyCode debugForceBendKey = KeyCode.F11;
 
         public static GrassInteractionSystem Instance { get; private set; }
 
@@ -146,7 +149,7 @@ namespace Voyage.TerrainSystem
             target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
             target.SetVector("_VoyageGrassVehicleData", shaderVehicleData);
             target.SetVector("_VoyageGrassVehicleParams", shaderVehicleParams);
-            target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
+            target.SetFloat("_VoyageGrassDebugStateMachine", debugForceGrassBend ? 2f : debugGrassStateMachine ? 1f : 0f);
         }
 
         public void BindShaderProperties(MaterialPropertyBlock target)
@@ -161,7 +164,7 @@ namespace Voyage.TerrainSystem
             target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
             target.SetVector("_VoyageGrassVehicleData", shaderVehicleData);
             target.SetVector("_VoyageGrassVehicleParams", shaderVehicleParams);
-            target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
+            target.SetFloat("_VoyageGrassDebugStateMachine", debugForceGrassBend ? 2f : debugGrassStateMachine ? 1f : 0f);
         }
 
         void SetIndividualWheelProperties(Material target)
@@ -282,6 +285,11 @@ namespace Voyage.TerrainSystem
             if (debugToggleKey != KeyCode.None && Input.GetKeyDown(debugToggleKey))
             {
                 debugGrassStateMachine = !debugGrassStateMachine;
+                PublishGlobals();
+            }
+            if (debugForceBendKey != KeyCode.None && Input.GetKeyDown(debugForceBendKey))
+            {
+                debugForceGrassBend = !debugForceGrassBend;
                 PublishGlobals();
             }
         }
@@ -807,7 +815,7 @@ namespace Voyage.TerrainSystem
             }
             Shader.SetGlobalVector("_VoyageGrassVehicleData", shaderVehicleData);
             Shader.SetGlobalVector("_VoyageGrassVehicleParams", shaderVehicleParams);
-            Shader.SetGlobalFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
+            Shader.SetGlobalFloat("_VoyageGrassDebugStateMachine", debugForceGrassBend ? 2f : debugGrassStateMachine ? 1f : 0f);
         }
 
         void OnGUI()

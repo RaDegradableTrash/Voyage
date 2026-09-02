@@ -216,6 +216,10 @@ Shader "Voyage/Grass/InteractiveLit"
                 // evaluated from world coordinates, so a bad tile/field
                 // reprojection can never flatten an entire grass chunk.
                 float2 immediateWheelBend = SampleImmediateWheelBend(positionWS);
+                // F11 diagnostic: if this produces red, vertex deformation and
+                // the draw path work, so remaining failures are wheel binding.
+                if (_VoyageGrassDebugStateMachine > 1.5)
+                    immediateWheelBend = float2(1.0, 0.0);
                 // The wheel array is the authoritative footprint. Do not add
                 // a second body-derived footprint here: its inferred axle
                 // spacing can overlap an adjacent streamed tile and make a
@@ -344,7 +348,8 @@ Shader "Voyage/Grass/InteractiveLit"
                     float4 fieldSample = SAMPLE_TEXTURE2D_LOD(_VoyageGrassInteraction,
                                                                sampler_VoyageGrassInteraction,
                                                                FieldUV(input.positionWS), 0);
-                    if (input.bendAmount > 0.08) color = half3(1.0, 0.05, 0.02);
+                    if (_VoyageGrassDebugStateMachine > 1.5) color = half3(1.0, 0.0, 1.0);
+                    else if (input.bendAmount > 0.08) color = half3(1.0, 0.05, 0.02);
                     else if (fieldSample.b > 0.025) color = half3(0.05, 0.25, 1.0);
                     else color = half3(0.42, 0.42, 0.42);
                 }
