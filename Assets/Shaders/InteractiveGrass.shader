@@ -195,13 +195,12 @@ Shader "Voyage/Grass/InteractiveLit"
                 UNITY_SETUP_INSTANCE_ID(input);
                 Varyings output;
                 float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
-                // The mesh is placed in world-relative tile space, so the
-                // root must be reconstructed from the authored ground vertex.
-                // Older meshes have no TEXCOORD2 and use the material height
-                // as a safe fallback; new meshes carry their exact blade H.
-                float authoredBladeHeight = input.bladeData.x > 0.001 ? input.bladeData.x : _BladeHeight;
-                float rootLocalY = input.positionOS.y - input.uv.y * authoredBladeHeight;
-                float3 bladeRootWS = TransformObjectToWorld(float3(input.positionOS.x, rootLocalY, input.positionOS.z));
+                // Every generated grass blade is authored around a local
+                // ground plane at y=0; terrain height is carried only by the
+                // per-instance matrix translation. Do not reconstruct the
+                // root from UVs or a material height, since legacy meshes can
+                // contain stale height channels and launch the whole blade.
+                float3 bladeRootWS = TransformObjectToWorld(float3(input.positionOS.x, 0.0, input.positionOS.z));
                 float cameraDistance = distance(positionWS, GetCameraPositionWS());
                 float farBlend = smoothstep(_FadeStart * 0.35, max(_FadeStart * 0.35 + 0.01, _FadeEnd * 0.78), cameraDistance);
                 float originalVertexY = positionWS.y;
