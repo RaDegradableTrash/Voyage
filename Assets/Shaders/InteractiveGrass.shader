@@ -222,6 +222,12 @@ Shader "Voyage/Grass/InteractiveLit"
                 float recoveryStrength = lerp(1.0,
                                               pow(saturate(1.0 - recoveryAge), recoveryVariation),
                                               hasTemporaryImpression);
+                // Current tire contact always wins over a weak/stale field
+                // texel. Otherwise a nearly recovered impression can still
+                // multiply the live wheel bend down to zero exactly where
+                // the next tire pass is supposed to be visible.
+                float directWheelActive = step(0.001, length(immediateWheelBend));
+                recoveryStrength = max(recoveryStrength, directWheelActive);
                 interactionBend *= recoveryStrength * _InteractionEnabled * _BendStrength * 1.8;
 
                 float2 globalWindDirection = normalize(_VoyageGrassWind.xy + float2(0.0001, 0.0001));
