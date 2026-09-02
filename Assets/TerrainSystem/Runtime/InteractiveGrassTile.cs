@@ -131,10 +131,15 @@ namespace Voyage.TerrainSystem
 
         void LateUpdate()
         {
+            // Bind interaction data before the draw eligibility checks. A
+            // streamed tile can spend several frames with no generated
+            // cluster mesh or at a non-drawing LOD, then become visible again;
+            // waiting until after those checks leaves its material with stale
+            // wheel data on the first visible frame.
+            BindInteractionField();
             bool hasBakedClusters = useLegacyBakedClusters && bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
             Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : runtimeClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
-            BindInteractionField();
             if (useIndirectRendering && TryDrawIndirect(drawMesh)) return;
             // Generated prefabs may carry a material serialized before the
             // instanced grass path existed. Enforce this immediately before
