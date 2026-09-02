@@ -78,6 +78,9 @@ namespace Voyage.TerrainSystem
             public Transform wheel;
             public Rigidbody body;
             public VehicleTerrainFollower terrainFollower;
+            // -1 means this is a real WheelCollider.  Runtime raycast cars
+            // use the follower's contact array instead of a WheelCollider.
+            public int followerWheelIndex = -1;
             public float radius;
             public Vector3 previous;
             public bool valid;
@@ -245,10 +248,11 @@ namespace Voyage.TerrainSystem
                         if (wheel == null) continue;
                         wheelStates.Add(new WheelState
                         {
-                            wheel = wheel,
-                            body = vehicle.GetComponent<Rigidbody>(),
-                            terrainFollower = follower,
-                            radius = follower != null ? Mathf.Max(0.35f, follower.tireRadius) : 0.45f
+                        wheel = wheel,
+                        body = vehicle.GetComponent<Rigidbody>(),
+                        terrainFollower = follower,
+                        followerWheelIndex = i,
+                        radius = follower != null ? Mathf.Max(0.35f, follower.tireRadius) : 0.45f
                         });
                     }
                 }
@@ -364,7 +368,11 @@ namespace Voyage.TerrainSystem
                     continue;
                 }
                 WheelCollider collider = state.wheel.GetComponent<WheelCollider>();
-                if (collider == null)
+                // The project vehicle is a raycast vehicle: its four visual
+                // wheel transforms are the interaction sources, but they do
+                // not have WheelCollider components. Do not delete those
+                // states just because they are not physics WheelColliders.
+                if (collider == null && state.terrainFollower == null)
                 {
                     if (permanentTrackStore != null) permanentTrackStore.ForgetSource(state.wheel);
                     wheelStates.RemoveAt(i);
@@ -375,7 +383,7 @@ namespace Voyage.TerrainSystem
                 // report no hit) while the chassis is being driven over a
                 // streamed mesh. The pivot follows every axle, so all wheels
                 // produce a continuous world-space tire path.
-                Vector3 current = state.wheel.position;
+                Vector3 current = GetWheelAnchor(state);
                 if (!state.valid) { state.previous = current; state.valid = true; continue; }
                 state.pressingThisFrame = false;
                 bool currentOutside = IsOutsideField(current, state.radius);
@@ -468,9 +476,10 @@ namespace Voyage.TerrainSystem
                     if (wheel == null || HasWheelState(wheel)) continue;
                     wheelStates.Add(new WheelState
                     {
-                        wheel = wheel,
+                    wheel = wheel,
                         body = root.GetComponent<Rigidbody>(),
                         terrainFollower = follower,
+                        followerWheelIndex = wheelIndex,
                         radius = follower != null ? Mathf.Max(0.35f, follower.tireRadius) : 0.45f
                     });
                 }
@@ -482,6 +491,13 @@ namespace Voyage.TerrainSystem
             for (int i = 0; i < wheelStates.Count; i++)
                 if (wheelStates[i].wheel == wheel) return true;
             return false;
+        }
+
+        Vector3 GetWheelAnchor(WheelState state)
+        {
+            if (state != null && state.terrainFollower != null && state.followerWheelIndex >= 0)
+                return state.terrainFollower.GetGrassInteractionWheelPosition(state.followerWheelIndex);
+            return state != null && state.wheel != null ? state.wheel.position : Vector3.zero;
         }
 
         bool IsVehicleMoving(WheelState state, float observedDistance, out Vector3 motionVelocity)
@@ -621,7 +637,7 @@ namespace Voyage.TerrainSystem
                 if (i < count && wheelStates[i].valid && wheelStates[i].wheel != null)
                 {
                     WheelState wheel = wheelStates[i];
-                    Vector3 position = wheel.wheel.position;
+                    Vector3 position = GetWheelAnchor(wheel);
                     Vector3 velocity = wheel.pressingThisFrame ? wheel.shaderMotionVelocity : Vector3.zero;
                     velocity.y = 0f;
                     Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized : Vector3.forward;
@@ -698,11 +714,12 @@ namespace Voyage.TerrainSystem
             GUI.color = Color.white;
             GUILayout.BeginArea(new Rect(12f, 72f, 440f, 220f), GUI.skin.box);
             GUILayout.Label("GRASS INTERACTION STATE MACHINE");
+            GUILayout.Label($"Wheel sources: {wheelStates.Count} | pending stamps: {pendingStamps.Count}");
             for (int i = 0; i < wheelStates.Count; i++)
             {
                 WheelState wheel = wheelStates[i];
                 if (wheel.wheel == null) continue;
-                Vector3 p = wheel.wheel.position;
+                Vector3 p = GetWheelAnchor(wheel);
                 GUILayout.Label($"Wheel {i}: {wheel.debugState}  ({p.x:0.0}, {p.z:0.0})");
             }
             GUILayout.Label("Shader colors: red=pressing, blue=recovering, gray=wind only");
