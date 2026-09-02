@@ -103,6 +103,7 @@ Shader "Voyage/Grass/InteractiveLit"
             float _Density;
             float _AmbientStrength;
             float _DirectLightStrength;
+            float _BladeHeight;
 
             struct Attributes
             {
