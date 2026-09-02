@@ -403,6 +403,10 @@ namespace Voyage.TerrainSystem.Editor
         {
             if (material == null) return false;
             if (string.Equals(material.name, "TerrainDiagnosticGray", StringComparison.OrdinalIgnoreCase)) return true;
+            // The imported source FBX uses TerrainColor for the same neutral
+            // placeholder. Treat it as diagnostic too, otherwise white terrain
+            // islands survive the bake and fight the grass palette.
+            if (string.Equals(material.name, "TerrainColor", StringComparison.OrdinalIgnoreCase)) return true;
             return material.shader != null && string.Equals(material.shader.name, "Hidden/Voyage/LightingDiagnosticWhite", StringComparison.OrdinalIgnoreCase);
         }
 

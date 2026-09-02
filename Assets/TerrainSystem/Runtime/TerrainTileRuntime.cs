@@ -11,6 +11,7 @@ namespace Voyage.TerrainSystem
         [SerializeField] private GameObject[] lodRoots = new GameObject[4];
         [SerializeField] private bool hlod;
         private Collider[] colliders;
+        private static Material grasslandFallbackMaterial;
         private int currentLod = -1;
         private TerrainChunkSettings settings;
         private bool collisionStateKnown;
@@ -177,6 +178,7 @@ namespace Voyage.TerrainSystem
             for (int i = 0; i < renderers.Length; i++)
             {
                 MeshRenderer renderer = renderers[i];
+                ReplaceDiagnosticTerrainMaterials(renderer);
                 renderer.shadowCastingMode = ShadowCastingMode.On;
                 renderer.receiveShadows = true;
                 renderer.lightProbeUsage = LightProbeUsage.BlendProbes;
@@ -184,6 +186,37 @@ namespace Voyage.TerrainSystem
                 renderer.renderingLayerMask = 1u;
                 renderer.allowOcclusionWhenDynamic = true;
             }
+        }
+
+        private static void ReplaceDiagnosticTerrainMaterials(MeshRenderer renderer)
+        {
+            Material[] materials = renderer.sharedMaterials;
+            bool changed = false;
+            for (int i = 0; i < materials.Length; i++)
+            {
+                Material material = materials[i];
+                if (material == null || material.shader == null) continue;
+                bool isPlaceholder = string.Equals(material.name, "TerrainColor", System.StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(material.name, "TerrainDiagnosticGray", System.StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(material.shader.name, "Hidden/Voyage/LightingDiagnosticWhite", System.StringComparison.OrdinalIgnoreCase);
+                if (!isPlaceholder) continue;
+                if (grasslandFallbackMaterial == null)
+                {
+                    Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+                    if (shader == null) shader = Shader.Find("Standard");
+                    if (shader == null) continue;
+                    grasslandFallbackMaterial = new Material(shader) { name = "Runtime Grassland Terrain Material" };
+                    Color baseColor = new Color(0.20f, 0.28f, 0.105f, 1f);
+                    if (grasslandFallbackMaterial.HasProperty("_BaseColor")) grasslandFallbackMaterial.SetColor("_BaseColor", baseColor);
+                    if (grasslandFallbackMaterial.HasProperty("_Color")) grasslandFallbackMaterial.SetColor("_Color", baseColor);
+                    if (grasslandFallbackMaterial.HasProperty("_Metallic")) grasslandFallbackMaterial.SetFloat("_Metallic", 0f);
+                    if (grasslandFallbackMaterial.HasProperty("_Smoothness")) grasslandFallbackMaterial.SetFloat("_Smoothness", 0.15f);
+                    grasslandFallbackMaterial.enableInstancing = true;
+                }
+                materials[i] = grasslandFallbackMaterial;
+                changed = true;
+            }
+            if (changed) renderer.sharedMaterials = materials;
         }
 
         private void DisableGeneratedSkirts()
