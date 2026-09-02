@@ -223,6 +223,28 @@ namespace Voyage.TerrainSystem
                     radius = Mathf.Max(0.35f, colliders[i].radius)
                 });
             }
+
+            if (colliders.Length == 0)
+            {
+                PlayerCar playerCar = vehicle.GetComponent<PlayerCar>();
+                VehicleTerrainFollower follower = vehicle.GetComponent<VehicleTerrainFollower>();
+                IReadOnlyList<Transform> runtimeWheels = playerCar != null ? playerCar.GrassInteractionWheelTransforms : null;
+                if (runtimeWheels != null)
+                {
+                    for (int i = 0; i < runtimeWheels.Count; i++)
+                    {
+                        Transform wheel = runtimeWheels[i];
+                        if (wheel == null) continue;
+                        wheelStates.Add(new WheelState
+                        {
+                            wheel = wheel,
+                            body = vehicle.GetComponent<Rigidbody>(),
+                            terrainFollower = follower,
+                            radius = follower != null ? Mathf.Max(0.35f, follower.tireRadius) : 0.45f
+                        });
+                    }
+                }
+            }
         }
 
         public void RegisterEmitter(Transform target, float radius, float minimumTravel)
