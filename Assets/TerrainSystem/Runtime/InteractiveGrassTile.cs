@@ -290,8 +290,8 @@ namespace Voyage.TerrainSystem
             if (runtimeMaterial != null)
             {
                 runtimeMaterial.SetFloat("_InteractionEnabled", interactionNearby && currentLod < 2 ? 1f : 0f);
-                runtimeMaterial.SetFloat("_WindStrength", currentLod == 0 ? 0.20f : currentLod == 1 ? 0.11f : 0.05f);
-                runtimeMaterial.SetFloat("_WindSpeed", currentLod == 0 ? 1.0f : currentLod == 1 ? 0.82f : 0.65f);
+                runtimeMaterial.SetFloat("_WindStrength", currentLod == 0 ? 0.32f : currentLod == 1 ? 0.18f : 0.08f);
+                runtimeMaterial.SetFloat("_WindSpeed", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.9f : 0.68f);
                 runtimeMaterial.SetFloat("_BendStrength", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.8f : 0.35f);
                 // Density is resolved by placement and LOD instance count.
                 // Clipping individual blades makes dense clumps look sparse.

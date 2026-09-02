@@ -473,8 +473,8 @@ namespace Voyage.TerrainSystem.Editor
             if (material != null)
             {
                 if (material.HasProperty("_Color")) material.SetColor("_Color", new Color(0.28f, 0.38f, 0.14f, 1f));
-                if (material.HasProperty("_WindStrength")) material.SetFloat("_WindStrength", 0.20f);
-                if (material.HasProperty("_WindSpeed")) material.SetFloat("_WindSpeed", 1f);
+                if (material.HasProperty("_WindStrength")) material.SetFloat("_WindStrength", 0.32f);
+                if (material.HasProperty("_WindSpeed")) material.SetFloat("_WindSpeed", 1.15f);
                 if (material.HasProperty("_BendStrength")) material.SetFloat("_BendStrength", 1.15f);
                 if (material.HasProperty("_RecoverySpeed")) material.SetFloat("_RecoverySpeed", 1.2f);
                 if (material.HasProperty("_AmbientStrength")) material.SetFloat("_AmbientStrength", 0.75f);

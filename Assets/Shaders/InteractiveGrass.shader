@@ -113,7 +113,8 @@ Shader "Voyage/Grass/InteractiveLit"
                     sin(positionWS.x * 0.045 + phase) + 0.5 * sin(positionWS.z * 0.091 - phase * 0.73),
                     cos(positionWS.z * 0.052 + phase * 0.87) + 0.5 * cos(positionWS.x * 0.083 - phase * 1.21));
                 float gust = 0.72 + 0.28 * sin(positionWS.x * 0.012 + positionWS.z * 0.017 + _Time.y * 0.38);
-                float2 wind = normalize(broadWave + float2(0.001, 0.001)) * _WindStrength * gust;
+                float windVariation = lerp(0.74, 1.26, input.instanceRandom.x);
+                float2 wind = normalize(broadWave + float2(0.001, 0.001)) * _WindStrength * gust * windVariation;
                 float bendTip = tip * tip * (0.35 + 0.65 * tip);
                 positionWS.xz += (interactionBend + wind) * bendTip;
                 // A pressed blade must lean and lose height at the tip. An
