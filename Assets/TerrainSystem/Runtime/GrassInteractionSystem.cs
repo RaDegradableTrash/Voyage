@@ -618,7 +618,7 @@ namespace Voyage.TerrainSystem
                     velocity.y = 0f;
                     Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized : Vector3.forward;
                     shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);
-                    float radius = Mathf.Max(0.45f, wheel.radius * 1.8f);
+                    float radius = Mathf.Max(0.8f, wheel.radius * 3.0f);
                     float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
                     // Keep all wheel parameters in a Vector4. This avoids
                     // platform-specific float-array material binding issues.
