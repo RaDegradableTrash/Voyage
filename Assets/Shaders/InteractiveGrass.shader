@@ -195,7 +195,6 @@ Shader "Voyage/Grass/InteractiveLit"
                 UNITY_SETUP_INSTANCE_ID(input);
                 Varyings output;
                 float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
-                float3 instanceOriginWS = float3(unity_ObjectToWorld._m03, unity_ObjectToWorld._m13, unity_ObjectToWorld._m23);
                 // The mesh is placed in world-relative tile space, so the
                 // root must be reconstructed from the authored ground vertex.
                 // Older meshes have no TEXCOORD2 and use the material height
@@ -203,23 +202,9 @@ Shader "Voyage/Grass/InteractiveLit"
                 float authoredBladeHeight = input.bladeData.x > 0.001 ? input.bladeData.x : _BladeHeight;
                 float rootLocalY = input.positionOS.y - input.uv.y * authoredBladeHeight;
                 float3 bladeRootWS = TransformObjectToWorld(float3(input.positionOS.x, rootLocalY, input.positionOS.z));
-                float cameraDistance = distance(instanceOriginWS, GetCameraPositionWS());
+                float cameraDistance = distance(positionWS, GetCameraPositionWS());
                 float farBlend = smoothstep(_FadeStart * 0.35, max(_FadeStart * 0.35 + 0.01, _FadeEnd * 0.78), cameraDistance);
-                // Replace distant tiny cards with visually broader clumps.
-                float farClusterScale = lerp(1.0, 2.25, farBlend);
-                float3 localFromOrigin = positionWS - instanceOriginWS;
-                // Distant clumps are enlarged only in the horizontal plane.
-                // Scaling world Y here moves an entire blade, including its
-                // planted root, upward on tall terrain; a 1.18 multiplier on
-                // a 300m hillside visibly launches the grass into the sky.
-                positionWS = instanceOriginWS + float3(localFromOrigin.x * farClusterScale,
-                                                        localFromOrigin.y,
-                                                        localFromOrigin.z * farClusterScale);
                 float originalVertexY = positionWS.y;
-                float3 rootFromOrigin = bladeRootWS - instanceOriginWS;
-                bladeRootWS = instanceOriginWS + float3(rootFromOrigin.x * farClusterScale,
-                                                         rootFromOrigin.y,
-                                                         rootFromOrigin.z * farClusterScale);
                 float tip = saturate(input.uv.y);
                 float temporaryWeight;
                 float recoveryAge;
