@@ -51,6 +51,11 @@ Shader "Voyage/Grass/InteractiveLit"
             TEXTURE2D(_VoyageGrassInteraction); SAMPLER(sampler_VoyageGrassInteraction);
             TEXTURE2D(_VoyageGrassPermanentInteraction); SAMPLER(sampler_VoyageGrassPermanentInteraction);
             float4 _VoyageGrassInteractionWorld;
+            float4 _VoyageGrassWheelPositions[8];
+            float4 _VoyageGrassWheelDirections[8];
+            float _VoyageGrassWheelRadii[8];
+            float _VoyageGrassWheelStrengths[8];
+            float _VoyageGrassWheelCount;
             float4 _Color;
             float4 _BaseColor;
             float4 _RootColor;
@@ -132,6 +137,22 @@ Shader "Voyage/Grass/InteractiveLit"
                 return temporaryDirection * temporaryWeight + permanentDirection * permanentWeight;
             }
 
+            float2 SampleImmediateWheelBend(float3 positionWS)
+            {
+                float2 result = 0.0;
+                int wheelCount = min((int)_VoyageGrassWheelCount, 8);
+                for (int i = 0; i < 8; i++)
+                {
+                    if (i >= wheelCount) break;
+                    float radius = max(_VoyageGrassWheelRadii[i], 0.001);
+                    float2 delta = positionWS.xz - _VoyageGrassWheelPositions[i].xy;
+                    float influence = saturate(1.0 - length(delta) / radius);
+                    influence *= influence;
+                    result += _VoyageGrassWheelDirections[i].xy * influence * _VoyageGrassWheelStrengths[i];
+                }
+                return result;
+            }
+
             Varyings vert(Attributes input)
             {
                 UNITY_SETUP_INSTANCE_ID(input);
@@ -155,6 +176,10 @@ Shader "Voyage/Grass/InteractiveLit"
                 float temporaryWeight;
                 float recoveryAge;
                 float2 interactionBend = SampleBend(FieldUV(positionWS), temporaryWeight, recoveryAge);
+                // Direct wheel-space influence is intentionally local and is
+                // evaluated from world coordinates, so a bad tile/field
+                // reprojection can never flatten an entire grass chunk.
+                interactionBend += SampleImmediateWheelBend(positionWS) * 1.8;
 
                 // The interaction texture alpha is the recovery timer. Follow
                 // it directly so pressed grass stands back up smoothly.
@@ -176,9 +201,13 @@ Shader "Voyage/Grass/InteractiveLit"
                 float2 wind = globalWindDirection * wave * _WindStrength * 1.35 * windDistanceAttenuation *
                               lerp(1.0, gust, globalGustStrength) * windVariation;
                 float bendTip = tip * tip * (0.35 + 0.65 * tip);
-                float interactionAmount = saturate(length(interactionBend) * 0.86);
+                // The field stores a soft, filtered tire footprint. Expand
+                // that signal before converting it to an angle so a tire
+                // impression remains visibly pressed at LOD1/LOD2 instead
+                // of looking identical to wind-only motion.
+                float interactionAmount = saturate(length(interactionBend) * 2.6);
                 float windAmount = saturate(length(wind) * 1.05);
-                float bendAngle = saturate(interactionAmount * 1.52 + windAmount * 0.28);
+                float bendAngle = saturate(interactionAmount * 2.1 + windAmount * 0.28);
                 float2 bendDirection = normalize(interactionBend + wind * 0.38 + float2(0.0001, 0.0001));
                 float angleAtVertex = bendAngle * bendTip;
                 float bladeHeight = max(0.0, positionWS.y - bladeRootWS.y);

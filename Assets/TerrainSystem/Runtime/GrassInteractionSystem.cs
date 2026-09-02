@@ -37,6 +37,11 @@ namespace Voyage.TerrainSystem
         readonly List<WheelState> wheelStates = new List<WheelState>();
         readonly List<EmitterState> emitters = new List<EmitterState>();
         readonly Queue<PendingStamp> pendingStamps = new Queue<PendingStamp>();
+        const int MaxShaderWheels = 8;
+        readonly Vector4[] shaderWheelPositions = new Vector4[MaxShaderWheels];
+        readonly Vector4[] shaderWheelDirections = new Vector4[MaxShaderWheels];
+        readonly float[] shaderWheelRadii = new float[MaxShaderWheels];
+        readonly float[] shaderWheelStrengths = new float[MaxShaderWheels];
         RenderTexture field;
         RenderTexture scratch;
         RenderTexture permanentField;
@@ -479,6 +484,40 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalTexture("_VoyageGrassInteraction", field);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", WorldToUv);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", permanentField);
+
+            int count = Mathf.Min(MaxShaderWheels, wheelStates.Count);
+            for (int i = 0; i < MaxShaderWheels; i++)
+            {
+                if (i < count && wheelStates[i].valid && wheelStates[i].wheel != null)
+                {
+                    WheelState wheel = wheelStates[i];
+                    Vector3 position = wheel.wheel.position;
+                    Vector3 velocity = wheel.terrainFollower != null && wheel.terrainFollower.enabled
+                        ? wheel.terrainFollower.CurrentVelocity
+                        : wheel.body != null ? wheel.body.linearVelocity : wheel.wheel.position - wheel.previous;
+                    velocity.y = 0f;
+                    Vector3 displacement = wheel.wheel.position - wheel.previous;
+                    displacement.y = 0f;
+                    Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized :
+                                        displacement.sqrMagnitude > 0.0001f ? displacement.normalized : Vector3.forward;
+                    shaderWheelPositions[i] = new Vector4(position.x, position.z, 0f, 0f);
+                    shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);
+                    shaderWheelRadii[i] = Mathf.Max(0.45f, wheel.radius * 1.8f);
+                    shaderWheelStrengths[i] = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
+                }
+                else
+                {
+                    shaderWheelPositions[i] = Vector4.zero;
+                    shaderWheelDirections[i] = Vector4.forward;
+                    shaderWheelRadii[i] = 0f;
+                    shaderWheelStrengths[i] = 0f;
+                }
+            }
+            Shader.SetGlobalVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
+            Shader.SetGlobalVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
+            Shader.SetGlobalFloat("_VoyageGrassWheelCount", count);
+            Shader.SetGlobalFloatArray("_VoyageGrassWheelRadii", shaderWheelRadii);
+            Shader.SetGlobalFloatArray("_VoyageGrassWheelStrengths", shaderWheelStrengths);
         }
 
         void BeginPermanentFieldRebuild(Vector3 previousCenter, bool onlyNewArea)

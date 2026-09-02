@@ -134,6 +134,7 @@ namespace Voyage.TerrainSystem
             bool hasBakedClusters = useLegacyBakedClusters && bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
             Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : runtimeClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
+            BindInteractionField();
             if (useIndirectRendering && TryDrawIndirect(drawMesh)) return;
             // Generated prefabs may carry a material serialized before the
             // instanced grass path existed. Enforce this immediately before
@@ -202,6 +203,19 @@ namespace Voyage.TerrainSystem
                 instanceProperties, UnityEngine.Rendering.ShadowCastingMode.Off, false, gameObject.layer, camera,
                 UnityEngine.Rendering.LightProbeUsage.BlendProbes);
             return true;
+        }
+
+        void BindInteractionField()
+        {
+            GrassInteractionSystem interaction = GrassInteractionSystem.Instance;
+            if (interaction == null || !interaction.IsReady) return;
+
+            // This is a per-tile material instance. Bind the live field
+            // locally so a material-local texture slot cannot mask the
+            // dynamic tire interaction data published by the system.
+            runtimeMaterial.SetTexture("_VoyageGrassInteraction", interaction.Field);
+            runtimeMaterial.SetTexture("_VoyageGrassPermanentInteraction", interaction.PermanentField);
+            runtimeMaterial.SetVector("_VoyageGrassInteractionWorld", interaction.WorldToUv);
         }
 
         void ReleaseIndirectBuffers()
@@ -385,7 +399,7 @@ namespace Voyage.TerrainSystem
                 runtimeMaterial.SetFloat("_InteractionEnabled", currentLod < 3 ? 1f : 0f);
                 runtimeMaterial.SetFloat("_WindStrength", currentLod == 0 ? 0.48f : currentLod == 1 ? 0.28f : 0.12f);
                 runtimeMaterial.SetFloat("_WindSpeed", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.9f : 0.68f);
-                runtimeMaterial.SetFloat("_BendStrength", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.8f : 0.35f);
+                runtimeMaterial.SetFloat("_BendStrength", currentLod == 0 ? 1.55f : currentLod == 1 ? 1.25f : 0.9f);
                 // Density is resolved by placement and LOD instance count.
                 // Clipping individual blades makes dense clumps look sparse.
                 runtimeMaterial.SetFloat("_Density", 1f);
