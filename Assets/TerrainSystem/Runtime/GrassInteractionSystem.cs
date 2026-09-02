@@ -21,6 +21,10 @@ namespace Voyage.TerrainSystem
         [Min(0.01f)] public float maxStampDistance = 12f;
         [Min(1f)] public float maxTeleportDistance = 80f;
         [Min(0.1f)] public float speedForFullBend = 12f;
+        [Tooltip("Minimum horizontal vehicle speed required to refresh wheel impressions. Prevents parked suspension jitter from resetting recovery.")]
+        [Min(0f)] public float minimumVehicleSpeed = 0.08f;
+        [Tooltip("Minimum horizontal wheel/contact movement used to create a tire segment.")]
+        [Min(0f)] public float minimumWheelTravel = 0.02f;
         [Min(1)] public int liveStampsPerFrame = 96;
         [Min(64)] public int maxPendingStamps = 2048;
         [Min(1)] public int permanentRebuildStampsPerFrame = 96;
@@ -52,6 +56,8 @@ namespace Voyage.TerrainSystem
         sealed class WheelState
         {
             public Transform wheel;
+            public Rigidbody body;
+            public float radius;
             public Vector3 previous;
             public bool valid;
         }
@@ -82,6 +88,8 @@ namespace Voyage.TerrainSystem
             maxStampDistance = Mathf.Max(0.01f, maxStampDistance);
             maxTeleportDistance = Mathf.Max(maxStampDistance, maxTeleportDistance);
             speedForFullBend = Mathf.Max(0.1f, speedForFullBend);
+            minimumVehicleSpeed = Mathf.Max(0f, minimumVehicleSpeed);
+            minimumWheelTravel = Mathf.Max(0f, minimumWheelTravel);
             liveStampsPerFrame = Mathf.Max(1, liveStampsPerFrame);
             maxPendingStamps = Mathf.Max(64, maxPendingStamps);
             permanentRebuildStampsPerFrame = Mathf.Max(1, permanentRebuildStampsPerFrame);
@@ -150,12 +158,14 @@ namespace Voyage.TerrainSystem
             for (int i = 0; i < colliders.Length; i++)
             {
                 Transform wheel = colliders[i].transform;
-                wheelStates.Add(new WheelState { wheel = wheel });
-                // Rendering interaction must not disappear just because a
-                // wheel briefly loses WheelHit on uneven terrain. The wheel
-                // transform still follows the vehicle, so keep a lightweight
-                // positional emitter for every wheel as a visual fallback.
-                RegisterEmitter(wheel, Mathf.Max(0.35f, colliders[i].radius), 0.025f);
+                Rigidbody body = vehicle.GetComponent<Rigidbody>();
+                if (body == null) body = wheel.GetComponentInParent<Rigidbody>();
+                wheelStates.Add(new WheelState
+                {
+                    wheel = wheel,
+                    body = body,
+                    radius = Mathf.Max(0.35f, colliders[i].radius)
+                });
             }
         }
 
@@ -272,11 +282,16 @@ namespace Voyage.TerrainSystem
                     wheelStates.RemoveAt(i);
                     continue;
                 }
-                if (!collider.GetGroundHit(out WheelHit hit)) { state.valid = false; continue; }
-                Vector3 current = hit.point;
+                // A wheel owns one interaction stream. The contact point is
+                // preferred because it is the actual tire/ground location;
+                // the wheel pivot is only a fallback while WheelCollider has
+                // no hit on a streamed or temporarily uneven tile.
+                Vector3 current = collider.GetGroundHit(out WheelHit hit)
+                    ? hit.point
+                    : state.wheel.position;
                 if (!state.valid) { state.previous = current; state.valid = true; continue; }
-                bool currentOutside = IsOutsideField(current, collider.radius);
-                bool previousOutside = IsOutsideField(state.previous, collider.radius);
+                bool currentOutside = IsOutsideField(current, state.radius);
+                bool previousOutside = IsOutsideField(state.previous, state.radius);
                 // Do not queue or persist tracks for entities that are wholly
                 // outside the active world-space window. Keeping the latest
                 // contact as the baseline still lets a distant wheel enter
@@ -289,10 +304,10 @@ namespace Voyage.TerrainSystem
                 Vector3 delta = current - state.previous;
                 float distance = new Vector2(delta.x, delta.z).magnitude;
                 if (distance > maxTeleportDistance) state.previous = current;
-                else if (distance > 0.02f)
+                else if (distance > minimumWheelTravel && IsVehicleMoving(state.body, distance))
                 {
                     Transform wheelSource = state.wheel;
-                    QueueSegment(state.previous, current, collider.radius, wheelSource);
+                    QueueSegment(state.previous, current, state.radius, wheelSource);
                 }
                 state.previous = current;
             }
@@ -320,6 +335,24 @@ namespace Voyage.TerrainSystem
             }
             ProcessPendingStamps();
             PublishGlobals();
+        }
+
+        bool IsVehicleMoving(Rigidbody body, float observedDistance)
+        {
+            // WheelCollider contact points can move while a parked vehicle's
+            // suspension settles. Those changes must not keep refreshing the
+            // grass recovery timer. Rigidbody velocity is the authoritative
+            // signal for a vehicle that is actually travelling; the observed
+            // displacement is retained as a fallback for non-physical,
+            // transform-driven wheel rigs.
+            if (body != null)
+            {
+                Vector3 velocity = body.linearVelocity;
+                velocity.y = 0f;
+                return velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed;
+            }
+
+            return observedDistance / Mathf.Max(Time.deltaTime, 0.0001f) >= 0.2f;
         }
 
         bool IsOutsideField(Vector3 position, float radius)
