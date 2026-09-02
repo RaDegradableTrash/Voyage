@@ -50,6 +50,10 @@ namespace Voyage.TerrainSystem
         Coroutine buildRoutine;
         int currentLod = 3;
         bool interactionNearby = true;
+        Bounds debugWorldBounds;
+        public GrassInteractionSystem.GrassDebugState DebugState { get; private set; } = GrassInteractionSystem.GrassDebugState.Outside;
+        public float DebugNearestWheelDistance { get; private set; } = float.MaxValue;
+        public int DebugPressingWheelCount { get; private set; }
         bool initialized;
         Matrix4x4[] instanceMatrices;
         Matrix4x4[] instanceBatch;
@@ -80,6 +84,7 @@ namespace Voyage.TerrainSystem
         {
             if (initialized || buildRoutine != null) return;
             initialized = true;
+            debugWorldBounds = worldBounds;
             GameObject child = new GameObject("Interactive Grass");
             grassObject = child;
             child.transform.SetParent(transform, false);
@@ -135,6 +140,17 @@ namespace Voyage.TerrainSystem
 
         void LateUpdate()
         {
+            GrassInteractionSystem interaction = GrassInteractionSystem.Instance;
+            if (interaction != null && interaction.IsReady)
+                DebugState = interaction.GetDebugState(debugWorldBounds, out float nearest, out int pressing);
+            else
+            {
+                DebugState = GrassInteractionSystem.GrassDebugState.Outside;
+                nearest = float.MaxValue;
+                pressing = 0;
+            }
+            DebugNearestWheelDistance = nearest;
+            DebugPressingWheelCount = pressing;
             if (instanceProperties == null) instanceProperties = new MaterialPropertyBlock();
             // Bind interaction data before the draw eligibility checks. A
             // streamed tile can spend several frames with no generated
@@ -142,7 +158,6 @@ namespace Voyage.TerrainSystem
             // waiting until after those checks leaves its material with stale
             // wheel data on the first visible frame.
             BindInteractionField();
-            GrassInteractionSystem interaction = GrassInteractionSystem.Instance;
             if (interaction != null && interaction.IsReady)
                 interaction.BindShaderProperties(instanceProperties);
             bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
@@ -442,6 +457,21 @@ namespace Voyage.TerrainSystem
             if (runtimeMaterial != null) Destroy(runtimeMaterial);
             ReleaseIndirectBuffers();
             if (grassObject != null) Destroy(grassObject);
+        }
+
+        void OnDrawGizmos()
+        {
+            if (!Application.isPlaying || GrassInteractionSystem.Instance == null || !GrassInteractionSystem.Instance.debugDrawTileStates) return;
+            Color color;
+            switch (DebugState)
+            {
+                case GrassInteractionSystem.GrassDebugState.Pressing: color = new Color(1f, 0.08f, 0.02f, 1f); break;
+                case GrassInteractionSystem.GrassDebugState.Recovering: color = new Color(0.1f, 0.3f, 1f, 1f); break;
+                case GrassInteractionSystem.GrassDebugState.NearbyIdle: color = Color.yellow; break;
+                default: color = Color.gray; break;
+            }
+            Gizmos.color = color;
+            Gizmos.DrawWireCube(debugWorldBounds.center, debugWorldBounds.size);
         }
     }
 }

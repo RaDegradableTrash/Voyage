@@ -23,6 +23,8 @@ namespace Voyage.TerrainSystem
         [Header("Debug")]
         [Tooltip("Color grass by its current wheel interaction state and show wheel state text in Game view.")]
         public bool debugGrassStateMachine;
+        [Tooltip("Draw the streamed grass-tile state and wheel influence bounds in the Scene view.")]
+        public bool debugDrawTileStates = true;
 
         public static GrassInteractionSystem Instance { get; private set; }
 
@@ -166,8 +168,9 @@ namespace Voyage.TerrainSystem
             {
                 WheelState wheel = wheelStates[i];
                 if (!wheel.valid || wheel.wheel == null) continue;
+                Vector3 anchor = GetWheelAnchor(wheel);
                 float distance = Vector2.Distance(new Vector2(position.x, position.z),
-                                                  new Vector2(wheel.wheel.position.x, wheel.wheel.position.z));
+                                                  new Vector2(anchor.x, anchor.z));
                 nearestDistance = Mathf.Min(nearestDistance, distance);
                 if (wheel.debugState == GrassDebugState.Pressing) hasMovingWheel = true;
             }
@@ -176,6 +179,29 @@ namespace Voyage.TerrainSystem
             if (hasMovingWheel && nearestDistance <= 2.4f) return GrassDebugState.Pressing;
             if (nearestDistance <= 2.4f) return GrassDebugState.NearbyIdle;
             return GrassDebugState.WindOnly;
+        }
+
+        public GrassDebugState GetDebugState(Bounds bounds, out float nearestWheelDistance, out int pressingWheelCount)
+        {
+            nearestWheelDistance = float.MaxValue;
+            pressingWheelCount = 0;
+            bool recovering = false;
+            for (int i = 0; i < wheelStates.Count; i++)
+            {
+                WheelState wheel = wheelStates[i];
+                if (!wheel.valid || wheel.wheel == null) continue;
+                Vector3 anchor = GetWheelAnchor(wheel);
+                Vector3 closest = bounds.ClosestPoint(anchor);
+                float distance = Vector2.Distance(new Vector2(anchor.x, anchor.z), new Vector2(closest.x, closest.z));
+                nearestWheelDistance = Mathf.Min(nearestWheelDistance, distance);
+                float influenceRadius = Mathf.Max(2.4f, wheel.radius * 3f);
+                if (distance <= influenceRadius && wheel.debugState == GrassDebugState.Pressing) pressingWheelCount++;
+                if (distance <= influenceRadius && wheel.debugState == GrassDebugState.Recovering) recovering = true;
+            }
+            if (pressingWheelCount > 0) return GrassDebugState.Pressing;
+            if (recovering) return GrassDebugState.Recovering;
+            if (nearestWheelDistance <= 2.4f) return GrassDebugState.NearbyIdle;
+            return nearestWheelDistance == float.MaxValue ? GrassDebugState.Outside : GrassDebugState.WindOnly;
         }
 
         void Awake()
@@ -732,7 +758,7 @@ namespace Voyage.TerrainSystem
         {
             if (!debugGrassStateMachine || !Application.isPlaying) return;
             GUI.color = Color.white;
-            GUILayout.BeginArea(new Rect(12f, 72f, 440f, 220f), GUI.skin.box);
+            GUILayout.BeginArea(new Rect(12f, 72f, 620f, 360f), GUI.skin.box);
             GUILayout.Label("GRASS INTERACTION STATE MACHINE");
             GUILayout.Label($"Wheel sources: {wheelStates.Count} | pending stamps: {pendingStamps.Count}");
             for (int i = 0; i < wheelStates.Count; i++)
@@ -740,9 +766,13 @@ namespace Voyage.TerrainSystem
                 WheelState wheel = wheelStates[i];
                 if (wheel.wheel == null) continue;
                 Vector3 p = GetWheelAnchor(wheel);
-                GUILayout.Label($"Wheel {i}: {wheel.debugState}  ({p.x:0.0}, {p.z:0.0})");
+                GUILayout.Label($"Wheel {i}: {wheel.debugState}  anchor=({p.x:0.0}, {p.y:0.0}, {p.z:0.0})  pressed={wheel.pressingThisFrame}");
             }
-            GUILayout.Label("Shader colors: red=pressing, blue=recovering, gray=wind only");
+            InteractiveGrassTile[] tiles = FindObjectsByType<InteractiveGrassTile>(FindObjectsSortMode.None);
+            GUILayout.Label($"Visible tile states: {tiles.Length}");
+            for (int i = 0; i < tiles.Length && i < 18; i++)
+                GUILayout.Label($"Tile {tiles[i].tileCoordinate}: {tiles[i].DebugState}  nearest={tiles[i].DebugNearestWheelDistance:0.0}m  pressing wheels={tiles[i].DebugPressingWheelCount}");
+            GUILayout.Label("Shader: red=direct wheel, blue=field, gray=wind only; tile gizmos: red=pressing, blue=recovering, yellow=nearby idle, gray=wind/outside");
             GUILayout.EndArea();
         }
 
