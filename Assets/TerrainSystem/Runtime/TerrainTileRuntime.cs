@@ -103,6 +103,23 @@ namespace Voyage.TerrainSystem
             if (grass == null && currentLod < 3)
                 grass = gameObject.AddComponent<InteractiveGrassTile>();
             if (grass == null) return;
+            if (settings != null)
+            {
+                Shader.SetGlobalVector("_VoyageGrassWind", new Vector4(
+                    settings.grassWindDirection.x, settings.grassWindDirection.y,
+                    settings.grassWindSpeed, settings.grassWindGust));
+                grass.baseColor = settings.grassBaseColor;
+                grass.shadowColor = settings.grassShadowColor;
+                grass.tipColor = settings.grassTipColor;
+                grass.backsideColor = settings.grassBacksideColor;
+                grass.fadeColor = settings.grassFadeColor;
+                grass.macroScale = settings.grassMacroScale;
+                grass.macroStrength = settings.grassMacroStrength;
+                grass.alphaClip = settings.grassAlphaClip;
+                grass.fadeStart = settings.grassFadeStart;
+                grass.fadeEnd = settings.grassFadeEnd;
+                grass.useIndirectRendering = settings.useIndirectGrass;
+            }
             // Legacy prefabs do not contain the baked cluster asset. Configure
             // their runtime fallback from the current settings so they do not
             // silently fall back to the sparse component defaults. Keep the
@@ -119,7 +136,7 @@ namespace Voyage.TerrainSystem
                 // but made the streamed fallback visibly empty. Keep the
                 // budget authored in settings while still protecting against
                 // an accidental unbounded value.
-                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 50000);
+                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 100000);
                 grass.fullDensityBelowSlope = settings.grassFullDensityBelowSlope;
                 grass.noGrassAboveSlope = settings.grassNoGrassAboveSlope;
             }
@@ -203,7 +220,8 @@ namespace Voyage.TerrainSystem
                 // consistent with the interactive grass.
                 if (grasslandFallbackMaterial == null)
                 {
-                    Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+                    Shader shader = Shader.Find("Voyage/Terrain/Stylized");
+                    if (shader == null) shader = Shader.Find("Universal Render Pipeline/Lit");
                     if (shader == null) shader = Shader.Find("Standard");
                     if (shader == null) continue;
                     grasslandFallbackMaterial = new Material(shader) { name = "Runtime Grassland Terrain Material" };

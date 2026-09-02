@@ -52,6 +52,10 @@ namespace Voyage.TerrainSystem.Editor
                     if (GUILayout.Button("Regenerate Tiles", GUILayout.Height(28f))) RunRegenerate();
                 }
             }
+            using (new EditorGUI.DisabledScope(settings == null))
+            {
+                if (GUILayout.Button("Rebuild Grass Prototype Only", GUILayout.Height(24f))) RunRebuildGrassPrototype();
+            }
             using (new EditorGUI.DisabledScope(index == null))
             {
                 if (GUILayout.Button("Validate Generated Tiles")) status = TerrainTileValidation.Validate(index);
@@ -143,6 +147,18 @@ namespace Voyage.TerrainSystem.Editor
             // leaving stale LOD/collision assets behind after source or settings changes.
             RunGenerate(null);
             status = "全部地块已重新生成，Scene 预览已刷新。";
+        }
+
+        private void RunRebuildGrassPrototype()
+        {
+            try
+            {
+                EnsureToolAssets();
+                TerrainMeshBaker.RebuildGrassPrototypeOnly(settings);
+                status = "共享 Grass Prototype 已重建；现有 Tile 引用保持不变。";
+                Repaint();
+            }
+            catch (Exception exception) { status = exception.Message; Debug.LogException(exception); }
         }
 
         private void EnsureScenePreview()

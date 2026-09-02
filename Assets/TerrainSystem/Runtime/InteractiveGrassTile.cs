@@ -8,13 +8,24 @@ namespace Voyage.TerrainSystem
     [DisallowMultipleComponent]
     public sealed class InteractiveGrassTile : MonoBehaviour
     {
-        [Min(1f)] public float clusterSpacing = 1.6f;
+        [Min(0.25f)] public float clusterSpacing = 0.5f;
         [Min(1)] public int bladesPerCluster = 8;
         [Min(0.05f)] public float clusterRadius = 0.48f;
         [Min(0.1f)] public float bladeHeight = 1.1f;
         [Range(0f, 1f)] public float density = 0.85f;
         [Min(1)] public int clustersPerFrame = 96;
-        [Min(1)] public int runtimeClusterBudget = 2000;
+        [Min(1)] public int runtimeClusterBudget = 100000;
+        [Header("Stylized appearance")]
+        public Color baseColor = new Color(0.34f, 0.43f, 0.08f, 1f);
+        public Color shadowColor = new Color(0.16f, 0.24f, 0.045f, 1f);
+        public Color tipColor = new Color(0.58f, 0.48f, 0.10f, 1f);
+        public Color backsideColor = new Color(0.43f, 0.36f, 0.07f, 1f);
+        public Color fadeColor = new Color(0.055f, 0.16f, 0.045f, 1f);
+        [Min(0.001f)] public float macroScale = 0.018f;
+        [Range(0f, 1f)] public float macroStrength = 0.42f;
+        [Range(0f, 1f)] public float alphaClip = 0.35f;
+        [Min(0f)] public float fadeStart = 105f;
+        [Min(0.01f)] public float fadeEnd = 495f;
         [Header("Local slope distribution")]
         [Range(0f, 89f)] public float fullDensityBelowSlope = 28f;
         [Range(1f, 90f)] public float noGrassAboveSlope = 58f;
@@ -43,6 +54,13 @@ namespace Voyage.TerrainSystem
         Matrix4x4[] instanceBatch;
         MaterialPropertyBlock instanceProperties;
         Mesh runtimeClusterMesh;
+        public bool useIndirectRendering = true;
+        ComputeBuffer indirectSourceBuffer;
+        ComputeBuffer indirectVisibleBuffer;
+        ComputeBuffer indirectArgsBuffer;
+        ComputeShader indirectCullingShader;
+        int indirectKernel = -1;
+        Bounds indirectBounds;
 
         void OnValidate()
         {
@@ -70,7 +88,16 @@ namespace Voyage.TerrainSystem
             meshRenderer.receiveShadows = false;
             Material sourceMaterial = material != null ? material : prototype != null ? prototype.material : null;
             runtimeMaterial = sourceMaterial != null ? new Material(sourceMaterial) : CreateDefaultMaterial();
-            if (runtimeMaterial != null) runtimeMaterial.enableInstancing = true;
+            if (runtimeMaterial != null)
+            {
+                runtimeMaterial.enableInstancing = true;
+                // Existing GrassMaterial assets may have retained the old
+                // AlphaTest queue after the shader changed to distance blend.
+                // Override both values on the per-tile copy so the fade is
+                // actually composited over the terrain.
+                runtimeMaterial.SetOverrideTag("RenderType", "Transparent");
+                runtimeMaterial.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+            }
             meshRenderer.sharedMaterial = runtimeMaterial;
             meshRenderer.enabled = false;
             if (useLegacyBakedClusters && bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0)
@@ -106,6 +133,7 @@ namespace Voyage.TerrainSystem
             bool hasBakedClusters = useLegacyBakedClusters && bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
             Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : runtimeClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
+            if (useIndirectRendering && TryDrawIndirect(drawMesh)) return;
             // Generated prefabs may carry a material serialized before the
             // instanced grass path existed. Enforce this immediately before
             // drawing so stale material state cannot disable the whole pass.
@@ -128,8 +156,61 @@ namespace Voyage.TerrainSystem
                     instanceBatch[batchIndex] = instanceMatrices[sampleIndex];
                 }
                 Graphics.DrawMeshInstanced(drawMesh, 0, runtimeMaterial, instanceBatch, count, instanceProperties,
-                    UnityEngine.Rendering.ShadowCastingMode.On, true, gameObject.layer, null, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
+                    UnityEngine.Rendering.ShadowCastingMode.Off, false, gameObject.layer, null, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
             }
+        }
+
+        bool TryDrawIndirect(Mesh drawMesh)
+        {
+            if (!SystemInfo.supportsComputeShaders || instanceMatrices.Length == 0) return false;
+            if (indirectCullingShader == null)
+            {
+                indirectCullingShader = Resources.Load<ComputeShader>("TerrainSystem/GrassCulling");
+                if (indirectCullingShader == null) return false;
+                indirectKernel = indirectCullingShader.FindKernel("CSMain");
+            }
+            if (indirectSourceBuffer == null || indirectSourceBuffer.count != instanceMatrices.Length)
+            {
+                ReleaseIndirectBuffers();
+                const int stride = sizeof(float) * 16;
+                indirectSourceBuffer = new ComputeBuffer(instanceMatrices.Length, stride, ComputeBufferType.Structured);
+                indirectVisibleBuffer = new ComputeBuffer(instanceMatrices.Length, stride, ComputeBufferType.Append);
+                indirectArgsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
+                indirectSourceBuffer.SetData(instanceMatrices);
+                indirectArgsBuffer.SetData(new uint[] { drawMesh.GetIndexCount(0), 0, drawMesh.GetIndexStart(0), drawMesh.GetBaseVertex(0), 0 });
+                indirectBounds = new Bounds(transform.position, new Vector3(100000f, 100000f, 100000f));
+            }
+            Camera camera = Camera.main;
+            if (camera == null) return false;
+            Plane[] planes = GeometryUtility.CalculateFrustumPlanes(camera);
+            Vector4[] planeVectors = new Vector4[6];
+            for (int i = 0; i < planeVectors.Length; i++)
+                planeVectors[i] = new Vector4(planes[i].normal.x, planes[i].normal.y, planes[i].normal.z, planes[i].distance);
+            indirectVisibleBuffer.SetCounterValue(0);
+            indirectCullingShader.SetBuffer(indirectKernel, "_SourceMatrices", indirectSourceBuffer);
+            indirectCullingShader.SetBuffer(indirectKernel, "_VisibleMatrices", indirectVisibleBuffer);
+            indirectCullingShader.SetVector("_CameraPosition", camera.transform.position);
+            indirectCullingShader.SetVectorArray("_FrustumPlanes", planeVectors);
+            indirectCullingShader.SetFloat("_MaxDistance", Mathf.Max(fadeEnd, 1f));
+            indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.55f : 0.2f);
+            indirectCullingShader.SetFloat("_InstanceRadius", Mathf.Max(1f, bladeHeight + clusterRadius));
+            indirectCullingShader.Dispatch(indirectKernel, Mathf.CeilToInt(instanceMatrices.Length / 64f), 1, 1);
+            ComputeBuffer.CopyCount(indirectVisibleBuffer, indirectArgsBuffer, sizeof(uint));
+            runtimeMaterial.SetBuffer("_VoyageGrassMatrices", indirectVisibleBuffer);
+            Graphics.DrawMeshInstancedIndirect(drawMesh, 0, runtimeMaterial, indirectBounds, indirectArgsBuffer, 0,
+                instanceProperties, UnityEngine.Rendering.ShadowCastingMode.Off, false, gameObject.layer, camera,
+                UnityEngine.Rendering.LightProbeUsage.BlendProbes);
+            return true;
+        }
+
+        void ReleaseIndirectBuffers()
+        {
+            if (indirectSourceBuffer != null) indirectSourceBuffer.Release();
+            if (indirectVisibleBuffer != null) indirectVisibleBuffer.Release();
+            if (indirectArgsBuffer != null) indirectArgsBuffer.Release();
+            indirectSourceBuffer = null;
+            indirectVisibleBuffer = null;
+            indirectArgsBuffer = null;
         }
 
         IEnumerator BuildMeshAsync(Bounds worldBounds, Collider terrainCollider, int groundMask)
@@ -234,18 +315,19 @@ namespace Voyage.TerrainSystem
             var normals = new List<Vector3>(vertices.Capacity);
             var uvs = new List<Vector2>(bladesPerCluster * 8);
             var randoms = new List<Vector2>(bladesPerCluster * 8);
-            var triangles = new List<int>(bladesPerCluster * 12);
+            var triangles = new List<int>(bladesPerCluster * 6);
             for (int blade = 0; blade < bladesPerCluster; blade++)
             {
                 float angle = (float)random.NextDouble() * Mathf.PI * 2f;
                 float distance = Mathf.Sqrt((float)random.NextDouble()) * clusterRadius;
                 Vector3 local = new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
                 float h = bladeHeight * (0.72f + (float)random.NextDouble() * 0.56f);
-                float w = h * (0.10f + (float)random.NextDouble() * 0.05f);
+                float w = h * (0.15f + (float)random.NextDouble() * 0.07f);
                 float yaw = (float)random.NextDouble() * Mathf.PI;
                 float variation = (float)random.NextDouble();
                 AddBlade(vertices, normals, uvs, randoms, triangles, local, h, w, yaw, variation);
                 AddBlade(vertices, normals, uvs, randoms, triangles, local, h, w, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                AddBlade(vertices, normals, uvs, randoms, triangles, local, h, w, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
             }
             var result = new Mesh { name = "Interactive Grass Cluster Mesh" };
             result.SetVertices(vertices); result.SetNormals(normals); result.SetUVs(0, uvs); result.SetUVs(1, randoms); result.SetTriangles(triangles, 0, true); result.RecalculateBounds();
@@ -258,13 +340,15 @@ namespace Voyage.TerrainSystem
             Vector3 side = new Vector3(Mathf.Cos(yaw), 0f, Mathf.Sin(yaw)) * w;
             Vector3 faceNormal = Vector3.Cross(side, Vector3.up).normalized;
             int start = v.Count;
-            v.Add(p - side); v.Add(p + side); v.Add(p + Vector3.up * h);
+            // Match the baked prototype: a small normal-direction apex offset
+            // gives the crossed cards a fuller silhouette at grazing angles.
+            v.Add(p - side); v.Add(p + side); v.Add(p + Vector3.up * h + faceNormal * (w * 0.45f));
             normals.Add(faceNormal); normals.Add(faceNormal); normals.Add(faceNormal);
             uv.Add(new Vector2(0, 0)); uv.Add(new Vector2(1, 0)); uv.Add(new Vector2(0.5f, 1));
             Vector2 instanceRandom = new Vector2(Mathf.Repeat(variation, 1f), Mathf.Repeat(variation * 2.17f + 0.37f, 1f));
             randoms.Add(instanceRandom); randoms.Add(instanceRandom); randoms.Add(instanceRandom);
+            // Cull Off in the grass shader already renders both sides.
             t.Add(start); t.Add(start + 1); t.Add(start + 2);
-            t.Add(start + 2); t.Add(start + 1); t.Add(start);
         }
 
         static Material CreateDefaultMaterial()
@@ -299,6 +383,16 @@ namespace Voyage.TerrainSystem
                 // Density is resolved by placement and LOD instance count.
                 // Clipping individual blades makes dense clumps look sparse.
                 runtimeMaterial.SetFloat("_Density", 1f);
+                runtimeMaterial.SetColor("_BaseColor", baseColor);
+                runtimeMaterial.SetColor("_ShadowColor", shadowColor);
+                runtimeMaterial.SetColor("_TipColor", tipColor);
+                runtimeMaterial.SetColor("_BacksideColor", backsideColor);
+                runtimeMaterial.SetColor("_FadeColor", fadeColor);
+                runtimeMaterial.SetFloat("_MacroScale", macroScale);
+                runtimeMaterial.SetFloat("_MacroStrength", macroStrength);
+                runtimeMaterial.SetFloat("_AlphaClip", alphaClip);
+                runtimeMaterial.SetFloat("_FadeStart", fadeStart);
+                runtimeMaterial.SetFloat("_FadeEnd", fadeEnd);
             }
         }
 
@@ -312,6 +406,7 @@ namespace Voyage.TerrainSystem
             if (mesh != null && mesh != bakedMesh) Destroy(mesh);
             if (runtimeClusterMesh != null) Destroy(runtimeClusterMesh);
             if (runtimeMaterial != null) Destroy(runtimeMaterial);
+            ReleaseIndirectBuffers();
             if (grassObject != null) Destroy(grassObject);
         }
     }

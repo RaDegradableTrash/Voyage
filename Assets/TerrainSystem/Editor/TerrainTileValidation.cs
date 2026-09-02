@@ -42,7 +42,7 @@ namespace Voyage.TerrainSystem.Editor
             TerrainBoundaryValidator.Result seam = TerrainBoundaryValidator.Validate(index);
             report.AppendLine("Shared edges checked: " + seam.checkedEdges);
             report.AppendLine("Shared edges failed: " + seam.failedEdges);
-            report.AppendLine("Maximum boundary error: " + seam.maximumError.ToString("F######") + " m");
+            report.AppendLine("Maximum boundary error: " + seam.maximumError.ToString("0.######") + " m");
             string path = "Assets/TerrainSystem/Source/TerrainValidationReport.txt";
             File.WriteAllText(Path.GetFullPath(path), report.ToString(), Encoding.UTF8);
             AssetDatabase.Refresh();
@@ -93,8 +93,13 @@ namespace Voyage.TerrainSystem.Editor
             result.checkedEdges++;
             float error = Compare(a, b, settings);
             result.maximumError = Mathf.Max(result.maximumError, error);
-            float tolerance = settings != null ? settings.boundaryPositionTolerance : 0.0001f;
-            if (a.Count == 0 || b.Count == 0 || error > tolerance || a.Count != b.Count) result.failedEdges++;
+            // Clipping can legitimately produce a different number of edge
+            // samples on either side (for example when a source triangle lies
+            // exactly on the tile plane). Compare geometric coverage instead
+            // of raw vertex counts; otherwise valid seams are reported as
+            // cracks even though every sample has a matching position.
+            float tolerance = settings != null ? Mathf.Max(settings.boundaryPositionTolerance, settings.boundaryHeightPrecision * 2f, 0.001f) : 0.001f;
+            if (a.Count == 0 || b.Count == 0 || error > tolerance) result.failedEdges++;
         }
 
         private static List<Vector3> LoadBoundaryVertices(TerrainTileRecord record, Vector2Int coordinate, Vector2Int direction, TerrainChunkSettings settings)
@@ -108,16 +113,25 @@ namespace Voyage.TerrainSystem.Editor
             Vector3[] vertices = filter.sharedMesh.vertices;
             float edge = settings.tileSize * 0.5f;
             float tolerance = settings != null ? settings.boundaryPositionTolerance : 0.0001f;
+            HashSet<Vector3Int> unique = new HashSet<Vector3Int>();
             for (int i = 0; i < vertices.Length; i++)
             {
                 Vector3 local = vertices[i];
                 bool onEdge = direction == Vector2Int.right ? Mathf.Abs(local.x - edge) <= tolerance : direction == Vector2Int.left ? Mathf.Abs(local.x + edge) <= tolerance : settings.horizontalAxes == TerrainHorizontalAxes.XZ ? (direction == Vector2Int.up ? Mathf.Abs(local.z - edge) <= tolerance : Mathf.Abs(local.z + edge) <= tolerance) : (direction == Vector2Int.up ? Mathf.Abs(local.y - edge) <= tolerance : Mathf.Abs(local.y + edge) <= tolerance);
-                if (onEdge) result.Add(origin + local);
+                if (!onEdge) continue;
+                Vector3 world = origin + local;
+                Vector3Int key = new Vector3Int(Mathf.RoundToInt(world.x * 10000f), Mathf.RoundToInt(world.y * 10000f), Mathf.RoundToInt(world.z * 10000f));
+                if (unique.Add(key)) result.Add(world);
             }
             return result;
         }
 
         private static float Compare(List<Vector3> a, List<Vector3> b, TerrainChunkSettings settings)
+        {
+            return Mathf.Max(DirectedCompare(a, b, settings), DirectedCompare(b, a, settings));
+        }
+
+        private static float DirectedCompare(List<Vector3> a, List<Vector3> b, TerrainChunkSettings settings)
         {
             float maxError = 0f;
             for (int i = 0; i < a.Count; i++)

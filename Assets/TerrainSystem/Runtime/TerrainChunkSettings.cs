@@ -34,12 +34,28 @@ namespace Voyage.TerrainSystem
         [Header("Baked grass")]
         [Tooltip("Create one shared grass prototype during terrain baking; tile placement is generated on demand.")]
         public bool bakeGrass = true;
-        [Min(0.25f)] public float grassClusterSpacing = 0.65f;
+        [Min(0.25f)] public float grassClusterSpacing = 0.5f;
         [Min(1)] public int grassBladesPerCluster = 12;
         [Min(0.05f)] public float grassClusterRadius = 0.72f;
         [Min(0.1f)] public float grassBladeHeight = 1.1f;
         [Range(0f, 1f)] public float grassDensity = 0.96f;
-        [Min(1)] public int grassClusterBudget = 50000;
+        [Min(1)] public int grassClusterBudget = 100000;
+        [Header("Stylized grass appearance")]
+        public Color grassBaseColor = new Color(0.34f, 0.43f, 0.08f, 1f);
+        public Color grassShadowColor = new Color(0.16f, 0.24f, 0.045f, 1f);
+        public Color grassTipColor = new Color(0.58f, 0.48f, 0.10f, 1f);
+        public Color grassBacksideColor = new Color(0.43f, 0.36f, 0.07f, 1f);
+        public Color grassFadeColor = new Color(0.055f, 0.16f, 0.045f, 1f);
+        [Min(0.001f)] public float grassMacroScale = 0.018f;
+        [Range(0f, 1f)] public float grassMacroStrength = 0.42f;
+        [Range(0f, 1f)] public float grassAlphaClip = 0.35f;
+        [Min(0f)] public float grassFadeStart = 105f;
+        [Min(0.01f)] public float grassFadeEnd = 495f;
+        public Vector2 grassWindDirection = new Vector2(0.86f, 0.28f);
+        [Min(0f)] public float grassWindSpeed = 1f;
+        [Range(0f, 1f)] public float grassWindGust = 0.28f;
+        [Tooltip("Use GPU-driven indirect grass drawing when the culling compute shader is available.")]
+        public bool useIndirectGrass = true;
         [Range(0f, 89f)] public float grassFullDensityBelowSlope = 28f;
         [Range(1f, 90f)] public float grassNoGrassAboveSlope = 58f;
 
@@ -136,6 +152,15 @@ namespace Voyage.TerrainSystem
             grassBladeHeight = Mathf.Max(0.1f, grassBladeHeight);
             grassDensity = Mathf.Clamp01(grassDensity);
             grassClusterBudget = Mathf.Max(1, grassClusterBudget);
+            grassMacroScale = Mathf.Max(0.001f, grassMacroScale);
+            grassMacroStrength = Mathf.Clamp01(grassMacroStrength);
+            grassAlphaClip = Mathf.Clamp01(grassAlphaClip);
+            grassFadeStart = Mathf.Max(0f, grassFadeStart);
+            grassFadeEnd = Mathf.Max(grassFadeStart + 0.01f, grassFadeEnd);
+            if (grassWindDirection.sqrMagnitude < 0.0001f) grassWindDirection = Vector2.right;
+            grassWindDirection.Normalize();
+            grassWindSpeed = Mathf.Max(0f, grassWindSpeed);
+            grassWindGust = Mathf.Clamp01(grassWindGust);
             grassFullDensityBelowSlope = Mathf.Clamp(grassFullDensityBelowSlope, 0f, 89f);
             grassNoGrassAboveSlope = Mathf.Clamp(grassNoGrassAboveSlope, grassFullDensityBelowSlope + 1f, 90f);
         }

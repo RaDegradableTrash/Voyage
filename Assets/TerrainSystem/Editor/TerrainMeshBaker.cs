@@ -459,6 +459,44 @@ namespace Voyage.TerrainSystem.Editor
             return AssetDatabase.LoadAssetAtPath<GrassPrototypeAsset>(path);
         }
 
+        public static void RebuildGrassPrototypeOnly(TerrainChunkSettings settings)
+        {
+            const string path = "Assets/TerrainSystem/Source/GrassPrototype.asset";
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            GrassPrototypeAsset generated = GrassMeshBaker.BuildPrototype(settings, "GrassPrototype");
+            if (generated == null) throw new InvalidOperationException("Grass prototype could not be generated from the current settings.");
+            generated.material = GetGrassMaterial();
+
+            GrassPrototypeAsset existing = AssetDatabase.LoadAssetAtPath<GrassPrototypeAsset>(path);
+            if (existing == null)
+            {
+                AssetDatabase.CreateAsset(generated, path);
+                if (generated.clusterMesh != null) AssetDatabase.AddObjectToAsset(generated.clusterMesh, generated);
+            }
+            else
+            {
+                // Update the existing main asset in place so every generated
+                // prefab keeps its serialized reference/GUID.
+                Mesh oldMesh = existing.clusterMesh;
+                if (oldMesh != null)
+                {
+                    AssetDatabase.RemoveObjectFromAsset(oldMesh);
+                    UnityEngine.Object.DestroyImmediate(oldMesh, true);
+                }
+                existing.clusterMesh = generated.clusterMesh;
+                existing.material = generated.material;
+                existing.bladesPerCluster = generated.bladesPerCluster;
+                existing.clusterRadius = generated.clusterRadius;
+                existing.bladeHeight = generated.bladeHeight;
+                if (existing.clusterMesh != null) AssetDatabase.AddObjectToAsset(existing.clusterMesh, existing);
+                EditorUtility.SetDirty(existing);
+                generated.clusterMesh = null;
+                UnityEngine.Object.DestroyImmediate(generated);
+            }
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+        }
+
         private static Material GetGrassMaterial()
         {
             const string path = "Assets/TerrainSystem/Source/GrassMaterial.mat";
@@ -472,7 +510,7 @@ namespace Voyage.TerrainSystem.Editor
             }
             if (material != null)
             {
-                if (material.HasProperty("_Color")) material.SetColor("_Color", new Color(0.28f, 0.38f, 0.14f, 1f));
+                if (material.HasProperty("_Color")) material.SetColor("_Color", new Color(0.20f, 0.28f, 0.105f, 1f));
                 if (material.HasProperty("_WindStrength")) material.SetFloat("_WindStrength", 0.32f);
                 if (material.HasProperty("_WindSpeed")) material.SetFloat("_WindSpeed", 1.15f);
                 if (material.HasProperty("_BendStrength")) material.SetFloat("_BendStrength", 1.15f);

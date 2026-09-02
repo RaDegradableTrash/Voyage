@@ -3,6 +3,16 @@ Shader "Voyage/Grass/InteractiveLit"
     Properties
     {
         _Color ("Grass Color", Color) = (0.28, 0.38, 0.14, 1)
+        _BaseColor ("Base Color", Color) = (0.34, 0.43, 0.08, 1)
+        _ShadowColor ("Shadow Color", Color) = (0.16, 0.24, 0.045, 1)
+        _TipColor ("Tip Color", Color) = (0.58, 0.48, 0.10, 1)
+        _BacksideColor ("Backside Warm Color", Color) = (0.43, 0.36, 0.07, 1)
+        _FadeColor ("Distance Ground Color", Color) = (0.055, 0.16, 0.045, 1)
+        _MacroScale ("Macro Variation Scale", Float) = 0.018
+        _MacroStrength ("Macro Variation Strength", Range(0,1)) = 0.42
+        _AlphaClip ("Alpha Clip", Range(0,1)) = 0.35
+        _FadeStart ("Fade Start", Float) = 105
+        _FadeEnd ("Fade End", Float) = 495
         _WindStrength ("Wind Strength", Float) = 0.18
         _WindSpeed ("Wind Speed", Float) = 1.0
         _BendStrength ("Interaction Bend", Float) = 1.0
@@ -14,17 +24,23 @@ Shader "Voyage/Grass/InteractiveLit"
     }
     SubShader
     {
-        Tags { "RenderType"="Opaque" "Queue"="AlphaTest" "RenderPipeline"="UniversalPipeline" }
+        Tags { "RenderType"="Transparent" "Queue"="Transparent" "RenderPipeline"="UniversalPipeline" }
         Pass
         {
             Name "UniversalForward"
             Tags { "LightMode"="UniversalForward" }
             Cull Off
+            Blend SrcAlpha OneMinusSrcAlpha
+            // Writing depth is important for crossed cards: without it every
+            // overlapping blade is sorted as transparent geometry and the
+            // order can change frame to frame, producing shimmer/flicker.
             ZWrite On
+            Offset -1, -1
             HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile_instancing
+            #pragma instancing_options procedural:ConfigureProcedural
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
             #pragma multi_compile_fog
             #pragma target 3.5
@@ -35,6 +51,29 @@ Shader "Voyage/Grass/InteractiveLit"
             TEXTURE2D(_VoyageGrassPermanentInteraction); SAMPLER(sampler_VoyageGrassPermanentInteraction);
             float4 _VoyageGrassInteractionWorld;
             float4 _Color;
+            float4 _BaseColor;
+            float4 _ShadowColor;
+            float4 _TipColor;
+            float4 _BacksideColor;
+            float4 _FadeColor;
+            float _MacroScale;
+            float _MacroStrength;
+            float _AlphaClip;
+            float _FadeStart;
+            float _FadeEnd;
+            float4 _VoyageGrassWind;
+            #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
+            StructuredBuffer<float4x4> _VoyageGrassMatrices;
+            void ConfigureProcedural()
+            {
+                unity_ObjectToWorld = _VoyageGrassMatrices[unity_InstanceID];
+                // Grass instances use only rotation plus near-uniform scale.
+                // Transpose is supported by Unity's shader compiler and is a
+                // stable inverse approximation for this deliberately light
+                // weight billboard-style geometry.
+                unity_WorldToObject = transpose(unity_ObjectToWorld);
+            }
+            #endif
             float _WindStrength;
             float _WindSpeed;
             float _BendStrength;
@@ -61,6 +100,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 float2 uv : TEXCOORD2;
                 float2 instanceRandom : TEXCOORD3;
                 float4 shadowCoord : TEXCOORD4;
+                float farBlend : TEXCOORD5;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -95,26 +135,38 @@ Shader "Voyage/Grass/InteractiveLit"
                 UNITY_SETUP_INSTANCE_ID(input);
                 Varyings output;
                 float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
+                float3 instanceOriginWS = float3(unity_ObjectToWorld._m03, unity_ObjectToWorld._m13, unity_ObjectToWorld._m23);
+                float cameraDistance = distance(instanceOriginWS, GetCameraPositionWS());
+                float farBlend = smoothstep(_FadeStart * 0.35, max(_FadeStart * 0.35 + 0.01, _FadeEnd * 0.78), cameraDistance);
+                // Replace distant tiny cards with visually broader clumps.
+                float farClusterScale = lerp(1.0, 2.25, farBlend);
+                float3 localFromOrigin = positionWS - instanceOriginWS;
+                positionWS = instanceOriginWS + float3(localFromOrigin.x * farClusterScale,
+                                                        localFromOrigin.y * lerp(1.0, 1.18, farBlend),
+                                                        localFromOrigin.z * farClusterScale);
                 float tip = saturate(input.uv.y);
                 float temporaryWeight;
                 float recoveryAge;
                 float2 interactionBend = SampleBend(FieldUV(positionWS), temporaryWeight, recoveryAge);
 
-                float angularFrequency = 10.0;
-                float damping = max(_RecoverySpeed, 0.01) * 1.35;
-                float spring = exp(-damping * recoveryAge) *
-                               (cos(angularFrequency * recoveryAge) +
-                                damping / angularFrequency * sin(angularFrequency * recoveryAge));
-                interactionBend *= spring * _InteractionEnabled * _BendStrength;
+                // The interaction texture alpha is the recovery timer. Follow
+                // it directly so pressed grass stands back up smoothly.
+                float recoveryStrength = saturate(1.0 - recoveryAge);
+                interactionBend *= recoveryStrength * _InteractionEnabled * _BendStrength;
 
-                float seed = input.instanceRandom.x * 19.37 + input.instanceRandom.y * 7.11;
-                float phase = _Time.y * _WindSpeed + seed;
-                float2 broadWave = float2(
-                    sin(positionWS.x * 0.045 + phase) + 0.5 * sin(positionWS.z * 0.091 - phase * 0.73),
-                    cos(positionWS.z * 0.052 + phase * 0.87) + 0.5 * cos(positionWS.x * 0.083 - phase * 1.21));
-                float gust = 0.72 + 0.28 * sin(positionWS.x * 0.012 + positionWS.z * 0.017 + _Time.y * 0.38);
+                float2 globalWindDirection = normalize(_VoyageGrassWind.xy + float2(0.0001, 0.0001));
+                float globalWindSpeed = _VoyageGrassWind.z > 0.0 ? _VoyageGrassWind.z : 1.0;
+                float globalGustStrength = saturate(_VoyageGrassWind.w);
+                float2 windPerpendicular = float2(-globalWindDirection.y, globalWindDirection.x);
+                float alongWind = dot(positionWS.xz, globalWindDirection);
+                float acrossWind = dot(positionWS.xz, windPerpendicular);
+                float phase = alongWind * 0.055 - _Time.y * _WindSpeed * globalWindSpeed;
+                float wave = sin(phase) + 0.32 * sin(phase * 0.47 + acrossWind * 0.028);
+                float gust = 0.78 + 0.22 * sin(alongWind * 0.012 + acrossWind * 0.017 + _Time.y * 0.38);
                 float windVariation = lerp(0.74, 1.26, input.instanceRandom.x);
-                float2 wind = normalize(broadWave + float2(0.001, 0.001)) * _WindStrength * gust * windVariation;
+                float windDistanceAttenuation = lerp(1.0, 0.28, farBlend);
+                float2 wind = globalWindDirection * wave * _WindStrength * windDistanceAttenuation *
+                              lerp(1.0, gust, globalGustStrength) * windVariation;
                 float bendTip = tip * tip * (0.35 + 0.65 * tip);
                 float2 totalOffset = interactionBend + wind;
                 positionWS.xz += totalOffset * bendTip;
@@ -138,27 +190,49 @@ Shader "Voyage/Grass/InteractiveLit"
                 output.uv = input.uv;
                 output.instanceRandom = input.instanceRandom;
                 output.shadowCoord = TransformWorldToShadowCoord(positionWS);
+                output.farBlend = farBlend;
                 return output;
             }
 
-            half4 frag(Varyings input) : SV_Target
+            half4 frag(Varyings input, bool isFrontFace : SV_IsFrontFace) : SV_Target
             {
                 float centerMask = 1.0 - abs(input.uv.x * 2.0 - 1.0);
                 float bladeWidth = lerp(1.0, 0.16, saturate(input.uv.y));
-                clip(centerMask - (1.0 - bladeWidth));
+                clip(centerMask - max(1.0 - bladeWidth, _AlphaClip));
+                float cameraDistance = distance(input.positionWS, GetCameraPositionWS());
+                float fade = 1.0 - smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance);
+                float distanceGroundBlend = smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance);
 
-                Light mainLight = GetMainLight(input.shadowCoord);
+                // Grass is deliberately not part of the shadow-map pass. Use
+                // direct light only here as well, so shadow-map precision does
+                // not make dense cards flicker against one another.
+                Light mainLight = GetMainLight();
                 half3 normalWS = normalize(input.normalWS);
                 half ndotl = saturate(dot(normalWS, mainLight.direction));
                 half3 ambient = SampleSH(normalWS) * _AmbientStrength;
-                half3 direct = mainLight.color * (ndotl * mainLight.shadowAttenuation) * _DirectLightStrength;
-                half variation = lerp(0.78, 1.12, input.instanceRandom.y);
-                half3 color = _Color.rgb * variation * (ambient + direct + 0.12h);
-                return half4(color, _Color.a);
+                half3 direct = mainLight.color * ndotl * _DirectLightStrength;
+                float macro = frac(sin(dot(floor(input.positionWS.xz * max(_MacroScale, 0.001)), float2(12.9898, 78.233))) * 43758.5453);
+                float macroStrength = lerp(_MacroStrength, 0.08, input.farBlend);
+                macro = lerp(1.0, lerp(0.82, 1.18, macro), macroStrength);
+                half heightBlend = saturate(input.uv.y * 1.35);
+                half3 grassColor = lerp(_ShadowColor.rgb, _BaseColor.rgb, heightBlend);
+                grassColor = lerp(grassColor, _TipColor.rgb, saturate((input.uv.y - 0.55) * 1.8));
+                half randomVariation = lerp(0.82h, 1.12h, input.instanceRandom.y);
+                randomVariation = lerp(randomVariation, 1.0h, input.farBlend * 0.82h);
+                grassColor *= macro * randomVariation;
+                half3 litColor = grassColor * (ambient + direct + 0.12h);
+                half3 color = isFrontFace ? litColor : lerp(litColor, _BacksideColor.rgb, 0.38h);
+                // The distant grass must converge toward the deep-green terrain
+                // before its alpha fades, otherwise yellow/red tips remain
+                // visible as a mismatched transparent veil.
+                color = lerp(color, _FadeColor.rgb, distanceGroundBlend * 0.82h);
+                // Keep the near field fully opaque and let the terrain show
+                // through progressively in the transition band. This avoids
+                // the hard dither horizon produced by distance clip alone.
+                return half4(color, _Color.a * saturate(fade));
             }
             ENDHLSL
         }
 
-        UsePass "Universal Render Pipeline/Lit/ShadowCaster"
     }
 }

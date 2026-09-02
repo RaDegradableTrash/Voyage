@@ -16,14 +16,17 @@ namespace Voyage.TerrainSystem
         [Header("World-space field")]
         [Min(16)] public int resolution = 512;
         [Min(16f)] public float worldSize = 160f;
-        [Min(0.01f)] public float decayPerSecond = 0.28f;
+        [Tooltip("Exponential recovery speed; 0.4 returns pressed grass to about 2% intensity in 10 seconds.")]
+        [Min(0.01f)] public float decayPerSecond = 0.4f;
         [Min(0.01f)] public float maxStampDistance = 12f;
         [Min(1f)] public float maxTeleportDistance = 80f;
         [Min(0.1f)] public float speedForFullBend = 12f;
         [Min(1)] public int liveStampsPerFrame = 96;
         [Min(64)] public int maxPendingStamps = 2048;
         [Min(1)] public int permanentRebuildStampsPerFrame = 96;
-        public bool recordPermanentTracks = true;
+        // Vehicle impressions are temporary gameplay feedback. Keeping this
+        // off ensures every tire track recovers instead of remaining bent.
+        public bool recordPermanentTracks = false;
         public Transform followTarget;
 
         readonly List<Transform> vehicles = new List<Transform>();
@@ -352,7 +355,9 @@ namespace Voyage.TerrainSystem
             // Grass is displaced away from the moving object, not in front of
             // it. This also makes permanent tire tracks use the same physical
             // orientation as the temporary pressed-grass field.
-            Vector2 dir = (b - a).sqrMagnitude > 0.000001f ? -(b - a).normalized : Vector2.up;
+            // Grass falls in the vehicle's travel direction, matching the
+            // wake behind each tire rather than bending away from the tire.
+            Vector2 dir = (b - a).sqrMagnitude > 0.000001f ? (b - a).normalized : Vector2.up;
             float strength = Mathf.Lerp(0.28f, 1f, Mathf.Clamp01(speed / speedForFullBend));
             if (recordPermanentTracks && permanentTrackStore != null)
                 permanentTrackStore.RecordSegment(from, to, radius, strength, source);
