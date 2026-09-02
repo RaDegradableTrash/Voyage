@@ -346,7 +346,7 @@ namespace Voyage.TerrainSystem
                 clusterPositions.Add(clusterLocal);
                 Vector3 groundNormalLocal = transform.InverseTransformDirection(groundHit.normal).normalized;
                 Quaternion groundRotation = Quaternion.FromToRotation(Vector3.up, groundNormalLocal);
-                Quaternion yawRotation = Quaternion.AngleAxis((float)random.NextDouble() * 360f, groundHit.normal);
+                Quaternion yawRotation = Quaternion.AngleAxis((float)random.NextDouble() * 360f, groundNormalLocal);
                 clusterRotations.Add(yawRotation * groundRotation);
                 clusterScales.Add(0.82f + (float)random.NextDouble() * 0.36f);
             }
