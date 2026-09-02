@@ -81,6 +81,8 @@ namespace Voyage.TerrainSystem
             public bool valid;
             public GrassDebugState debugState;
             public float lastPressedTime = -1000f;
+            public Vector3 shaderMotionVelocity;
+            public bool pressingThisFrame;
         }
 
         sealed class EmitterState
@@ -122,6 +124,20 @@ namespace Voyage.TerrainSystem
         public int RegisteredWheelCount => wheelStates.Count;
         public int PendingStampCount => pendingStamps.Count;
         public Vector4 WorldToUv => new Vector4(fieldCenter.x, fieldCenter.z, worldSize, resolution);
+
+        public void BindShaderProperties(Material target)
+        {
+            if (target == null || !initialized) return;
+            target.SetTexture("_VoyageGrassInteraction", field);
+            target.SetTexture("_VoyageGrassPermanentInteraction", permanentField);
+            target.SetVector("_VoyageGrassInteractionWorld", WorldToUv);
+            target.SetVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
+            target.SetVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
+            target.SetFloatArray("_VoyageGrassWheelRadii", shaderWheelRadii);
+            target.SetFloatArray("_VoyageGrassWheelStrengths", shaderWheelStrengths);
+            target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
+            target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
+        }
 
         public GrassDebugState GetDebugState(Vector3 position)
         {
@@ -333,6 +349,7 @@ namespace Voyage.TerrainSystem
                 // produce a continuous world-space tire path.
                 Vector3 current = state.wheel.position;
                 if (!state.valid) { state.previous = current; state.valid = true; continue; }
+                state.pressingThisFrame = false;
                 bool currentOutside = IsOutsideField(current, state.radius);
                 bool previousOutside = IsOutsideField(state.previous, state.radius);
                 // Do not queue or persist tracks for entities that are wholly
@@ -350,6 +367,11 @@ namespace Voyage.TerrainSystem
                 if (distance > maxTeleportDistance) state.previous = current;
                 else if (IsVehicleMoving(state, distance, out Vector3 motionVelocity))
                 {
+                    if (motionVelocity.sqrMagnitude < 0.0001f && distance > 0.0001f)
+                        motionVelocity = (current - state.previous) / Mathf.Max(Time.deltaTime, 0.0001f);
+                    motionVelocity.y = 0f;
+                    state.shaderMotionVelocity = motionVelocity;
+                    state.pressingThisFrame = true;
                     state.debugState = GrassDebugState.Pressing;
                     state.lastPressedTime = Time.time;
                     Transform wheelSource = state.wheel;
@@ -370,6 +392,7 @@ namespace Voyage.TerrainSystem
                 }
                 else
                 {
+                    state.shaderMotionVelocity = Vector3.zero;
                     state.debugState = GrassDebugState.NearbyIdle;
                 }
                 state.previous = current;
@@ -538,14 +561,9 @@ namespace Voyage.TerrainSystem
                 {
                     WheelState wheel = wheelStates[i];
                     Vector3 position = wheel.wheel.position;
-                    Vector3 velocity = wheel.terrainFollower != null && wheel.terrainFollower.enabled
-                        ? wheel.terrainFollower.CurrentVelocity
-                        : wheel.body != null ? wheel.body.linearVelocity : wheel.wheel.position - wheel.previous;
+                    Vector3 velocity = wheel.pressingThisFrame ? wheel.shaderMotionVelocity : Vector3.zero;
                     velocity.y = 0f;
-                    Vector3 displacement = wheel.wheel.position - wheel.previous;
-                    displacement.y = 0f;
-                    Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized :
-                                        displacement.sqrMagnitude > 0.0001f ? displacement.normalized : Vector3.forward;
+                    Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized : Vector3.forward;
                     shaderWheelPositions[i] = new Vector4(position.x, position.z, 0f, 0f);
                     shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);
                     shaderWheelRadii[i] = Mathf.Max(0.45f, wheel.radius * 1.8f);

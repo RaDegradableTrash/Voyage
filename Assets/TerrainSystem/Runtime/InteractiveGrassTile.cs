@@ -216,6 +216,7 @@ namespace Voyage.TerrainSystem
             runtimeMaterial.SetTexture("_VoyageGrassInteraction", interaction.Field);
             runtimeMaterial.SetTexture("_VoyageGrassPermanentInteraction", interaction.PermanentField);
             runtimeMaterial.SetVector("_VoyageGrassInteractionWorld", interaction.WorldToUv);
+            interaction.BindShaderProperties(runtimeMaterial);
         }
 
         void ReleaseIndirectBuffers()
