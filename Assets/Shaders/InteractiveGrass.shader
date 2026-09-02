@@ -109,6 +109,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 float2 instanceRandom : TEXCOORD3;
                 float4 shadowCoord : TEXCOORD4;
                 float farBlend : TEXCOORD5;
+                float bendAmount : TEXCOORD6;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -290,6 +291,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 output.instanceRandom = input.instanceRandom;
                 output.shadowCoord = TransformWorldToShadowCoord(positionWS);
                 output.farBlend = farBlend;
+                output.bendAmount = saturate(abs(sin(angleAtVertex)));
                 return output;
             }
 
@@ -331,7 +333,7 @@ Shader "Voyage/Grass/InteractiveLit"
                     float4 fieldSample = SAMPLE_TEXTURE2D_LOD(_VoyageGrassInteraction,
                                                                sampler_VoyageGrassInteraction,
                                                                FieldUV(input.positionWS), 0);
-                    if (immediate > 0.025) color = half3(1.0, 0.05, 0.02);
+                    if (input.bendAmount > 0.08) color = half3(1.0, 0.05, 0.02);
                     else if (fieldSample.b > 0.025) color = half3(0.05, 0.25, 1.0);
                     else color = half3(0.42, 0.42, 0.42);
                 }
