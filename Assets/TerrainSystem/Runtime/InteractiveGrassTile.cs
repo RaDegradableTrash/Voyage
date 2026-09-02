@@ -135,12 +135,16 @@ namespace Voyage.TerrainSystem
 
         void LateUpdate()
         {
+            if (instanceProperties == null) instanceProperties = new MaterialPropertyBlock();
             // Bind interaction data before the draw eligibility checks. A
             // streamed tile can spend several frames with no generated
             // cluster mesh or at a non-drawing LOD, then become visible again;
             // waiting until after those checks leaves its material with stale
             // wheel data on the first visible frame.
             BindInteractionField();
+            GrassInteractionSystem interaction = GrassInteractionSystem.Instance;
+            if (interaction != null && interaction.IsReady)
+                interaction.BindShaderProperties(instanceProperties);
             bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
             Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : runtimeClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
@@ -150,7 +154,6 @@ namespace Voyage.TerrainSystem
             // drawing so stale material state cannot disable the whole pass.
             if (!runtimeMaterial.enableInstancing) runtimeMaterial.enableInstancing = true;
             if (!runtimeMaterial.enableInstancing) return;
-            if (instanceProperties == null) instanceProperties = new MaterialPropertyBlock();
             float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.55f : 0.2f;
             int visibleCount = Mathf.Clamp(Mathf.CeilToInt(instanceMatrices.Length * lodDensity), 1, instanceMatrices.Length);
             // The instance array is generated in grid order. Copying the first

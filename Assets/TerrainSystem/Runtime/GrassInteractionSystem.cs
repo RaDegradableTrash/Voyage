@@ -144,6 +144,20 @@ namespace Voyage.TerrainSystem
             target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
         }
 
+        public void BindShaderProperties(MaterialPropertyBlock target)
+        {
+            if (target == null || !initialized) return;
+            target.SetTexture("_VoyageGrassInteraction", field);
+            target.SetTexture("_VoyageGrassPermanentInteraction", permanentField);
+            target.SetVector("_VoyageGrassInteractionWorld", WorldToUv);
+            target.SetVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
+            target.SetVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
+            target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
+            target.SetVector("_VoyageGrassVehicleData", shaderVehicleData);
+            target.SetVector("_VoyageGrassVehicleParams", shaderVehicleParams);
+            target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
+        }
+
         public GrassDebugState GetDebugState(Vector3 position)
         {
             float nearestDistance = float.MaxValue;
