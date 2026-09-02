@@ -54,6 +54,8 @@ Shader "Voyage/Grass/InteractiveLit"
             float4 _VoyageGrassWheelPositions[8];
             float4 _VoyageGrassWheelDirections[8];
             float _VoyageGrassWheelCount;
+            float4 _VoyageGrassVehicleData;
+            float4 _VoyageGrassVehicleParams;
             float _VoyageGrassDebugStateMachine;
             float4 _Color;
             float4 _BaseColor;
@@ -152,6 +154,26 @@ Shader "Voyage/Grass/InteractiveLit"
                 return result;
             }
 
+            float2 SampleVehicleFootprintBend(float3 positionWS)
+            {
+                float2 forward = normalize(_VoyageGrassVehicleData.zw + float2(0.0001, 0.0001));
+                float2 lateral = float2(-forward.y, forward.x);
+                float2 result = 0.0;
+                float radius = max(_VoyageGrassVehicleParams.z, 0.001);
+                for (int longitudinal = -1; longitudinal <= 1; longitudinal += 2)
+                {
+                    for (int side = -1; side <= 1; side += 2)
+                    {
+                        float2 wheel = _VoyageGrassVehicleData.xy
+                                     + forward * (_VoyageGrassVehicleParams.x * longitudinal)
+                                     + lateral * (_VoyageGrassVehicleParams.y * side);
+                        float influence = saturate(1.0 - distance(positionWS.xz, wheel) / radius);
+                        result += forward * influence * influence * _VoyageGrassVehicleParams.w;
+                    }
+                }
+                return result;
+            }
+
             Varyings vert(Attributes input)
             {
                 UNITY_SETUP_INSTANCE_ID(input);
@@ -182,7 +204,8 @@ Shader "Voyage/Grass/InteractiveLit"
                 // evaluated from world coordinates, so a bad tile/field
                 // reprojection can never flatten an entire grass chunk.
                 float2 immediateWheelBend = SampleImmediateWheelBend(positionWS);
-                float2 interactionBend = immediateWheelBend * 1.8;
+                float2 vehicleFootprintBend = SampleVehicleFootprintBend(positionWS);
+                float2 interactionBend = immediateWheelBend * 1.8 + vehicleFootprintBend * 1.8;
 
                 // The interaction texture alpha is the recovery timer. Follow
                 // it directly so pressed grass stands back up smoothly.

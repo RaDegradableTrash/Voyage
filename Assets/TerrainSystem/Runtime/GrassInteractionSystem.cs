@@ -53,6 +53,8 @@ namespace Voyage.TerrainSystem
         const int MaxShaderWheels = 8;
         readonly Vector4[] shaderWheelPositions = new Vector4[MaxShaderWheels];
         readonly Vector4[] shaderWheelDirections = new Vector4[MaxShaderWheels];
+        Vector4 shaderVehicleData;
+        Vector4 shaderVehicleParams;
         RenderTexture field;
         RenderTexture scratch;
         RenderTexture permanentField;
@@ -132,6 +134,8 @@ namespace Voyage.TerrainSystem
             target.SetVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
             target.SetVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
             target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
+            target.SetVector("_VoyageGrassVehicleData", shaderVehicleData);
+            target.SetVector("_VoyageGrassVehicleParams", shaderVehicleParams);
             target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
         }
 
@@ -633,6 +637,25 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
             Shader.SetGlobalVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
             Shader.SetGlobalFloat("_VoyageGrassWheelCount", count);
+            shaderVehicleData = Vector4.zero;
+            shaderVehicleParams = Vector4.zero;
+            if (followTarget != null)
+            {
+                VehicleTerrainFollower follower = followTarget.GetComponent<VehicleTerrainFollower>();
+                Vector3 forward = follower != null ? follower.ForwardDirection : followTarget.right;
+                forward.y = 0f;
+                if (forward.sqrMagnitude < 0.001f) forward = Vector3.forward;
+                forward.Normalize();
+                Vector3 velocity = follower != null ? follower.CurrentVelocity : Vector3.zero;
+                velocity.y = 0f;
+                float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
+                shaderVehicleData = new Vector4(followTarget.position.x, followTarget.position.z, forward.x, forward.z);
+                // PlayerCar's runtime vehicle uses local X as its forward
+                // axis and local Z as its axle width.
+                shaderVehicleParams = new Vector4(1.35f, 1.02f, 0.95f, strength);
+            }
+            Shader.SetGlobalVector("_VoyageGrassVehicleData", shaderVehicleData);
+            Shader.SetGlobalVector("_VoyageGrassVehicleParams", shaderVehicleParams);
             Shader.SetGlobalFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
         }
 
