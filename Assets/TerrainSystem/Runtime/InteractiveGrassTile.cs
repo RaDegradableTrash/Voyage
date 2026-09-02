@@ -101,7 +101,11 @@ namespace Voyage.TerrainSystem
             }
             meshRenderer.sharedMaterial = runtimeMaterial;
             meshRenderer.enabled = false;
-            if (useLegacyBakedClusters && bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0)
+            // A generated tile with bakedClusters already owns the exact
+            // grass instances that are visible in the streamed world. Always
+            // use that data when it is present; the old opt-in flag allowed
+            // those visible instances to bypass this interactive draw path.
+            if (bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0)
             {
                 instanceMatrices = new Matrix4x4[bakedClusters.Count];
                 for (int i = 0; i < instanceMatrices.Length; i++)
@@ -137,7 +141,7 @@ namespace Voyage.TerrainSystem
             // waiting until after those checks leaves its material with stale
             // wheel data on the first visible frame.
             BindInteractionField();
-            bool hasBakedClusters = useLegacyBakedClusters && bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
+            bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
             Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : runtimeClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
             if (useIndirectRendering && TryDrawIndirect(drawMesh)) return;
