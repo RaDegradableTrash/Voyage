@@ -638,6 +638,29 @@ namespace Voyage.TerrainSystem
                     shaderWheelDirections[i] = new Vector4(0f, 0f, 0f, 1f);
                 }
             }
+            if (count == 0 && followTarget != null)
+            {
+                VehicleTerrainFollower follower = followTarget.GetComponent<VehicleTerrainFollower>();
+                if (follower != null)
+                {
+                    Vector3 velocity = follower.CurrentVelocity;
+                    velocity.y = 0f;
+                    Vector3 rootDeltaVelocity = hasPreviousFollowTargetPosition
+                        ? (followTarget.position - previousFollowTargetPosition) / Mathf.Max(Time.deltaTime, 0.0001f)
+                        : Vector3.zero;
+                    if (velocity.sqrMagnitude < 0.01f) velocity = rootDeltaVelocity;
+                    Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized : follower.ForwardDirection.normalized;
+                    count = Mathf.Min(MaxShaderWheels, follower.GrassInteractionWheelCount);
+                    for (int i = 0; i < count; i++)
+                    {
+                        Vector3 position = follower.GetGrassInteractionWheelPosition(i);
+                        float radius = Mathf.Max(0.8f, follower.tireRadius * 3.0f);
+                        float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
+                        shaderWheelPositions[i] = new Vector4(position.x, position.z, radius, strength);
+                        shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);
+                    }
+                }
+            }
             Shader.SetGlobalVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
             Shader.SetGlobalVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
             Shader.SetGlobalFloat("_VoyageGrassWheelCount", count);
