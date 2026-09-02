@@ -40,10 +40,19 @@ namespace Voyage.TerrainSystem
             DisableGeneratedSkirts();
             EnsureCollisionCollider();
             if (colliders == null) colliders = GetComponentsInChildren<Collider>(true);
+            // Generated prefabs may have all LOD roots active in serialized
+            // legacy data. Normalize immediately so there is never a frame of
+            // overlapping LOD meshes before the streaming system initializes.
+            SetLod(0);
             SetCollisionEnabled(!IsHlod);
         }
 
         public void Initialize(TerrainTileRecord record, TerrainChunkSettings chunkSettings, bool useHlod)
+        {
+            Initialize(record, chunkSettings, useHlod, transform.position);
+        }
+
+        public void Initialize(TerrainTileRecord record, TerrainChunkSettings chunkSettings, bool useHlod, Vector3 viewerPosition)
         {
             coordinate = record.coordinate;
             bounds = record.bounds;
@@ -57,20 +66,70 @@ namespace Voyage.TerrainSystem
             ConfigureLighting();
             colliders = GetComponentsInChildren<Collider>(true);
             SetCollisionEnabled(!useHlod);
-            SetLod(useHlod ? 3 : 0);
+            int initialLod = useHlod ? 3 : CalculateLod(viewerPosition);
+            SetLod(initialLod);
+            EnsureGrassForCurrentLod(record.bounds);
+            UpdateGrassInteractionProximity();
         }
 
         public void UpdateLod(Vector3 cameraPosition)
         {
             if (settings == null)
             {
-                SetLod(3);
+                SetLod(0);
+                EnsureGrassForCurrentLod(bounds);
+                UpdateGrassInteractionProximity();
                 return;
             }
 
             float distance = Vector3.Distance(bounds.ClosestPoint(cameraPosition), cameraPosition);
             int lod = distance < settings.lod1Distance ? 0 : distance < settings.lod2Distance ? 1 : distance < settings.lod3Distance ? 2 : 3;
             SetLod(lod);
+            EnsureGrassForCurrentLod(bounds);
+            UpdateGrassInteractionProximity();
+        }
+
+        private int CalculateLod(Vector3 viewerPosition)
+        {
+            if (settings == null) return 0;
+            float distance = Vector3.Distance(bounds.ClosestPoint(viewerPosition), viewerPosition);
+            return distance < settings.lod1Distance ? 0 : distance < settings.lod2Distance ? 1 : distance < settings.lod3Distance ? 2 : 3;
+        }
+
+        private void EnsureGrassForCurrentLod(Bounds grassBounds)
+        {
+            InteractiveGrassTile grass = GetComponent<InteractiveGrassTile>();
+            if (grass == null && currentLod < 3)
+                grass = gameObject.AddComponent<InteractiveGrassTile>();
+            if (grass == null) return;
+            // Legacy prefabs do not contain the baked cluster asset. Configure
+            // their runtime fallback from the current settings so they do not
+            // silently fall back to the sparse component defaults. Keep the
+            // fallback budget bounded because baking is the preferred path and
+            // runtime sampling performs terrain raycasts.
+            if (settings != null && grass.bakedClusters == null)
+            {
+                grass.clusterSpacing = settings.grassClusterSpacing;
+                grass.bladesPerCluster = settings.grassBladesPerCluster;
+                grass.clusterRadius = settings.grassClusterRadius;
+                grass.bladeHeight = settings.grassBladeHeight;
+                grass.density = settings.grassDensity;
+                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 6000);
+                grass.fullDensityBelowSlope = settings.grassFullDensityBelowSlope;
+                grass.noGrassAboveSlope = settings.grassNoGrassAboveSlope;
+            }
+            grass.Initialize(grassBounds);
+            grass.SetLod(currentLod);
+        }
+
+        private void UpdateGrassInteractionProximity()
+        {
+            InteractiveGrassTile grass = GetComponent<InteractiveGrassTile>();
+            if (grass == null) return;
+            GrassInteractionSystem interaction = GrassInteractionSystem.Instance;
+            bool nearby = interaction == null || interaction.followTarget == null ||
+                          Vector3.Distance(bounds.ClosestPoint(interaction.followTarget.position), interaction.followTarget.position) <= interaction.worldSize * 0.5f;
+            grass.SetInteractionProximity(nearby);
         }
 
         public void SetCollisionEnabled(bool enabled)
@@ -146,6 +205,8 @@ namespace Voyage.TerrainSystem
             currentLod = lod;
             for (int i = 0; i < lodRoots.Length; i++)
                 if (lodRoots[i] != null) lodRoots[i].SetActive(i == lod);
+            InteractiveGrassTile grass = GetComponent<InteractiveGrassTile>();
+            if (grass != null) grass.SetLod(lod);
         }
     }
 }

@@ -9,7 +9,7 @@ namespace Voyage.TerrainSystem.Editor
 {
     internal static class TerrainMeshBaker
     {
-        private sealed class TriangleSource
+        internal sealed class TriangleSource
         {
             public Vector3 a, b, c;
             public Vector3 na, nb, nc;
@@ -25,7 +25,7 @@ namespace Voyage.TerrainSystem.Editor
             public ClipVertex(Vector3 position, Vector3 normal, Vector2 uv) { this.position = position; this.normal = normal; this.uv = uv; }
         }
 
-        private sealed class TileData
+        internal sealed class TileData
         {
             public readonly List<TriangleSource> triangles = new List<TriangleSource>();
         }
@@ -244,6 +244,7 @@ namespace Voyage.TerrainSystem.Editor
             Mesh lod1 = TerrainLodBuilder.Build(lod0, settings.lod1Quality, coordinate, settings, tileName + "_LOD1");
             Mesh lod2 = TerrainLodBuilder.Build(lod0, settings.lod2Quality, coordinate, settings, tileName + "_LOD2");
             Mesh lod3 = TerrainLodBuilder.Build(lod0, settings.lod3Quality, coordinate, settings, tileName + "_LOD3");
+            GrassChunkAsset bakedGrass = settings.bakeGrass ? GrassMeshBaker.BuildAsset(data.triangles, tileOrigin, coordinate, settings, tileName + "_Grass") : null;
             Mesh[] skirts = settings.generateSkirts ? new Mesh[]
             {
                 TerrainSkirtBuilder.Build(lod0, coordinate, settings, settings.skirtDepth, tileName + "_Skirt0"),
@@ -259,11 +260,27 @@ namespace Voyage.TerrainSystem.Editor
             AssetDatabase.CreateAsset(lod1, lodFolder + tileName + "_LOD1.asset");
             AssetDatabase.CreateAsset(lod2, lodFolder + tileName + "_LOD2.asset");
             AssetDatabase.CreateAsset(lod3, lodFolder + tileName + "_LOD3.asset");
+            if (bakedGrass != null)
+            {
+                string grassPath = lodFolder + tileName + "_Grass.asset";
+                AssetDatabase.CreateAsset(bakedGrass, grassPath);
+                if (bakedGrass.clusterMesh != null) AssetDatabase.AddObjectToAsset(bakedGrass.clusterMesh, bakedGrass);
+            }
             for (int i = 0; i < skirts.Length; i++) if (skirts[i] != null) AssetDatabase.CreateAsset(skirts[i], lodFolder + skirts[i].name + ".asset");
             AssetDatabase.SaveAssets();
 
             GameObject prefabRoot = new GameObject(tileName);
             TerrainTileRuntime runtime = prefabRoot.AddComponent<TerrainTileRuntime>();
+            InteractiveGrassTile grassRuntime = prefabRoot.AddComponent<InteractiveGrassTile>();
+            grassRuntime.bakedClusters = bakedGrass;
+            grassRuntime.clusterSpacing = settings.grassClusterSpacing;
+            grassRuntime.bladesPerCluster = settings.grassBladesPerCluster;
+            grassRuntime.clusterRadius = settings.grassClusterRadius;
+            grassRuntime.bladeHeight = settings.grassBladeHeight;
+            grassRuntime.density = settings.grassDensity;
+            grassRuntime.runtimeClusterBudget = settings.grassClusterBudget;
+            grassRuntime.fullDensityBelowSlope = settings.grassFullDensityBelowSlope;
+            grassRuntime.noGrassAboveSlope = settings.grassNoGrassAboveSlope;
             List<GameObject> roots = new List<GameObject>();
             Material[] materials = CollectMaterials(data.triangles);
             Mesh[] lods = { lod0, lod1, lod2, lod3 };
@@ -374,8 +391,40 @@ namespace Voyage.TerrainSystem.Editor
         private static Material[] CollectMaterials(List<TriangleSource> triangles)
         {
             List<Material> result = new List<Material>();
-            for (int i = 0; i < triangles.Count; i++) if (!result.Contains(triangles[i].material)) result.Add(triangles[i].material);
+            Material fallback = null;
+            for (int i = 0; i < triangles.Count; i++)
+            {
+                if (triangles[i].material == null || IsDiagnosticTerrainMaterial(triangles[i].material))
+                {
+                    if (fallback == null) fallback = GetFallbackTerrainMaterial();
+                    triangles[i].material = fallback;
+                }
+                if (triangles[i].material != null && !result.Contains(triangles[i].material)) result.Add(triangles[i].material);
+            }
             return result.ToArray();
+        }
+
+        private static bool IsDiagnosticTerrainMaterial(Material material)
+        {
+            if (material == null) return false;
+            if (string.Equals(material.name, "TerrainDiagnosticGray", StringComparison.OrdinalIgnoreCase)) return true;
+            return material.shader != null && string.Equals(material.shader.name, "Hidden/Voyage/LightingDiagnosticWhite", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static Material GetFallbackTerrainMaterial()
+        {
+            const string path = "Assets/TerrainSystem/Source/TerrainFallbackMaterial.mat";
+            Material material = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (material != null) return material;
+            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null) shader = Shader.Find("Standard");
+            if (shader == null) return null;
+            material = new Material(shader) { name = "Terrain Fallback Material", color = new Color(0.22f, 0.30f, 0.16f, 1f) };
+            if (material.HasProperty("_Metallic")) material.SetFloat("_Metallic", 0f);
+            if (material.HasProperty("_Smoothness")) material.SetFloat("_Smoothness", 0.15f);
+            AssetDatabase.CreateAsset(material, path);
+            AssetDatabase.SaveAssets();
+            return material;
         }
 
         private static GameObject InstantiateSource(GameObject source)
