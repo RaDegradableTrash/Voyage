@@ -377,7 +377,12 @@ namespace Voyage.TerrainSystem
         {
             if (runtimeMaterial != null)
             {
-                runtimeMaterial.SetFloat("_InteractionEnabled", interactionNearby && currentLod < 2 ? 1f : 0f);
+                // The interaction field is already bounded in world space and
+                // fades at its own edge. Do not gate it by the tile AABB:
+                // streamed tiles can straddle that AABB while still drawing
+                // grass inside the active field, which made visible grass
+                // ignore tire stamps entirely. LOD3 has no grass draw anyway.
+                runtimeMaterial.SetFloat("_InteractionEnabled", currentLod < 3 ? 1f : 0f);
                 runtimeMaterial.SetFloat("_WindStrength", currentLod == 0 ? 0.48f : currentLod == 1 ? 0.28f : 0.12f);
                 runtimeMaterial.SetFloat("_WindSpeed", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.9f : 0.68f);
                 runtimeMaterial.SetFloat("_BendStrength", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.8f : 0.35f);
