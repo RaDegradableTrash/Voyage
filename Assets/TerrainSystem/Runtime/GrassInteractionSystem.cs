@@ -16,8 +16,8 @@ namespace Voyage.TerrainSystem
         [Header("World-space field")]
         [Min(16)] public int resolution = 512;
         [Min(16f)] public float worldSize = 160f;
-        [Tooltip("Exponential recovery speed; 0.06 keeps pressed grass bent much longer, with per-blade variation in the shader.")]
-        [Min(0.01f)] public float decayPerSecond = 0.06f;
+        [Tooltip("Exponential recovery speed; 0.003 keeps pressed grass bent for a long time, with per-blade variation in the shader.")]
+        [Min(0.001f)] public float decayPerSecond = 0.003f;
         [Min(0.01f)] public float maxStampDistance = 12f;
         [Min(1f)] public float maxTeleportDistance = 80f;
         [Min(0.1f)] public float speedForFullBend = 12f;
@@ -81,7 +81,7 @@ namespace Voyage.TerrainSystem
         {
             resolution = Mathf.Max(16, resolution);
             worldSize = Mathf.Max(16f, worldSize);
-            decayPerSecond = Mathf.Max(0.01f, decayPerSecond);
+            decayPerSecond = Mathf.Max(0.001f, decayPerSecond);
             maxStampDistance = Mathf.Max(0.01f, maxStampDistance);
             maxTeleportDistance = Mathf.Max(maxStampDistance, maxTeleportDistance);
             speedForFullBend = Mathf.Max(0.1f, speedForFullBend);
