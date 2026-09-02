@@ -212,23 +212,33 @@ namespace Voyage.TerrainSystem.Editor
         {
             Vector3 side = new Vector3(Mathf.Cos(yaw), 0f, Mathf.Sin(yaw)) * width;
             Vector3 faceNormal = Vector3.Cross(side, Vector3.up).normalized;
-            int start = vertices.Count;
-            vertices.Add(position - side); vertices.Add(position + side);
-            // Push the apex slightly along the face normal. The three crossed
-            // cards then form a soft, volumetric tuft instead of a paper-thin
-            // triangle, without adding another vertex row or draw call.
-            vertices.Add(position + Vector3.up * height + faceNormal * (width * 0.45f));
-            normals.Add(faceNormal); normals.Add(faceNormal); normals.Add(faceNormal);
-            uvs.Add(new Vector2(0f, 0f)); uvs.Add(new Vector2(1f, 0f)); uvs.Add(new Vector2(0.5f, 1f));
             Vector2 random = new Vector2(Mathf.Repeat(variation, 1f), Mathf.Repeat(variation * 2.17f + 0.37f, 1f));
-            randoms.Add(random); randoms.Add(random); randoms.Add(random);
-            Vector2 authoredBladeData = new Vector2(height, 0f);
-            bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData);
-            // InteractiveGrass.shader uses Cull Off, so one winding is enough
-            // to rasterize both sides and lets SV_IsFrontFace select the
-            // backside palette. Duplicating the reverse winding doubles the
-            // index/raster work without adding visible surface area.
-            indices.Add(start); indices.Add(start + 1); indices.Add(start + 2);
+            int first = vertices.Count;
+            // Four rows produce three bendable segments. UV.y is the normalized
+            // joint position consumed by InteractiveGrass.shader.
+            for (int joint = 0; joint <= 3; joint++)
+            {
+                float normalized = joint / 3f;
+                float rowWidth = Mathf.Lerp(width, width * 0.12f, normalized);
+                Vector3 center = position + Vector3.up * (height * normalized);
+                if (joint == 3) center += faceNormal * (width * 0.45f);
+                vertices.Add(center - side.normalized * rowWidth);
+                vertices.Add(center + side.normalized * rowWidth);
+                normals.Add(faceNormal); normals.Add(faceNormal);
+                uvs.Add(new Vector2(0f, normalized)); uvs.Add(new Vector2(1f, normalized));
+                randoms.Add(random); randoms.Add(random);
+                Vector2 authoredBladeData = new Vector2(height, joint);
+                bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData);
+            }
+            for (int segment = 0; segment < 3; segment++)
+            {
+                int a = first + segment * 2;
+                int b = a + 1;
+                int c = a + 2;
+                int d = a + 3;
+                indices.Add(a); indices.Add(b); indices.Add(c);
+                indices.Add(b); indices.Add(d); indices.Add(c);
+            }
         }
     }
 }

@@ -38,6 +38,8 @@ namespace Voyage.TerrainSystem
         [Min(0.01f)] public float maxStampDistance = 12f;
         [Min(1f)] public float maxTeleportDistance = 80f;
         [Min(0.1f)] public float speedForFullBend = 12f;
+        [Tooltip("Rigidbody mass at which a tire applies maximum grass pressure.")]
+        [Min(1f)] public float massForFullPressure = 2500f;
         [Tooltip("Minimum horizontal vehicle speed required to refresh wheel impressions. Prevents parked suspension jitter from resetting recovery.")]
         [Min(0f)] public float minimumVehicleSpeed = 0.08f;
         [Tooltip("Minimum horizontal wheel/contact movement used to create a tire segment.")]
@@ -120,6 +122,7 @@ namespace Voyage.TerrainSystem
             maxStampDistance = Mathf.Max(0.01f, maxStampDistance);
             maxTeleportDistance = Mathf.Max(maxStampDistance, maxTeleportDistance);
             speedForFullBend = Mathf.Max(0.1f, speedForFullBend);
+            massForFullPressure = Mathf.Max(1f, massForFullPressure);
             minimumVehicleSpeed = Mathf.Max(0f, minimumVehicleSpeed);
             minimumWheelTravel = Mathf.Max(0f, minimumWheelTravel);
             liveStampsPerFrame = Mathf.Max(1, liveStampsPerFrame);
@@ -708,7 +711,13 @@ namespace Voyage.TerrainSystem
             // Grass falls in the vehicle's travel direction, matching the
             // wake behind each tire rather than bending away from the tire.
             Vector2 dir = (b - a).sqrMagnitude > 0.000001f ? (b - a).normalized : Vector2.up;
-            float strength = Mathf.Lerp(0.28f, 1f, Mathf.Clamp01(speed / speedForFullBend));
+            float speedPressure = Mathf.Lerp(0.24f, 0.82f, Mathf.Clamp01(speed / speedForFullBend));
+            Rigidbody body = source != null ? source.GetComponentInParent<Rigidbody>() : null;
+            float massPressure = body != null ? Mathf.InverseLerp(250f, massForFullPressure, body.mass) : 0.55f;
+            // A heavy vehicle leaves a stronger stored impression than a light
+            // prop at the same speed. The resulting B channel also drives the
+            // pressure-dependent decay in GrassInteractionField.shader.
+            float strength = Mathf.Clamp01(speedPressure * Mathf.Lerp(0.72f, 1.42f, massPressure));
             if (recordPermanentTracks && permanentTrackStore != null)
                 permanentTrackStore.RecordSegment(from, to, radius, strength, source);
             float margin = Mathf.Max(radius * 1.25f, worldSize / resolution);

@@ -286,6 +286,15 @@ namespace Voyage.TerrainSystem
             var clusterScales = new List<float>(clusterPositions.Capacity);
             int seed = unchecked(tileCoordinate.x * 73856093 ^ tileCoordinate.y * 19349663);
             System.Random random = new System.Random(seed);
+            // Publish geometry before the terrain sampling loop. The old path
+            // created the mesh only after every raycast had completed, which
+            // made a streamed tile look empty for several seconds.
+            bool prototypeNeedsExpandedGeometry = prototype != null &&
+                                                  prototype.clusterMesh != null &&
+                                                  prototype.clusterMesh.vertexCount < bladesPerCluster * 4 * 8;
+            if (prototype == null || prototype.clusterMesh == null || prototypeNeedsExpandedGeometry)
+                runtimeClusterMesh = BuildClusterMesh(new System.Random(seed ^ unchecked((int)0x5F3759DF)));
+            int nextPublishCount = 64;
             int processedClusters = 0;
             for (int z = 0; z < countZ && clusterPositions.Count < runtimeClusterBudget; z += candidateStep) for (int x = 0; x < countX && clusterPositions.Count < runtimeClusterBudget; x += candidateStep)
             {
@@ -351,38 +360,42 @@ namespace Voyage.TerrainSystem
                 Quaternion yawRotation = Quaternion.AngleAxis((float)random.NextDouble() * 360f, groundNormalLocal);
                 clusterRotations.Add(yawRotation * groundRotation);
                 clusterScales.Add(0.82f + (float)random.NextDouble() * 0.36f);
+                if (clusterPositions.Count >= nextPublishCount)
+                {
+                    PublishRuntimeInstances(clusterPositions, clusterRotations, clusterScales);
+                    nextPublishCount += 64;
+                }
             }
             if (clusterPositions.Count == 0)
             {
                 buildRoutine = null;
                 yield break;
             }
-            // Existing prefabs can still reference the old three-plane
-            // prototype. Build the expanded runtime geometry for those
-            // assets so the visual fix applies without a full terrain rebake.
-            bool prototypeNeedsExpandedGeometry = prototype != null &&
-                                                  prototype.clusterMesh != null &&
-                                                  prototype.clusterMesh.vertexCount < bladesPerCluster * 4 * 3;
-            if (prototype == null || prototype.clusterMesh == null || prototypeNeedsExpandedGeometry)
-                runtimeClusterMesh = BuildClusterMesh(random);
-            instanceMatrices = new Matrix4x4[clusterPositions.Count];
-            for (int i = 0; i < instanceMatrices.Length; i++)
-                instanceMatrices[i] = transform.localToWorldMatrix * Matrix4x4.TRS(clusterPositions[i], clusterRotations[i], Vector3.one * clusterScales[i]);
-            instanceBatch = new Matrix4x4[1023];
-            instanceProperties = new MaterialPropertyBlock();
+            PublishRuntimeInstances(clusterPositions, clusterRotations, clusterScales);
             meshRenderer.enabled = false;
             ApplyMaterialState();
             buildRoutine = null;
         }
 
+        void PublishRuntimeInstances(List<Vector3> positions, List<Quaternion> rotations, List<float> scales)
+        {
+            if (positions == null || positions.Count == 0) return;
+            instanceMatrices = new Matrix4x4[positions.Count];
+            for (int i = 0; i < instanceMatrices.Length; i++)
+                instanceMatrices[i] = transform.localToWorldMatrix * Matrix4x4.TRS(positions[i], rotations[i], Vector3.one * scales[i]);
+            instanceBatch = new Matrix4x4[1023];
+            instanceProperties = new MaterialPropertyBlock();
+            ApplyMaterialState();
+        }
+
         Mesh BuildClusterMesh(System.Random random)
         {
-            var vertices = new List<Vector3>(bladesPerCluster * 8);
+            var vertices = new List<Vector3>(bladesPerCluster * 32);
             var normals = new List<Vector3>(vertices.Capacity);
-            var uvs = new List<Vector2>(bladesPerCluster * 8);
-            var randoms = new List<Vector2>(bladesPerCluster * 8);
-            var bladeData = new List<Vector2>(bladesPerCluster * 8);
-            var triangles = new List<int>(bladesPerCluster * 6);
+            var uvs = new List<Vector2>(bladesPerCluster * 32);
+            var randoms = new List<Vector2>(bladesPerCluster * 32);
+            var bladeData = new List<Vector2>(bladesPerCluster * 32);
+            var triangles = new List<int>(bladesPerCluster * 72);
             for (int blade = 0; blade < bladesPerCluster; blade++)
             {
                 float angle = (float)random.NextDouble() * Mathf.PI * 2f;
@@ -407,18 +420,34 @@ namespace Voyage.TerrainSystem
         {
             Vector3 side = new Vector3(Mathf.Cos(yaw), 0f, Mathf.Sin(yaw)) * w;
             Vector3 faceNormal = Vector3.Cross(side, Vector3.up).normalized;
-            int start = v.Count;
-            // Match the baked prototype: a small normal-direction apex offset
-            // gives the crossed cards a fuller silhouette at grazing angles.
-            v.Add(p - side); v.Add(p + side); v.Add(p + Vector3.up * h + faceNormal * (w * 0.45f));
-            normals.Add(faceNormal); normals.Add(faceNormal); normals.Add(faceNormal);
-            uv.Add(new Vector2(0, 0)); uv.Add(new Vector2(1, 0)); uv.Add(new Vector2(0.5f, 1));
             Vector2 instanceRandom = new Vector2(Mathf.Repeat(variation, 1f), Mathf.Repeat(variation * 2.17f + 0.37f, 1f));
-            randoms.Add(instanceRandom); randoms.Add(instanceRandom); randoms.Add(instanceRandom);
-            Vector2 authoredBladeData = new Vector2(h, 0f);
-            bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData);
-            // Cull Off in the grass shader already renders both sides.
-            t.Add(start); t.Add(start + 1); t.Add(start + 2);
+            int first = v.Count;
+            // Four rows make three actual bend segments. The shader receives
+            // the row height through UV.y, so the curve remains visible even
+            // when the blade is deformed by wind or a tire.
+            for (int joint = 0; joint <= 3; joint++)
+            {
+                float normalized = joint / 3f;
+                float rowWidth = Mathf.Lerp(w, w * 0.12f, normalized);
+                Vector3 center = p + Vector3.up * (h * normalized);
+                if (joint == 3) center += faceNormal * (w * 0.45f);
+                v.Add(center - side.normalized * rowWidth);
+                v.Add(center + side.normalized * rowWidth);
+                normals.Add(faceNormal); normals.Add(faceNormal);
+                uv.Add(new Vector2(0f, normalized)); uv.Add(new Vector2(1f, normalized));
+                randoms.Add(instanceRandom); randoms.Add(instanceRandom);
+                Vector2 authoredBladeData = new Vector2(h, joint);
+                bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData);
+            }
+            for (int segment = 0; segment < 3; segment++)
+            {
+                int a = first + segment * 2;
+                int b = a + 1;
+                int c = a + 2;
+                int d = a + 3;
+                t.Add(a); t.Add(b); t.Add(c);
+                t.Add(b); t.Add(d); t.Add(c);
+            }
         }
 
         static Material CreateDefaultMaterial()
