@@ -11,6 +11,7 @@ namespace Voyage.TerrainSystem.Editor
             if (settings == null || settings.grassDensity <= 0f) return null;
             System.Random random = new System.Random(73856093 ^ settings.grassBladesPerCluster * 19349663);
             List<Vector3> vertices = new List<Vector3>(settings.grassBladesPerCluster * 6);
+            List<Vector3> normals = new List<Vector3>(vertices.Capacity);
             List<Vector2> uvs = new List<Vector2>(vertices.Capacity);
             List<Vector2> randoms = new List<Vector2>(vertices.Capacity);
             List<int> indices = new List<int>(settings.grassBladesPerCluster * 12);
@@ -23,11 +24,12 @@ namespace Voyage.TerrainSystem.Editor
                 float width = height * (0.10f + (float)random.NextDouble() * 0.05f);
                 float yaw = (float)random.NextDouble() * Mathf.PI;
                 float variation = (float)random.NextDouble();
-                AddBlade(vertices, uvs, randoms, indices, local, height, width, yaw, variation);
-                AddBlade(vertices, uvs, randoms, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                AddBlade(vertices, normals, uvs, randoms, indices, local, height, width, yaw, variation);
+                AddBlade(vertices, normals, uvs, randoms, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
             }
             Mesh clusterMesh = new Mesh { name = assetName + " Cluster Mesh" };
             clusterMesh.SetVertices(vertices);
+            clusterMesh.SetNormals(normals);
             clusterMesh.SetUVs(0, uvs);
             clusterMesh.SetUVs(1, randoms);
             clusterMesh.SetTriangles(indices, 0, true);
@@ -91,6 +93,7 @@ namespace Voyage.TerrainSystem.Editor
             if (positions.Count == 0) return null;
 
             List<Vector3> vertices = new List<Vector3>(settings.grassBladesPerCluster * 8);
+            List<Vector3> normals = new List<Vector3>(vertices.Capacity);
             List<Vector2> uvs = new List<Vector2>(vertices.Capacity);
             List<Vector2> randoms = new List<Vector2>(vertices.Capacity);
             List<int> indices = new List<int>(settings.grassBladesPerCluster * 12);
@@ -103,12 +106,12 @@ namespace Voyage.TerrainSystem.Editor
                 float width = height * (0.10f + (float)random.NextDouble() * 0.05f);
                 float yaw = (float)random.NextDouble() * Mathf.PI;
                 float variation = (float)random.NextDouble();
-                AddBlade(vertices, uvs, randoms, indices, local, height, width, yaw, variation);
-                AddBlade(vertices, uvs, randoms, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                AddBlade(vertices, normals, uvs, randoms, indices, local, height, width, yaw, variation);
+                AddBlade(vertices, normals, uvs, randoms, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
             }
             Mesh clusterMesh = new Mesh { name = assetName + " Cluster Mesh" };
             clusterMesh.indexFormat = vertices.Count > 65535 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16;
-            clusterMesh.SetVertices(vertices); clusterMesh.SetUVs(0, uvs); clusterMesh.SetUVs(1, randoms); clusterMesh.SetTriangles(indices, 0, true); clusterMesh.RecalculateBounds();
+            clusterMesh.SetVertices(vertices); clusterMesh.SetNormals(normals); clusterMesh.SetUVs(0, uvs); clusterMesh.SetUVs(1, randoms); clusterMesh.SetTriangles(indices, 0, true); clusterMesh.RecalculateBounds();
             GrassChunkAsset asset = ScriptableObject.CreateInstance<GrassChunkAsset>();
             asset.name = assetName;
             asset.clusterMesh = clusterMesh;
@@ -139,6 +142,7 @@ namespace Voyage.TerrainSystem.Editor
             if (totalArea <= 0.0001f) return null;
 
             var vertices = new List<Vector3>(clusterCount * settings.grassBladesPerCluster * 8);
+            var normals = new List<Vector3>(vertices.Capacity);
             var uvs = new List<Vector2>(vertices.Capacity);
             var randoms = new List<Vector2>(vertices.Capacity);
             var indices = new List<int>(clusterCount * settings.grassBladesPerCluster * 12);
@@ -172,8 +176,8 @@ namespace Voyage.TerrainSystem.Editor
                     float width = height * (0.10f + (float)random.NextDouble() * 0.05f);
                     float yaw = (float)random.NextDouble() * Mathf.PI;
                     float variation = (float)random.NextDouble();
-                    AddBlade(vertices, uvs, randoms, indices, local, height, width, yaw, variation);
-                    AddBlade(vertices, uvs, randoms, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                    AddBlade(vertices, normals, uvs, randoms, indices, local, height, width, yaw, variation);
+                    AddBlade(vertices, normals, uvs, randoms, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
                 }
             }
 
@@ -181,6 +185,7 @@ namespace Voyage.TerrainSystem.Editor
             Mesh mesh = new Mesh { name = meshName };
             mesh.indexFormat = vertices.Count > 65535 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16;
             mesh.SetVertices(vertices);
+            mesh.SetNormals(normals);
             mesh.SetUVs(0, uvs);
             mesh.SetUVs(1, randoms);
             mesh.SetTriangles(indices, 0, true);
@@ -188,12 +193,14 @@ namespace Voyage.TerrainSystem.Editor
             return mesh;
         }
 
-        static void AddBlade(List<Vector3> vertices, List<Vector2> uvs, List<Vector2> randoms, List<int> indices, Vector3 position, float height, float width, float yaw, float variation)
+        static void AddBlade(List<Vector3> vertices, List<Vector3> normals, List<Vector2> uvs, List<Vector2> randoms, List<int> indices, Vector3 position, float height, float width, float yaw, float variation)
         {
             Vector3 side = new Vector3(Mathf.Cos(yaw), 0f, Mathf.Sin(yaw)) * width;
+            Vector3 faceNormal = Vector3.Cross(side, Vector3.up).normalized;
             int start = vertices.Count;
             vertices.Add(position - side); vertices.Add(position + side);
             vertices.Add(position + Vector3.up * height);
+            normals.Add(faceNormal); normals.Add(faceNormal); normals.Add(faceNormal);
             uvs.Add(new Vector2(0f, 0f)); uvs.Add(new Vector2(1f, 0f)); uvs.Add(new Vector2(0.5f, 1f));
             Vector2 random = new Vector2(Mathf.Repeat(variation, 1f), Mathf.Repeat(variation * 2.17f + 0.37f, 1f));
             randoms.Add(random); randoms.Add(random); randoms.Add(random);

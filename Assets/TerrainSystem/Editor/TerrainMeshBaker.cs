@@ -386,14 +386,14 @@ namespace Voyage.TerrainSystem.Editor
         private static Material[] CollectMaterials(List<TriangleSource> triangles)
         {
             List<Material> result = new List<Material>();
-            Material fallback = null;
+            Material fallback = GetFallbackTerrainMaterial();
             for (int i = 0; i < triangles.Count; i++)
             {
-                if (triangles[i].material == null || IsDiagnosticTerrainMaterial(triangles[i].material))
-                {
-                    if (fallback == null) fallback = GetFallbackTerrainMaterial();
-                    triangles[i].material = fallback;
-                }
+                // This baker produces grassland terrain tiles, not a material
+                // archive for the source FBX. Use one shared Lit material for
+                // every surface so embedded/importer-generated gray materials
+                // cannot reintroduce the white bare patches at runtime.
+                triangles[i].material = fallback;
                 if (triangles[i].material != null && !result.Contains(triangles[i].material)) result.Add(triangles[i].material);
             }
             return result.ToArray();
@@ -403,6 +403,10 @@ namespace Voyage.TerrainSystem.Editor
         {
             if (material == null) return false;
             if (string.Equals(material.name, "TerrainDiagnosticGray", StringComparison.OrdinalIgnoreCase)) return true;
+            // The imported source FBX uses TerrainColor for the same neutral
+            // placeholder. Treat it as diagnostic too, otherwise white terrain
+            // islands survive the bake and fight the grass palette.
+            if (string.Equals(material.name, "TerrainColor", StringComparison.OrdinalIgnoreCase)) return true;
             return material.shader != null && string.Equals(material.shader.name, "Hidden/Voyage/LightingDiagnosticWhite", StringComparison.OrdinalIgnoreCase);
         }
 
@@ -414,7 +418,7 @@ namespace Voyage.TerrainSystem.Editor
             Shader shader = Shader.Find("Universal Render Pipeline/Lit");
             if (shader == null) shader = Shader.Find("Standard");
             if (shader == null) return null;
-            material = new Material(shader) { name = "Terrain Fallback Material", color = new Color(0.22f, 0.30f, 0.16f, 1f) };
+            material = new Material(shader) { name = "Terrain Fallback Material", color = new Color(0.25f, 0.30f, 0.16f, 1f) };
             if (material.HasProperty("_Metallic")) material.SetFloat("_Metallic", 0f);
             if (material.HasProperty("_Smoothness")) material.SetFloat("_Smoothness", 0.15f);
             AssetDatabase.CreateAsset(material, path);
@@ -448,10 +452,36 @@ namespace Voyage.TerrainSystem.Editor
             if (previous != null) AssetDatabase.DeleteAsset(path);
             GrassPrototypeAsset prototype = GrassMeshBaker.BuildPrototype(settings, "GrassPrototype");
             if (prototype == null) return null;
+            prototype.material = GetGrassMaterial();
             AssetDatabase.CreateAsset(prototype, path);
             if (prototype.clusterMesh != null) AssetDatabase.AddObjectToAsset(prototype.clusterMesh, prototype);
             AssetDatabase.SaveAssets();
             return AssetDatabase.LoadAssetAtPath<GrassPrototypeAsset>(path);
+        }
+
+        private static Material GetGrassMaterial()
+        {
+            const string path = "Assets/TerrainSystem/Source/GrassMaterial.mat";
+            Material material = AssetDatabase.LoadAssetAtPath<Material>(path);
+            Shader shader = Shader.Find("Voyage/Grass/InteractiveLit");
+            if (shader == null) shader = Shader.Find("Voyage/Grass/InteractiveUnlit");
+            if (material == null && shader != null)
+            {
+                material = new Material(shader) { name = "Grass Material" };
+                AssetDatabase.CreateAsset(material, path);
+            }
+            if (material != null)
+            {
+                if (material.HasProperty("_Color")) material.SetColor("_Color", new Color(0.28f, 0.38f, 0.14f, 1f));
+                if (material.HasProperty("_WindStrength")) material.SetFloat("_WindStrength", 0.32f);
+                if (material.HasProperty("_WindSpeed")) material.SetFloat("_WindSpeed", 1.15f);
+                if (material.HasProperty("_BendStrength")) material.SetFloat("_BendStrength", 1.15f);
+                if (material.HasProperty("_RecoverySpeed")) material.SetFloat("_RecoverySpeed", 1.2f);
+                if (material.HasProperty("_AmbientStrength")) material.SetFloat("_AmbientStrength", 0.75f);
+                if (material.HasProperty("_DirectLightStrength")) material.SetFloat("_DirectLightStrength", 1f);
+                EditorUtility.SetDirty(material);
+            }
+            return material;
         }
 
         private static void EnsureAssetFolder(string path)

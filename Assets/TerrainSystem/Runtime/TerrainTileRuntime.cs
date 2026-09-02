@@ -11,6 +11,7 @@ namespace Voyage.TerrainSystem
         [SerializeField] private GameObject[] lodRoots = new GameObject[4];
         [SerializeField] private bool hlod;
         private Collider[] colliders;
+        private static Material grasslandFallbackMaterial;
         private int currentLod = -1;
         private TerrainChunkSettings settings;
         private bool collisionStateKnown;
@@ -107,14 +108,18 @@ namespace Voyage.TerrainSystem
             // silently fall back to the sparse component defaults. Keep the
             // fallback budget bounded because baking is the preferred path and
             // runtime sampling performs terrain raycasts.
-            if (settings != null && grass.bakedClusters == null)
+            if (settings != null && grass.prototype == null && !grass.useLegacyBakedClusters)
             {
                 grass.clusterSpacing = settings.grassClusterSpacing;
                 grass.bladesPerCluster = settings.grassBladesPerCluster;
                 grass.clusterRadius = settings.grassClusterRadius;
                 grass.bladeHeight = settings.grassBladeHeight;
                 grass.density = settings.grassDensity;
-                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 6000);
+                // The old 6000 cap was useful for the first sparse prototype,
+                // but made the streamed fallback visibly empty. Keep the
+                // budget authored in settings while still protecting against
+                // an accidental unbounded value.
+                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 50000);
                 grass.fullDensityBelowSlope = settings.grassFullDensityBelowSlope;
                 grass.noGrassAboveSlope = settings.grassNoGrassAboveSlope;
             }
@@ -173,6 +178,7 @@ namespace Voyage.TerrainSystem
             for (int i = 0; i < renderers.Length; i++)
             {
                 MeshRenderer renderer = renderers[i];
+                ApplyTerrainPalette(renderer);
                 renderer.shadowCastingMode = ShadowCastingMode.On;
                 renderer.receiveShadows = true;
                 renderer.lightProbeUsage = LightProbeUsage.BlendProbes;
@@ -180,6 +186,38 @@ namespace Voyage.TerrainSystem
                 renderer.renderingLayerMask = 1u;
                 renderer.allowOcclusionWhenDynamic = true;
             }
+        }
+
+        private static void ApplyTerrainPalette(MeshRenderer renderer)
+        {
+            Material[] materials = renderer.sharedMaterials;
+            bool changed = false;
+            for (int i = 0; i < materials.Length; i++)
+            {
+                Material material = materials[i];
+                if (material == null) continue;
+                // Generated terrain tiles are the grassland surface; their FBX
+                // material can be embedded under an unstable importer name.
+                // Replacing the whole tile material array avoids white/pink
+                // islands from stale source placeholders and keeps the palette
+                // consistent with the interactive grass.
+                if (grasslandFallbackMaterial == null)
+                {
+                    Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+                    if (shader == null) shader = Shader.Find("Standard");
+                    if (shader == null) continue;
+                    grasslandFallbackMaterial = new Material(shader) { name = "Runtime Grassland Terrain Material" };
+                    Color baseColor = new Color(0.20f, 0.28f, 0.105f, 1f);
+                    if (grasslandFallbackMaterial.HasProperty("_BaseColor")) grasslandFallbackMaterial.SetColor("_BaseColor", baseColor);
+                    if (grasslandFallbackMaterial.HasProperty("_Color")) grasslandFallbackMaterial.SetColor("_Color", baseColor);
+                    if (grasslandFallbackMaterial.HasProperty("_Metallic")) grasslandFallbackMaterial.SetFloat("_Metallic", 0f);
+                    if (grasslandFallbackMaterial.HasProperty("_Smoothness")) grasslandFallbackMaterial.SetFloat("_Smoothness", 0.15f);
+                    grasslandFallbackMaterial.enableInstancing = true;
+                }
+                materials[i] = grasslandFallbackMaterial;
+                changed = true;
+            }
+            if (changed) renderer.sharedMaterials = materials;
         }
 
         private void DisableGeneratedSkirts()
