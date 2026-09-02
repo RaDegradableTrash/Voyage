@@ -341,6 +341,8 @@ namespace Voyage.TerrainSystem
             Swap();
             ProcessPermanentFieldRebuild();
 
+            EnsureRuntimeVehicleWheels();
+
             for (int i = vehicles.Count - 1; i >= 0; i--)
                 if (vehicles[i] == null) vehicles.RemoveAt(i);
 
@@ -439,6 +441,39 @@ namespace Voyage.TerrainSystem
             }
             ProcessPendingStamps();
             PublishGlobals();
+        }
+
+        void EnsureRuntimeVehicleWheels()
+        {
+            for (int vehicleIndex = 0; vehicleIndex < vehicles.Count; vehicleIndex++)
+            {
+                Transform root = vehicles[vehicleIndex];
+                if (root == null) continue;
+                PlayerCar playerCar = root.GetComponent<PlayerCar>();
+                if (playerCar == null) continue;
+                VehicleTerrainFollower follower = root.GetComponent<VehicleTerrainFollower>();
+                IReadOnlyList<Transform> runtimeWheels = playerCar.GrassInteractionWheelTransforms;
+                if (runtimeWheels == null) continue;
+                for (int wheelIndex = 0; wheelIndex < runtimeWheels.Count; wheelIndex++)
+                {
+                    Transform wheel = runtimeWheels[wheelIndex];
+                    if (wheel == null || HasWheelState(wheel)) continue;
+                    wheelStates.Add(new WheelState
+                    {
+                        wheel = wheel,
+                        body = root.GetComponent<Rigidbody>(),
+                        terrainFollower = follower,
+                        radius = follower != null ? Mathf.Max(0.35f, follower.tireRadius) : 0.45f
+                    });
+                }
+            }
+        }
+
+        bool HasWheelState(Transform wheel)
+        {
+            for (int i = 0; i < wheelStates.Count; i++)
+                if (wheelStates[i].wheel == wheel) return true;
+            return false;
         }
 
         bool IsVehicleMoving(WheelState state, float observedDistance, out Vector3 motionVelocity)
