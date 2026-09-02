@@ -122,6 +122,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 float4 shadowCoord : TEXCOORD4;
                 float farBlend : TEXCOORD5;
                 float bendAmount : TEXCOORD6;
+                float directBendAmount : TEXCOORD7;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -229,7 +230,11 @@ Shader "Voyage/Grass/InteractiveLit"
                 // vehicle, but reject the weak edge/noise of the field. This
                 // keeps the trail local instead of allowing a stale texel to
                 // flatten an entire streamed tile.
-                float historySignal = smoothstep(0.12, 0.55, temporaryWeight);
+                // Only the strong center of a recorded tire impression may
+                // contribute to deformation. Bilinear/filtering noise at the
+                // impression edge was previously enough to flatten a whole
+                // streamed tile when its texture was reprojected.
+                float historySignal = smoothstep(0.72, 0.96, temporaryWeight);
                 float2 historyDirection = normalize(fieldBend + float2(0.0001, 0.0001));
                 float2 historyBend = historyDirection * historySignal * 1.35;
 
@@ -306,7 +311,11 @@ Shader "Voyage/Grass/InteractiveLit"
                 output.instanceRandom = input.instanceRandom;
                 output.shadowCoord = TransformWorldToShadowCoord(positionWS);
                 output.farBlend = farBlend;
+                // Keep the debug channel separate from wind: a red pixel must
+                // mean direct tire influence, not merely a wind-bent blade.
+                float directAngleAtVertex = saturate(saturate(length(liveBend) * 4.0) * 3.2) * 1.56 * bendTip;
                 output.bendAmount = saturate(abs(sin(angleAtVertex)));
+                output.directBendAmount = saturate(abs(sin(directAngleAtVertex)));
                 return output;
             }
 
@@ -349,7 +358,8 @@ Shader "Voyage/Grass/InteractiveLit"
                                                                sampler_VoyageGrassInteraction,
                                                                FieldUV(input.positionWS), 0);
                     if (_VoyageGrassDebugStateMachine > 1.5) color = half3(1.0, 0.0, 1.0);
-                    else if (input.bendAmount > 0.08) color = half3(1.0, 0.05, 0.02);
+                    else if (input.directBendAmount > 0.08) color = half3(1.0, 0.05, 0.02);
+                    else if (input.bendAmount > 0.08) color = half3(1.0, 0.55, 0.02);
                     else if (fieldSample.b > 0.025) color = half3(0.05, 0.25, 1.0);
                     else color = half3(0.42, 0.42, 0.42);
                 }

@@ -402,6 +402,19 @@ namespace Voyage.TerrainSystem
         void LateUpdate()
         {
             if (!initialized) return;
+
+            // The vehicle is spawned asynchronously and may be recreated
+            // after a domain/scene reload. Recover the live target and its
+            // interaction registration instead of depending on one bootstrap
+            // callback to run in the right order.
+            if (followTarget == null)
+            {
+                PlayerCar playerCar = FindAnyObjectByType<PlayerCar>();
+                if (playerCar != null) SetTarget(playerCar.transform);
+            }
+            if (followTarget != null && !HasRegisteredVehicle(followTarget))
+                RegisterVehicle(followTarget.gameObject);
+
             if (followTarget != null)
             {
                 Vector3 targetCenter = followTarget.position;
@@ -550,6 +563,13 @@ namespace Voyage.TerrainSystem
             }
             ProcessPendingStamps();
             PublishGlobals();
+        }
+
+        bool HasRegisteredVehicle(Transform root)
+        {
+            for (int i = 0; i < vehicles.Count; i++)
+                if (vehicles[i] == root) return true;
+            return false;
         }
 
         void EnsureRuntimeVehicleWheels()
@@ -789,6 +809,21 @@ namespace Voyage.TerrainSystem
             }
             Shader.SetGlobalVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
             Shader.SetGlobalVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
+            // Publish scalar slots as well as arrays. Some DX12 instanced
+            // variants do not preserve a Vector4 array or MPB override, while
+            // scalar material uniforms remain available to every draw.
+            Shader.SetGlobalVector("_VoyageGrassWheel0", shaderWheelPositions[0]);
+            Shader.SetGlobalVector("_VoyageGrassWheel1", shaderWheelPositions[1]);
+            Shader.SetGlobalVector("_VoyageGrassWheel2", shaderWheelPositions[2]);
+            Shader.SetGlobalVector("_VoyageGrassWheel3", shaderWheelPositions[3]);
+            Shader.SetGlobalVector("_VoyageGrassWheel4", shaderWheelPositions[4]);
+            Shader.SetGlobalVector("_VoyageGrassWheel5", shaderWheelPositions[5]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection0", shaderWheelDirections[0]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection1", shaderWheelDirections[1]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection2", shaderWheelDirections[2]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection3", shaderWheelDirections[3]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection4", shaderWheelDirections[4]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection5", shaderWheelDirections[5]);
             Shader.SetGlobalFloat("_VoyageGrassWheelCount", count);
             shaderVehicleData = Vector4.zero;
             shaderVehicleParams = Vector4.zero;
