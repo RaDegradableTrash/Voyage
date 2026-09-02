@@ -11,6 +11,19 @@ namespace Voyage.TerrainSystem
     [DefaultExecutionOrder(-200)]
     public sealed class GrassInteractionSystem : MonoBehaviour
     {
+        public enum GrassDebugState
+        {
+            Outside,
+            WindOnly,
+            NearbyIdle,
+            Pressing,
+            Recovering
+        }
+
+        [Header("Debug")]
+        [Tooltip("Color grass by its current wheel interaction state and show wheel state text in Game view.")]
+        public bool debugGrassStateMachine;
+
         public static GrassInteractionSystem Instance { get; private set; }
 
         [Header("World-space field")]
@@ -66,6 +79,8 @@ namespace Voyage.TerrainSystem
             public float radius;
             public Vector3 previous;
             public bool valid;
+            public GrassDebugState debugState;
+            public float lastPressedTime = -1000f;
         }
 
         sealed class EmitterState
@@ -107,6 +122,26 @@ namespace Voyage.TerrainSystem
         public int RegisteredWheelCount => wheelStates.Count;
         public int PendingStampCount => pendingStamps.Count;
         public Vector4 WorldToUv => new Vector4(fieldCenter.x, fieldCenter.z, worldSize, resolution);
+
+        public GrassDebugState GetDebugState(Vector3 position)
+        {
+            float nearestDistance = float.MaxValue;
+            bool hasMovingWheel = false;
+            for (int i = 0; i < wheelStates.Count; i++)
+            {
+                WheelState wheel = wheelStates[i];
+                if (!wheel.valid || wheel.wheel == null) continue;
+                float distance = Vector2.Distance(new Vector2(position.x, position.z),
+                                                  new Vector2(wheel.wheel.position.x, wheel.wheel.position.z));
+                nearestDistance = Mathf.Min(nearestDistance, distance);
+                if (wheel.debugState == GrassDebugState.Pressing) hasMovingWheel = true;
+            }
+
+            if (nearestDistance == float.MaxValue) return GrassDebugState.Outside;
+            if (hasMovingWheel && nearestDistance <= 2.4f) return GrassDebugState.Pressing;
+            if (nearestDistance <= 2.4f) return GrassDebugState.NearbyIdle;
+            return GrassDebugState.WindOnly;
+        }
 
         void Awake()
         {
@@ -306,6 +341,7 @@ namespace Voyage.TerrainSystem
                 // the window without producing a teleport-length segment.
                 if (currentOutside && previousOutside)
                 {
+                    state.debugState = GrassDebugState.Outside;
                     state.previous = current;
                     continue;
                 }
@@ -314,6 +350,8 @@ namespace Voyage.TerrainSystem
                 if (distance > maxTeleportDistance) state.previous = current;
                 else if (IsVehicleMoving(state, distance, out Vector3 motionVelocity))
                 {
+                    state.debugState = GrassDebugState.Pressing;
+                    state.lastPressedTime = Time.time;
                     Transform wheelSource = state.wheel;
                     // On a WheelCollider the reported contact point can stay
                     // almost fixed while the rigidbody travels over a smooth
@@ -325,6 +363,14 @@ namespace Voyage.TerrainSystem
                     if (distance <= minimumWheelTravel)
                         from = current - motionVelocity * Time.deltaTime;
                     QueueSegment(from, current, state.radius, wheelSource);
+                }
+                else if (Time.time - state.lastPressedTime < 10f)
+                {
+                    state.debugState = GrassDebugState.Recovering;
+                }
+                else
+                {
+                    state.debugState = GrassDebugState.NearbyIdle;
                 }
                 state.previous = current;
             }
@@ -518,6 +564,24 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalFloat("_VoyageGrassWheelCount", count);
             Shader.SetGlobalFloatArray("_VoyageGrassWheelRadii", shaderWheelRadii);
             Shader.SetGlobalFloatArray("_VoyageGrassWheelStrengths", shaderWheelStrengths);
+            Shader.SetGlobalFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
+        }
+
+        void OnGUI()
+        {
+            if (!debugGrassStateMachine || !Application.isPlaying) return;
+            GUI.color = Color.white;
+            GUILayout.BeginArea(new Rect(12f, 72f, 440f, 220f), GUI.skin.box);
+            GUILayout.Label("GRASS INTERACTION STATE MACHINE");
+            for (int i = 0; i < wheelStates.Count; i++)
+            {
+                WheelState wheel = wheelStates[i];
+                if (wheel.wheel == null) continue;
+                Vector3 p = wheel.wheel.position;
+                GUILayout.Label($"Wheel {i}: {wheel.debugState}  ({p.x:0.0}, {p.z:0.0})");
+            }
+            GUILayout.Label("Shader colors: red=pressing, blue=recovering, gray=wind only");
+            GUILayout.EndArea();
         }
 
         void BeginPermanentFieldRebuild(Vector3 previousCenter, bool onlyNewArea)

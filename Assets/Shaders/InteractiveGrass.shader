@@ -56,6 +56,7 @@ Shader "Voyage/Grass/InteractiveLit"
             float _VoyageGrassWheelRadii[8];
             float _VoyageGrassWheelStrengths[8];
             float _VoyageGrassWheelCount;
+            float _VoyageGrassDebugStateMachine;
             float4 _Color;
             float4 _BaseColor;
             float4 _RootColor;
@@ -179,7 +180,8 @@ Shader "Voyage/Grass/InteractiveLit"
                 // Direct wheel-space influence is intentionally local and is
                 // evaluated from world coordinates, so a bad tile/field
                 // reprojection can never flatten an entire grass chunk.
-                interactionBend += SampleImmediateWheelBend(positionWS) * 1.8;
+                float2 immediateWheelBend = SampleImmediateWheelBend(positionWS);
+                interactionBend += immediateWheelBend * 1.8;
 
                 // The interaction texture alpha is the recovery timer. Follow
                 // it directly so pressed grass stands back up smoothly.
@@ -272,6 +274,16 @@ Shader "Voyage/Grass/InteractiveLit"
                 grassColor *= macro * randomVariation;
                 half3 litColor = grassColor * (ambient + direct + 0.12h);
                 half3 color = isFrontFace ? litColor : lerp(litColor, _BacksideColor.rgb, 0.38h);
+                if (_VoyageGrassDebugStateMachine > 0.5)
+                {
+                    float immediate = length(SampleImmediateWheelBend(input.positionWS));
+                    float4 fieldSample = SAMPLE_TEXTURE2D_LOD(_VoyageGrassInteraction,
+                                                               sampler_VoyageGrassInteraction,
+                                                               FieldUV(input.positionWS), 0);
+                    if (immediate > 0.025) color = half3(1.0, 0.05, 0.02);
+                    else if (fieldSample.b > 0.025) color = half3(0.05, 0.25, 1.0);
+                    else color = half3(0.42, 0.42, 0.42);
+                }
                 // The distant grass must converge toward the deep-green terrain
                 // before its alpha fades, otherwise yellow/red tips remain
                 // visible as a mismatched transparent veil.
