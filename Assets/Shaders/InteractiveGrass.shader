@@ -4,6 +4,7 @@ Shader "Voyage/Grass/InteractiveLit"
     {
         _Color ("Grass Color", Color) = (0.28, 0.38, 0.14, 1)
         _BaseColor ("Base Color", Color) = (0.34, 0.43, 0.08, 1)
+        _RootColor ("Root Ground Color", Color) = (0.20, 0.28, 0.105, 1)
         _ShadowColor ("Shadow Color", Color) = (0.16, 0.24, 0.045, 1)
         _TipColor ("Tip Color", Color) = (0.58, 0.48, 0.10, 1)
         _BacksideColor ("Backside Warm Color", Color) = (0.43, 0.36, 0.07, 1)
@@ -52,6 +53,7 @@ Shader "Voyage/Grass/InteractiveLit"
             float4 _VoyageGrassInteractionWorld;
             float4 _Color;
             float4 _BaseColor;
+            float4 _RootColor;
             float4 _ShadowColor;
             float4 _TipColor;
             float4 _BacksideColor;
@@ -62,7 +64,6 @@ Shader "Voyage/Grass/InteractiveLit"
             float _FadeStart;
             float _FadeEnd;
             float4 _VoyageGrassWind;
-            float4 _VoyageGrassVehicle;
             #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
             StructuredBuffer<float4x4> _VoyageGrassMatrices;
             void ConfigureProcedural()
@@ -161,26 +162,6 @@ Shader "Voyage/Grass/InteractiveLit"
                 float recoveryStrength = pow(saturate(1.0 - recoveryAge), recoveryVariation);
                 interactionBend *= recoveryStrength * _InteractionEnabled * _BendStrength * 1.8;
 
-                // Immediate vehicle wake: the texture leaves a persistent
-                // track, while this local signal guarantees that grass under
-                // and beside the vehicle visibly falls during the current
-                // frame even if the wheel contact texture is one frame late.
-                float2 vehiclePosition = _VoyageGrassVehicle.xy;
-                float vehicleDirectionLength = length(_VoyageGrassVehicle.zw);
-                float2 vehicleDirection = normalize(_VoyageGrassVehicle.zw + float2(0.0001, 0.0001));
-                float2 wakeStart = vehiclePosition - vehicleDirection * 9.0;
-                float2 wakeEnd = vehiclePosition + vehicleDirection * 1.5;
-                float2 wakeSegment = wakeEnd - wakeStart;
-                float wakeT = saturate(dot(positionWS.xz - wakeStart, wakeSegment) /
-                                       max(dot(wakeSegment, wakeSegment), 0.0001));
-                float2 wakePoint = wakeStart + wakeSegment * wakeT;
-                float vehicleDistance = distance(positionWS.xz, wakePoint);
-                float vehicleWeight = (1.0 - smoothstep(1.0, 2.35, vehicleDistance)) * step(0.001, vehicleDirectionLength);
-                // This local wake is intentionally independent of the tile
-                // interaction LOD gate: the player should always see grass
-                // fold around the vehicle, even while a tile is transitioning.
-                interactionBend += vehicleDirection * vehicleWeight * 2.4;
-
                 float2 globalWindDirection = normalize(_VoyageGrassWind.xy + float2(0.0001, 0.0001));
                 float globalWindSpeed = _VoyageGrassWind.z > 0.0 ? _VoyageGrassWind.z : 1.0;
                 float globalGustStrength = saturate(_VoyageGrassWind.w);
@@ -253,6 +234,10 @@ Shader "Voyage/Grass/InteractiveLit"
                 half heightBlend = saturate(input.uv.y * 1.35);
                 half3 grassColor = lerp(_ShadowColor.rgb, _BaseColor.rgb, heightBlend);
                 grassColor = lerp(grassColor, _TipColor.rgb, saturate((input.uv.y - 0.55) * 1.8));
+                // Fade the lowest part of every blade into the terrain tone.
+                // This hides the artificial card/ground seam without making
+                // the whole blade dark.
+                grassColor = lerp(_RootColor.rgb, grassColor, smoothstep(0.02, 0.34, input.uv.y));
                 half randomVariation = lerp(0.82h, 1.12h, input.instanceRandom.y);
                 randomVariation = lerp(randomVariation, 1.0h, input.farBlend * 0.82h);
                 grassColor *= macro * randomVariation;

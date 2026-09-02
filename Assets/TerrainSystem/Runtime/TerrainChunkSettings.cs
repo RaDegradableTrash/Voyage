@@ -42,6 +42,7 @@ namespace Voyage.TerrainSystem
         [Min(1)] public int grassClusterBudget = 100000;
         [Header("Stylized grass appearance")]
         public Color grassBaseColor = new Color(0.34f, 0.43f, 0.08f, 1f);
+        public Color grassRootColor = new Color(0.20f, 0.28f, 0.105f, 1f);
         public Color grassShadowColor = new Color(0.16f, 0.24f, 0.045f, 1f);
         public Color grassTipColor = new Color(0.58f, 0.48f, 0.10f, 1f);
         public Color grassBacksideColor = new Color(0.43f, 0.36f, 0.07f, 1f);

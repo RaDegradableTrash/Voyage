@@ -16,8 +16,8 @@ namespace Voyage.TerrainSystem
         [Header("World-space field")]
         [Min(16)] public int resolution = 512;
         [Min(16f)] public float worldSize = 160f;
-        [Tooltip("Exponential recovery speed; 0.003 keeps pressed grass bent for a long time, with per-blade variation in the shader.")]
-        [Min(0.001f)] public float decayPerSecond = 0.003f;
+        [Tooltip("Exponential recovery speed; 0.3 leaves about 5% of the press after 10 seconds, with per-blade variation in the shader.")]
+        [Min(0.01f)] public float decayPerSecond = 0.3f;
         [Min(0.01f)] public float maxStampDistance = 12f;
         [Min(1f)] public float maxTeleportDistance = 80f;
         [Min(0.1f)] public float speedForFullBend = 12f;
@@ -43,9 +43,6 @@ namespace Voyage.TerrainSystem
         GrassPermanentTrackStore permanentTrackStore;
         Vector3 fieldCenter;
         Vector3 lastFieldCenter;
-        Vector3 previousVehiclePosition;
-        Vector2 vehicleTravelDirection = Vector2.right;
-        bool hasVehiclePosition;
         bool hasFieldCenter;
         bool initialized;
         readonly List<GrassPermanentTrackStore.TrackSample> permanentRebuildSamples = new List<GrassPermanentTrackStore.TrackSample>();
@@ -81,7 +78,7 @@ namespace Voyage.TerrainSystem
         {
             resolution = Mathf.Max(16, resolution);
             worldSize = Mathf.Max(16f, worldSize);
-            decayPerSecond = Mathf.Max(0.001f, decayPerSecond);
+            decayPerSecond = Mathf.Max(0.01f, decayPerSecond);
             maxStampDistance = Mathf.Max(0.01f, maxStampDistance);
             maxTeleportDistance = Mathf.Max(maxStampDistance, maxTeleportDistance);
             speedForFullBend = Mathf.Max(0.1f, speedForFullBend);
@@ -142,8 +139,6 @@ namespace Voyage.TerrainSystem
             // spatially continuous. Force a fresh world-space anchor and let
             // the next valid WheelCollider hit establish new baselines.
             hasFieldCenter = false;
-            hasVehiclePosition = false;
-            vehicleTravelDirection = Vector2.right;
             for (int i = 0; i < wheelStates.Count; i++) wheelStates[i].valid = false;
         }
 
@@ -421,29 +416,6 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalTexture("_VoyageGrassInteraction", field);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", WorldToUv);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", permanentField);
-            if (followTarget != null)
-            {
-                Vector3 position = followTarget.position;
-                Vector3 travel = position - previousVehiclePosition;
-                Vector2 travelXZ = new Vector2(travel.x, travel.z);
-                if (!hasVehiclePosition)
-                {
-                    previousVehiclePosition = position;
-                    hasVehiclePosition = true;
-                }
-                else if (travelXZ.sqrMagnitude > 0.000001f && travelXZ.sqrMagnitude < maxTeleportDistance * maxTeleportDistance)
-                {
-                    vehicleTravelDirection = travelXZ.normalized;
-                }
-                previousVehiclePosition = position;
-                Shader.SetGlobalVector("_VoyageGrassVehicle", new Vector4(
-                    position.x, position.z, vehicleTravelDirection.x, vehicleTravelDirection.y));
-            }
-            else
-            {
-                hasVehiclePosition = false;
-                Shader.SetGlobalVector("_VoyageGrassVehicle", Vector4.zero);
-            }
         }
 
         void BeginPermanentFieldRebuild(Vector3 previousCenter, bool onlyNewArea)
@@ -550,7 +522,6 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalTexture("_VoyageGrassInteraction", null);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", null);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", Vector4.zero);
-            Shader.SetGlobalVector("_VoyageGrassVehicle", Vector4.zero);
         }
 
         void OnDestroy()
@@ -559,7 +530,6 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalTexture("_VoyageGrassInteraction", null);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", null);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", Vector4.zero);
-            Shader.SetGlobalVector("_VoyageGrassVehicle", Vector4.zero);
             if (field != null) field.Release();
             if (scratch != null) scratch.Release();
             if (permanentField != null) permanentField.Release();

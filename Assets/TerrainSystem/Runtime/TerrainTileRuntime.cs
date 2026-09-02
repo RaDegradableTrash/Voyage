@@ -109,6 +109,7 @@ namespace Voyage.TerrainSystem
                     settings.grassWindDirection.x, settings.grassWindDirection.y,
                     settings.grassWindSpeed, settings.grassWindGust));
                 grass.baseColor = settings.grassBaseColor;
+                grass.rootColor = settings.grassRootColor;
                 grass.shadowColor = settings.grassShadowColor;
                 grass.tipColor = settings.grassTipColor;
                 grass.backsideColor = settings.grassBacksideColor;

@@ -17,6 +17,7 @@ namespace Voyage.TerrainSystem
         [Min(1)] public int runtimeClusterBudget = 100000;
         [Header("Stylized appearance")]
         public Color baseColor = new Color(0.34f, 0.43f, 0.08f, 1f);
+        public Color rootColor = new Color(0.20f, 0.28f, 0.105f, 1f);
         public Color shadowColor = new Color(0.16f, 0.24f, 0.045f, 1f);
         public Color tipColor = new Color(0.58f, 0.48f, 0.10f, 1f);
         public Color backsideColor = new Color(0.43f, 0.36f, 0.07f, 1f);
@@ -384,6 +385,7 @@ namespace Voyage.TerrainSystem
                 // Clipping individual blades makes dense clumps look sparse.
                 runtimeMaterial.SetFloat("_Density", 1f);
                 runtimeMaterial.SetColor("_BaseColor", baseColor);
+                runtimeMaterial.SetColor("_RootColor", rootColor);
                 runtimeMaterial.SetColor("_ShadowColor", shadowColor);
                 runtimeMaterial.SetColor("_TipColor", tipColor);
                 runtimeMaterial.SetColor("_BacksideColor", backsideColor);
