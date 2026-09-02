@@ -177,7 +177,11 @@ namespace Voyage.TerrainSystem.Editor
                 {
                     float angle = (float)random.NextDouble() * Mathf.PI * 2f;
                     float distance = Mathf.Sqrt((float)random.NextDouble()) * radius;
-                    Vector3 local = position - origin + new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
+                    // The cluster's ground position is already stored in the
+                    // GrassChunkAsset instance matrix. Keep the shared mesh
+                    // around a local root, otherwise terrain height is added
+                    // once by the vertex and a second time by the matrix.
+                    Vector3 local = new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
                     float height = settings.grassBladeHeight * (0.72f + (float)random.NextDouble() * 0.56f);
                     float width = height * (0.15f + (float)random.NextDouble() * 0.07f);
                     float yaw = (float)random.NextDouble() * Mathf.PI;
