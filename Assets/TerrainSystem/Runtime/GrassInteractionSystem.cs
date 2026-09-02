@@ -497,6 +497,12 @@ namespace Voyage.TerrainSystem
         {
             if (state != null && state.terrainFollower != null && state.followerWheelIndex >= 0)
                 return state.terrainFollower.GetGrassInteractionWheelPosition(state.followerWheelIndex);
+            if (state != null && state.wheel != null)
+            {
+                WheelCollider collider = state.wheel.GetComponent<WheelCollider>();
+                if (collider != null && collider.GetGroundHit(out WheelHit groundHit))
+                    return groundHit.point;
+            }
             return state != null && state.wheel != null ? state.wheel.position : Vector3.zero;
         }
 
