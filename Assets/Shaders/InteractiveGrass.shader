@@ -208,13 +208,17 @@ Shader "Voyage/Grass/InteractiveLit"
                 // Replace distant tiny cards with visually broader clumps.
                 float farClusterScale = lerp(1.0, 2.25, farBlend);
                 float3 localFromOrigin = positionWS - instanceOriginWS;
+                // Distant clumps are enlarged only in the horizontal plane.
+                // Scaling world Y here moves an entire blade, including its
+                // planted root, upward on tall terrain; a 1.18 multiplier on
+                // a 300m hillside visibly launches the grass into the sky.
                 positionWS = instanceOriginWS + float3(localFromOrigin.x * farClusterScale,
-                                                        localFromOrigin.y * lerp(1.0, 1.18, farBlend),
+                                                        localFromOrigin.y,
                                                         localFromOrigin.z * farClusterScale);
                 float originalVertexY = positionWS.y;
                 float3 rootFromOrigin = bladeRootWS - instanceOriginWS;
                 bladeRootWS = instanceOriginWS + float3(rootFromOrigin.x * farClusterScale,
-                                                         rootFromOrigin.y * lerp(1.0, 1.18, farBlend),
+                                                         rootFromOrigin.y,
                                                          rootFromOrigin.z * farClusterScale);
                 float tip = saturate(input.uv.y);
                 float temporaryWeight;
