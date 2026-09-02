@@ -78,7 +78,7 @@ public sealed class DrivingCore : MonoBehaviour
         // its contact is temporarily unavailable.
         GrassInteractionEmitter grassEmitter = carObject.GetComponent<GrassInteractionEmitter>();
         if (grassEmitter == null) grassEmitter = carObject.AddComponent<GrassInteractionEmitter>();
-        grassEmitter.radius = 1.35f;
+        grassEmitter.radius = 1.6f;
         grassInteraction.RegisterEmitter(grassEmitter.transform, grassEmitter.radius, grassEmitter.minimumTravel);
         Camera camera = Camera.main;
         if (camera != null)

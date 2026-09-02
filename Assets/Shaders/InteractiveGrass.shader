@@ -152,7 +152,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 // The interaction texture alpha is the recovery timer. Follow
                 // it directly so pressed grass stands back up smoothly.
                 float recoveryStrength = saturate(1.0 - recoveryAge);
-                interactionBend *= recoveryStrength * _InteractionEnabled * _BendStrength;
+                interactionBend *= recoveryStrength * _InteractionEnabled * _BendStrength * 1.8;
 
                 float2 globalWindDirection = normalize(_VoyageGrassWind.xy + float2(0.0001, 0.0001));
                 float globalWindSpeed = _VoyageGrassWind.z > 0.0 ? _VoyageGrassWind.z : 1.0;
@@ -173,8 +173,8 @@ Shader "Voyage/Grass/InteractiveLit"
                 // A pressed blade must lean and lose height at the tip. An
                 // XZ-only offset reads as sliding grass rather than flattened
                 // grass, especially from the vehicle camera.
-                float interactionAmount = saturate(length(interactionBend));
-                positionWS.y -= interactionAmount * 0.62 * bendTip;
+                float interactionAmount = saturate(length(interactionBend) * 1.35);
+                positionWS.y -= interactionAmount * 0.95 * bendTip;
 
                 output.positionWS = positionWS;
                 output.positionCS = TransformWorldToHClip(positionWS);

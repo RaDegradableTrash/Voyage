@@ -383,7 +383,10 @@ namespace Voyage.TerrainSystem
             stampMaterial.SetVector("_StampA", new Vector4(a.x, a.y, 0f, 0f));
             stampMaterial.SetVector("_StampB", new Vector4(b.x, b.y, 0f, 0f));
             stampMaterial.SetVector("_StampDirection", new Vector4(dir.x, dir.y, 0f, 0f));
-            stampMaterial.SetFloat("_StampRadius", Mathf.Max(radius * 1.25f / worldSize, 1f / resolution));
+            // A wheel contact is smaller than the visible crushed-grass band.
+            // Use a wider stamp so the entire tire footprint reads as bent
+            // grass instead of a nearly invisible one-pixel line.
+            stampMaterial.SetFloat("_StampRadius", Mathf.Max(radius * 2.0f / worldSize, 2f / resolution));
             stampMaterial.SetFloat("_StampStrength", strength);
             Graphics.Blit(source, destination, stampMaterial);
         }
