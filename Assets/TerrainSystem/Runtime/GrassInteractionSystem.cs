@@ -28,6 +28,7 @@ namespace Voyage.TerrainSystem
 
         readonly List<Transform> vehicles = new List<Transform>();
         readonly List<WheelState> wheelStates = new List<WheelState>();
+        readonly List<EmitterState> emitters = new List<EmitterState>();
         readonly Queue<PendingStamp> pendingStamps = new Queue<PendingStamp>();
         RenderTexture field;
         RenderTexture scratch;
@@ -49,6 +50,15 @@ namespace Voyage.TerrainSystem
         {
             public Transform wheel;
             public Vector3 previous;
+            public bool valid;
+        }
+
+        sealed class EmitterState
+        {
+            public Transform target;
+            public Vector3 previous;
+            public float radius;
+            public float minimumTravel;
             public bool valid;
         }
 
@@ -136,6 +146,31 @@ namespace Voyage.TerrainSystem
             WheelCollider[] colliders = vehicle.GetComponentsInChildren<WheelCollider>(true);
             for (int i = 0; i < colliders.Length; i++)
                 wheelStates.Add(new WheelState { wheel = colliders[i].transform });
+        }
+
+        public void RegisterEmitter(Transform target, float radius, float minimumTravel)
+        {
+            if (target == null) return;
+            for (int i = 0; i < emitters.Count; i++)
+                if (emitters[i].target == target)
+                {
+                    emitters[i].radius = Mathf.Max(0.05f, radius);
+                    emitters[i].minimumTravel = Mathf.Max(0f, minimumTravel);
+                    emitters[i].valid = false;
+                    return;
+                }
+            emitters.Add(new EmitterState
+            {
+                target = target,
+                radius = Mathf.Max(0.05f, radius),
+                minimumTravel = Mathf.Max(0f, minimumTravel)
+            });
+        }
+
+        public void UnregisterEmitter(Transform target)
+        {
+            for (int i = emitters.Count - 1; i >= 0; i--)
+                if (emitters[i].target == null || emitters[i].target == target) emitters.RemoveAt(i);
         }
 
         public void UnregisterVehicle(GameObject vehicle)
@@ -243,6 +278,28 @@ namespace Voyage.TerrainSystem
                     QueueSegment(state.previous, current, collider.radius, wheelSource);
                 }
                 state.previous = current;
+            }
+            for (int i = emitters.Count - 1; i >= 0; i--)
+            {
+                EmitterState emitter = emitters[i];
+                if (emitter.target == null) { emitters.RemoveAt(i); continue; }
+                Vector3 current = emitter.target.position;
+                if (!emitter.valid)
+                {
+                    emitter.previous = current;
+                    emitter.valid = true;
+                    continue;
+                }
+                Vector3 delta = current - emitter.previous;
+                float distance = new Vector2(delta.x, delta.z).magnitude;
+                if (distance > maxTeleportDistance)
+                {
+                    emitter.previous = current;
+                    continue;
+                }
+                if (distance >= Mathf.Max(0f, emitter.minimumTravel))
+                    QueueSegment(emitter.previous, current, emitter.radius, emitter.target);
+                emitter.previous = current;
             }
             ProcessPendingStamps();
             PublishGlobals();
@@ -436,6 +493,7 @@ namespace Voyage.TerrainSystem
             permanentRebuildCursor = 0;
             permanentRebuildPending = false;
             for (int i = 0; i < wheelStates.Count; i++) wheelStates[i].valid = false;
+            for (int i = 0; i < emitters.Count; i++) emitters[i].valid = false;
             Shader.SetGlobalTexture("_VoyageGrassInteraction", null);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", null);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", Vector4.zero);
