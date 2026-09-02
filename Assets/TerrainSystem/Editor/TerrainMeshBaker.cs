@@ -386,14 +386,14 @@ namespace Voyage.TerrainSystem.Editor
         private static Material[] CollectMaterials(List<TriangleSource> triangles)
         {
             List<Material> result = new List<Material>();
-            Material fallback = null;
+            Material fallback = GetFallbackTerrainMaterial();
             for (int i = 0; i < triangles.Count; i++)
             {
-                if (triangles[i].material == null || IsDiagnosticTerrainMaterial(triangles[i].material))
-                {
-                    if (fallback == null) fallback = GetFallbackTerrainMaterial();
-                    triangles[i].material = fallback;
-                }
+                // This baker produces grassland terrain tiles, not a material
+                // archive for the source FBX. Use one shared Lit material for
+                // every surface so embedded/importer-generated gray materials
+                // cannot reintroduce the white bare patches at runtime.
+                triangles[i].material = fallback;
                 if (triangles[i].material != null && !result.Contains(triangles[i].material)) result.Add(triangles[i].material);
             }
             return result.ToArray();

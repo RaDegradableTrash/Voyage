@@ -178,7 +178,7 @@ namespace Voyage.TerrainSystem
             for (int i = 0; i < renderers.Length; i++)
             {
                 MeshRenderer renderer = renderers[i];
-                ReplaceDiagnosticTerrainMaterials(renderer);
+                ApplyTerrainPalette(renderer);
                 renderer.shadowCastingMode = ShadowCastingMode.On;
                 renderer.receiveShadows = true;
                 renderer.lightProbeUsage = LightProbeUsage.BlendProbes;
@@ -188,18 +188,19 @@ namespace Voyage.TerrainSystem
             }
         }
 
-        private static void ReplaceDiagnosticTerrainMaterials(MeshRenderer renderer)
+        private static void ApplyTerrainPalette(MeshRenderer renderer)
         {
             Material[] materials = renderer.sharedMaterials;
             bool changed = false;
             for (int i = 0; i < materials.Length; i++)
             {
                 Material material = materials[i];
-                if (material == null || material.shader == null) continue;
-                bool isPlaceholder = string.Equals(material.name, "TerrainColor", System.StringComparison.OrdinalIgnoreCase) ||
-                                     string.Equals(material.name, "TerrainDiagnosticGray", System.StringComparison.OrdinalIgnoreCase) ||
-                                     string.Equals(material.shader.name, "Hidden/Voyage/LightingDiagnosticWhite", System.StringComparison.OrdinalIgnoreCase);
-                if (!isPlaceholder) continue;
+                if (material == null) continue;
+                // Generated terrain tiles are the grassland surface; their FBX
+                // material can be embedded under an unstable importer name.
+                // Replacing the whole tile material array avoids white/pink
+                // islands from stale source placeholders and keeps the palette
+                // consistent with the interactive grass.
                 if (grasslandFallbackMaterial == null)
                 {
                     Shader shader = Shader.Find("Universal Render Pipeline/Lit");
