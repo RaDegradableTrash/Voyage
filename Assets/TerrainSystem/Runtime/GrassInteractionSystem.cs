@@ -43,6 +43,9 @@ namespace Voyage.TerrainSystem
         GrassPermanentTrackStore permanentTrackStore;
         Vector3 fieldCenter;
         Vector3 lastFieldCenter;
+        Vector3 previousVehiclePosition;
+        Vector2 vehicleTravelDirection = Vector2.right;
+        bool hasVehiclePosition;
         bool hasFieldCenter;
         bool initialized;
         readonly List<GrassPermanentTrackStore.TrackSample> permanentRebuildSamples = new List<GrassPermanentTrackStore.TrackSample>();
@@ -139,6 +142,8 @@ namespace Voyage.TerrainSystem
             // spatially continuous. Force a fresh world-space anchor and let
             // the next valid WheelCollider hit establish new baselines.
             hasFieldCenter = false;
+            hasVehiclePosition = false;
+            vehicleTravelDirection = Vector2.right;
             for (int i = 0; i < wheelStates.Count; i++) wheelStates[i].valid = false;
         }
 
@@ -404,12 +409,25 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", permanentField);
             if (followTarget != null)
             {
-                Vector3 forward = followTarget.forward;
+                Vector3 position = followTarget.position;
+                Vector3 travel = position - previousVehiclePosition;
+                Vector2 travelXZ = new Vector2(travel.x, travel.z);
+                if (!hasVehiclePosition)
+                {
+                    previousVehiclePosition = position;
+                    hasVehiclePosition = true;
+                }
+                else if (travelXZ.sqrMagnitude > 0.000001f && travelXZ.sqrMagnitude < maxTeleportDistance * maxTeleportDistance)
+                {
+                    vehicleTravelDirection = travelXZ.normalized;
+                }
+                previousVehiclePosition = position;
                 Shader.SetGlobalVector("_VoyageGrassVehicle", new Vector4(
-                    followTarget.position.x, followTarget.position.z, forward.x, forward.z));
+                    position.x, position.z, vehicleTravelDirection.x, vehicleTravelDirection.y));
             }
             else
             {
+                hasVehiclePosition = false;
                 Shader.SetGlobalVector("_VoyageGrassVehicle", Vector4.zero);
             }
         }

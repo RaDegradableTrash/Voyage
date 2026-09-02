@@ -163,8 +163,11 @@ Shader "Voyage/Grass/InteractiveLit"
                 float vehicleDirectionLength = length(_VoyageGrassVehicle.zw);
                 float2 vehicleDirection = normalize(_VoyageGrassVehicle.zw + float2(0.0001, 0.0001));
                 float vehicleDistance = distance(positionWS.xz, vehiclePosition);
-                float vehicleWeight = (1.0 - smoothstep(1.2, 3.4, vehicleDistance)) * step(0.001, vehicleDirectionLength);
-                interactionBend += vehicleDirection * vehicleWeight * _InteractionEnabled * 1.35;
+                float vehicleWeight = (1.0 - smoothstep(0.8, 4.8, vehicleDistance)) * step(0.001, vehicleDirectionLength);
+                // This local wake is intentionally independent of the tile
+                // interaction LOD gate: the player should always see grass
+                // fold around the vehicle, even while a tile is transitioning.
+                interactionBend += vehicleDirection * vehicleWeight * 2.4;
 
                 float2 globalWindDirection = normalize(_VoyageGrassWind.xy + float2(0.0001, 0.0001));
                 float globalWindSpeed = _VoyageGrassWind.z > 0.0 ? _VoyageGrassWind.z : 1.0;
@@ -186,7 +189,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 // XZ-only offset reads as sliding grass rather than flattened
                 // grass, especially from the vehicle camera.
                 float interactionAmount = saturate(length(interactionBend) * 1.35);
-                positionWS.y -= interactionAmount * 0.95 * bendTip;
+                positionWS.y -= interactionAmount * 1.35 * bendTip;
 
                 output.positionWS = positionWS;
                 output.positionCS = TransformWorldToHClip(positionWS);
