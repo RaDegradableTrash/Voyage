@@ -57,6 +57,7 @@ namespace Voyage.TerrainSystem
         {
             public Transform wheel;
             public Rigidbody body;
+            public VehicleTerrainFollower terrainFollower;
             public float radius;
             public Vector3 previous;
             public bool valid;
@@ -160,10 +161,13 @@ namespace Voyage.TerrainSystem
                 Transform wheel = colliders[i].transform;
                 Rigidbody body = vehicle.GetComponent<Rigidbody>();
                 if (body == null) body = wheel.GetComponentInParent<Rigidbody>();
+                VehicleTerrainFollower terrainFollower = vehicle.GetComponent<VehicleTerrainFollower>();
+                if (terrainFollower == null) terrainFollower = wheel.GetComponentInParent<VehicleTerrainFollower>();
                 wheelStates.Add(new WheelState
                 {
                     wheel = wheel,
                     body = body,
+                    terrainFollower = terrainFollower,
                     radius = Mathf.Max(0.35f, colliders[i].radius)
                 });
             }
@@ -304,7 +308,7 @@ namespace Voyage.TerrainSystem
                 Vector3 delta = current - state.previous;
                 float distance = new Vector2(delta.x, delta.z).magnitude;
                 if (distance > maxTeleportDistance) state.previous = current;
-                else if (IsVehicleMoving(state.body, distance))
+                else if (IsVehicleMoving(state, distance, out Vector3 motionVelocity))
                 {
                     Transform wheelSource = state.wheel;
                     // On a WheelCollider the reported contact point can stay
@@ -314,12 +318,8 @@ namespace Voyage.TerrainSystem
                     // that case. This also keeps the path directional instead
                     // of degenerating into an upward-facing point stamp.
                     Vector3 from = state.previous;
-                    if (state.body != null && distance <= minimumWheelTravel)
-                    {
-                        Vector3 velocity = state.body.linearVelocity;
-                        velocity.y = 0f;
-                        from = current - velocity * Time.deltaTime;
-                    }
+                    if (distance <= minimumWheelTravel)
+                        from = current - motionVelocity * Time.deltaTime;
                     QueueSegment(from, current, state.radius, wheelSource);
                 }
                 state.previous = current;
@@ -350,21 +350,32 @@ namespace Voyage.TerrainSystem
             PublishGlobals();
         }
 
-        bool IsVehicleMoving(Rigidbody body, float observedDistance)
+        bool IsVehicleMoving(WheelState state, float observedDistance, out Vector3 motionVelocity)
         {
             // WheelCollider contact points can move while a parked vehicle's
             // suspension settles. Those changes must not keep refreshing the
-            // grass recovery timer. Rigidbody velocity is the authoritative
-            // signal for a vehicle that is actually travelling; the observed
-            // displacement is retained as a fallback for non-physical,
-            // transform-driven wheel rigs.
-            if (body != null)
+            // grass recovery timer. Prefer the same velocity source that
+            // drives the vehicle. The raycast vehicle can be advanced by
+            // VehicleTerrainFollower while its Rigidbody velocity is near
+            // zero, so consulting Rigidbody alone silently disables all
+            // wheel interaction for that vehicle.
+            motionVelocity = Vector3.zero;
+            if (state.terrainFollower != null && state.terrainFollower.enabled)
             {
-                Vector3 velocity = body.linearVelocity;
-                velocity.y = 0f;
-                return velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed;
+                motionVelocity = state.terrainFollower.CurrentVelocity;
+            }
+            else if (state.body != null)
+            {
+                motionVelocity = state.body.linearVelocity;
             }
 
+            motionVelocity.y = 0f;
+            if (motionVelocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed)
+                return true;
+
+            // Keep transform-driven rigs supported when they have no velocity
+            // provider, but never use this fallback for a parked physical car.
+            if (state.terrainFollower != null || state.body != null) return false;
             return observedDistance / Mathf.Max(Time.deltaTime, 0.0001f) >= 0.2f;
         }
 
