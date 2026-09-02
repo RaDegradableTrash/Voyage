@@ -25,6 +25,8 @@ namespace Voyage.TerrainSystem
         public bool debugGrassStateMachine;
         [Tooltip("Draw the streamed grass-tile state and wheel influence bounds in the Scene view.")]
         public bool debugDrawTileStates = true;
+        [Tooltip("Runtime key used to toggle the debug overlay and shader colors.")]
+        public KeyCode debugToggleKey = KeyCode.F10;
 
         public static GrassInteractionSystem Instance { get; private set; }
 
@@ -239,6 +241,15 @@ namespace Voyage.TerrainSystem
             // when this component is re-enabled instead of waiting for the
             // first LateUpdate, which prevents a transient interaction gap.
             if (initialized) PublishGlobals();
+        }
+
+        void Update()
+        {
+            if (debugToggleKey != KeyCode.None && Input.GetKeyDown(debugToggleKey))
+            {
+                debugGrassStateMachine = !debugGrassStateMachine;
+                PublishGlobals();
+            }
         }
 
         public void SetTarget(Transform target)
