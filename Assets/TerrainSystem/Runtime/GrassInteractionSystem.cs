@@ -508,7 +508,7 @@ namespace Voyage.TerrainSystem
                 else
                 {
                     shaderWheelPositions[i] = Vector4.zero;
-                    shaderWheelDirections[i] = Vector4.forward;
+                    shaderWheelDirections[i] = new Vector4(0f, 0f, 0f, 1f);
                     shaderWheelRadii[i] = 0f;
                     shaderWheelStrengths[i] = 0f;
                 }
