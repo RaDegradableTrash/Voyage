@@ -24,6 +24,9 @@ namespace Voyage.TerrainSystem
         public Mesh bakedMesh;
         [Tooltip("Optional clustered asset. It is drawn with GPU instancing and takes precedence over bakedMesh.")]
         public GrassChunkAsset bakedClusters;
+        [Tooltip("Shared cluster geometry. Tile placement is generated on demand and is not serialized per tile.")]
+        public GrassPrototypeAsset prototype;
+        public Vector2Int tileCoordinate;
         public Material material;
         Mesh mesh;
         GameObject grassObject;
@@ -63,7 +66,8 @@ namespace Voyage.TerrainSystem
             meshRenderer = child.AddComponent<MeshRenderer>();
             meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             meshRenderer.receiveShadows = false;
-            runtimeMaterial = material != null ? new Material(material) : CreateDefaultMaterial();
+            Material sourceMaterial = material != null ? material : prototype != null ? prototype.material : null;
+            runtimeMaterial = sourceMaterial != null ? new Material(sourceMaterial) : CreateDefaultMaterial();
             if (runtimeMaterial != null) runtimeMaterial.enableInstancing = true;
             meshRenderer.sharedMaterial = runtimeMaterial;
             meshRenderer.enabled = false;
@@ -98,7 +102,7 @@ namespace Voyage.TerrainSystem
         void LateUpdate()
         {
             bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
-            Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : runtimeClusterMesh;
+            Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : runtimeClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
             if (instanceProperties == null) instanceProperties = new MaterialPropertyBlock();
             float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.55f : 0.2f;
@@ -132,7 +136,8 @@ namespace Voyage.TerrainSystem
             var clusterPositions = new List<Vector3>(Mathf.Min(runtimeClusterBudget, totalCandidates));
             var clusterRotations = new List<Quaternion>(clusterPositions.Capacity);
             var clusterScales = new List<float>(clusterPositions.Capacity);
-            System.Random random = new System.Random((int)(worldBounds.center.x * 17f + worldBounds.center.z * 31f));
+            int seed = unchecked(tileCoordinate.x * 73856093 ^ tileCoordinate.y * 19349663);
+            System.Random random = new System.Random(seed);
             int processedClusters = 0;
             for (int z = 0; z < countZ; z += candidateStep) for (int x = 0; x < countX; x += candidateStep)
             {
@@ -194,7 +199,8 @@ namespace Voyage.TerrainSystem
                 buildRoutine = null;
                 yield break;
             }
-            runtimeClusterMesh = BuildClusterMesh(random);
+            if (prototype == null || prototype.clusterMesh == null)
+                runtimeClusterMesh = BuildClusterMesh(random);
             instanceMatrices = new Matrix4x4[clusterPositions.Count];
             for (int i = 0; i < instanceMatrices.Length; i++)
                 instanceMatrices[i] = transform.localToWorldMatrix * Matrix4x4.TRS(clusterPositions[i], clusterRotations[i], Vector3.one * clusterScales[i]);

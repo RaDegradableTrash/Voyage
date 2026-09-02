@@ -6,6 +6,41 @@ namespace Voyage.TerrainSystem.Editor
 {
     internal static class GrassMeshBaker
     {
+        public static GrassPrototypeAsset BuildPrototype(TerrainChunkSettings settings, string assetName)
+        {
+            if (settings == null || settings.grassDensity <= 0f) return null;
+            System.Random random = new System.Random(73856093 ^ settings.grassBladesPerCluster * 19349663);
+            List<Vector3> vertices = new List<Vector3>(settings.grassBladesPerCluster * 6);
+            List<Vector2> uvs = new List<Vector2>(vertices.Capacity);
+            List<Vector2> randoms = new List<Vector2>(vertices.Capacity);
+            List<int> indices = new List<int>(settings.grassBladesPerCluster * 12);
+            for (int blade = 0; blade < settings.grassBladesPerCluster; blade++)
+            {
+                float angle = (float)random.NextDouble() * Mathf.PI * 2f;
+                float distance = Mathf.Sqrt((float)random.NextDouble()) * Mathf.Max(0.05f, settings.grassClusterRadius);
+                Vector3 local = new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
+                float height = settings.grassBladeHeight * (0.72f + (float)random.NextDouble() * 0.56f);
+                float width = height * (0.10f + (float)random.NextDouble() * 0.05f);
+                float yaw = (float)random.NextDouble() * Mathf.PI;
+                float variation = (float)random.NextDouble();
+                AddBlade(vertices, uvs, randoms, indices, local, height, width, yaw, variation);
+                AddBlade(vertices, uvs, randoms, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+            }
+            Mesh clusterMesh = new Mesh { name = assetName + " Cluster Mesh" };
+            clusterMesh.SetVertices(vertices);
+            clusterMesh.SetUVs(0, uvs);
+            clusterMesh.SetUVs(1, randoms);
+            clusterMesh.SetTriangles(indices, 0, true);
+            clusterMesh.RecalculateBounds();
+            GrassPrototypeAsset asset = ScriptableObject.CreateInstance<GrassPrototypeAsset>();
+            asset.name = assetName;
+            asset.clusterMesh = clusterMesh;
+            asset.bladesPerCluster = settings.grassBladesPerCluster;
+            asset.clusterRadius = settings.grassClusterRadius;
+            asset.bladeHeight = settings.grassBladeHeight;
+            return asset;
+        }
+
         public static GrassChunkAsset BuildAsset(List<TerrainMeshBaker.TriangleSource> triangles, Vector3 origin, Vector2Int coordinate, TerrainChunkSettings settings, string assetName)
         {
             if (triangles == null || triangles.Count == 0 || settings.grassDensity <= 0f) return null;
