@@ -168,8 +168,14 @@ Shader "Voyage/Grass/InteractiveLit"
                 float2 vehiclePosition = _VoyageGrassVehicle.xy;
                 float vehicleDirectionLength = length(_VoyageGrassVehicle.zw);
                 float2 vehicleDirection = normalize(_VoyageGrassVehicle.zw + float2(0.0001, 0.0001));
-                float vehicleDistance = distance(positionWS.xz, vehiclePosition);
-                float vehicleWeight = (1.0 - smoothstep(0.8, 4.8, vehicleDistance)) * step(0.001, vehicleDirectionLength);
+                float2 wakeStart = vehiclePosition - vehicleDirection * 9.0;
+                float2 wakeEnd = vehiclePosition + vehicleDirection * 1.5;
+                float2 wakeSegment = wakeEnd - wakeStart;
+                float wakeT = saturate(dot(positionWS.xz - wakeStart, wakeSegment) /
+                                       max(dot(wakeSegment, wakeSegment), 0.0001));
+                float2 wakePoint = wakeStart + wakeSegment * wakeT;
+                float vehicleDistance = distance(positionWS.xz, wakePoint);
+                float vehicleWeight = (1.0 - smoothstep(1.0, 2.35, vehicleDistance)) * step(0.001, vehicleDirectionLength);
                 // This local wake is intentionally independent of the tile
                 // interaction LOD gate: the player should always see grass
                 // fold around the vehicle, even while a tile is transitioning.
