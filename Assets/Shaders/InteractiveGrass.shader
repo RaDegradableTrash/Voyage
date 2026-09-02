@@ -204,13 +204,24 @@ Shader "Voyage/Grass/InteractiveLit"
                 // evaluated from world coordinates, so a bad tile/field
                 // reprojection can never flatten an entire grass chunk.
                 float2 immediateWheelBend = SampleImmediateWheelBend(positionWS);
-                float2 vehicleFootprintBend = SampleVehicleFootprintBend(positionWS);
-                float2 interactionBend = immediateWheelBend * 1.8 + vehicleFootprintBend * 1.8;
+                // The wheel array is the authoritative footprint. Do not add
+                // a second body-derived footprint here: its inferred axle
+                // spacing can overlap an adjacent streamed tile and make a
+                // whole chunk look pressed even though no tire is there.
+                float2 interactionBend = immediateWheelBend * 2.4;
 
                 // The interaction texture alpha is the recovery timer. Follow
                 // it directly so pressed grass stands back up smoothly.
                 float recoveryVariation = lerp(0.86, 1.14, input.instanceRandom.y);
-                float recoveryStrength = pow(saturate(1.0 - recoveryAge), recoveryVariation);
+                // A missing/empty field sample means this blade has no stored
+                // tire impression yet. It must still respond to the direct
+                // wheel sample. Only apply recovery to pixels that actually
+                // contain a temporary impression; otherwise the direct bend
+                // is multiplied by zero and the wheel appears inert.
+                float hasTemporaryImpression = step(0.002, temporaryWeight);
+                float recoveryStrength = lerp(1.0,
+                                              pow(saturate(1.0 - recoveryAge), recoveryVariation),
+                                              hasTemporaryImpression);
                 interactionBend *= recoveryStrength * _InteractionEnabled * _BendStrength * 1.8;
 
                 float2 globalWindDirection = normalize(_VoyageGrassWind.xy + float2(0.0001, 0.0001));
