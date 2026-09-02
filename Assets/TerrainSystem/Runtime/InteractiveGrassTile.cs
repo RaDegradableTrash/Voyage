@@ -335,10 +335,17 @@ namespace Voyage.TerrainSystem
                     float slope = Vector3.Angle(groundHit.normal, Vector3.up);
                     float slopeDensity = 1f - Mathf.InverseLerp(fullDensityBelowSlope, noGrassAboveSlope, slope);
                     if (random.NextDouble() > slopeDensity) continue;
-                    clusterLocal.y = groundHit.point.y - transform.position.y + 0.015f;
+                    // Convert the hit back through the exact tile transform.
+                    // Subtracting transform.position.y only works for an
+                    // identity transform; streamed tiles can be nested under
+                    // a translated/scaled parent, which leaves every blade
+                    // with an incorrect world-space root height.
+                    Vector3 groundLocal = transform.InverseTransformPoint(groundHit.point);
+                    clusterLocal.y = groundLocal.y + 0.015f;
                 }
                 clusterPositions.Add(clusterLocal);
-                Quaternion groundRotation = Quaternion.FromToRotation(Vector3.up, groundHit.normal);
+                Vector3 groundNormalLocal = transform.InverseTransformDirection(groundHit.normal).normalized;
+                Quaternion groundRotation = Quaternion.FromToRotation(Vector3.up, groundNormalLocal);
                 Quaternion yawRotation = Quaternion.AngleAxis((float)random.NextDouble() * 360f, groundHit.normal);
                 clusterRotations.Add(yawRotation * groundRotation);
                 clusterScales.Add(0.82f + (float)random.NextDouble() * 0.36f);
