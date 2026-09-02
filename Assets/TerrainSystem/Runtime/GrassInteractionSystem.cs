@@ -699,7 +699,7 @@ namespace Voyage.TerrainSystem
                     velocity.y = 0f;
                     Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized : Vector3.forward;
                     shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);
-                    float radius = Mathf.Max(0.8f, wheel.radius * 3.0f);
+                    float radius = Mathf.Max(1.15f, wheel.radius * 4.0f);
                     float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
                     // Keep all wheel parameters in a Vector4. This avoids
                     // platform-specific float-array material binding issues.
@@ -727,7 +727,7 @@ namespace Voyage.TerrainSystem
                     for (int i = 0; i < count; i++)
                     {
                         Vector3 position = follower.GetGrassInteractionWheelPosition(i);
-                        float radius = Mathf.Max(0.8f, follower.tireRadius * 3.0f);
+                        float radius = Mathf.Max(1.15f, follower.tireRadius * 4.0f);
                         float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
                         shaderWheelPositions[i] = new Vector4(position.x, position.z, radius, strength);
                         shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);

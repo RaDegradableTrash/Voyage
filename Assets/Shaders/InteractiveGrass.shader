@@ -208,7 +208,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 // a second body-derived footprint here: its inferred axle
                 // spacing can overlap an adjacent streamed tile and make a
                 // whole chunk look pressed even though no tire is there.
-                float2 interactionBend = immediateWheelBend * 2.4;
+                float2 interactionBend = immediateWheelBend * 3.5;
 
                 // The interaction texture alpha is the recovery timer. Follow
                 // it directly so pressed grass stands back up smoothly.
@@ -250,7 +250,9 @@ Shader "Voyage/Grass/InteractiveLit"
                 // of looking identical to wind-only motion.
                 float interactionAmount = saturate(length(interactionBend) * 2.6);
                 float windAmount = saturate(length(wind) * 1.05);
-                float bendAngle = saturate(interactionAmount * 2.1 + windAmount * 0.28);
+                // Make a live tire pass visually unambiguous: the blade root
+                // remains planted while the tip can approach horizontal.
+                float bendAngle = saturate(interactionAmount * 2.8 + windAmount * 0.28) * 1.50;
                 float2 bendDirection = normalize(interactionBend + wind * 0.38 + float2(0.0001, 0.0001));
                 float angleAtVertex = bendAngle * bendTip;
                 float bladeHeight = max(0.0, positionWS.y - bladeRootWS.y);
