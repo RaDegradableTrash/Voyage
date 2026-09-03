@@ -8,6 +8,8 @@ namespace Voyage.TerrainSystem
     [DisallowMultipleComponent]
     public sealed class InteractiveGrassTile : MonoBehaviour
     {
+        static readonly Dictionary<int, Mesh> sharedClusterMeshes = new Dictionary<int, Mesh>();
+
         [Min(0.25f)] public float clusterSpacing = 0.38f;
         [Min(1)] public int bladesPerCluster = 16;
         [Min(0.05f)] public float clusterRadius = 0.62f;
@@ -122,6 +124,11 @@ namespace Voyage.TerrainSystem
             // those visible instances to bypass this interactive draw path.
             if (bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0)
             {
+                // Keep the baked placement data, but replace legacy sparse
+                // cluster geometry with one shared mesh built from the current
+                // density/height settings. This updates old streamed tiles
+                // without creating a mesh for every tile.
+                runtimeClusterMesh = GetSharedClusterMesh(4);
                 instanceMatrices = new Matrix4x4[bakedClusters.Count];
                 for (int i = 0; i < instanceMatrices.Length; i++)
                 {
@@ -182,7 +189,7 @@ namespace Voyage.TerrainSystem
                 else instanceProperties.Clear();
             }
             bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
-            Mesh sourceMesh = hasBakedClusters ? bakedClusters.clusterMesh : runtimeClusterMesh != null ? runtimeClusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : null;
+            Mesh sourceMesh = runtimeClusterMesh != null ? runtimeClusterMesh : hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : null;
             Mesh drawMesh = currentLod == 0 || runtimeDistantClusterMesh == null ? sourceMesh : runtimeDistantClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
             // Keep the close LOD on direct instancing so the live wheel
@@ -533,6 +540,18 @@ namespace Voyage.TerrainSystem
                 t.Add(a); t.Add(b); t.Add(c);
                 t.Add(b); t.Add(d); t.Add(c);
             }
+        }
+
+        Mesh GetSharedClusterMesh(int planeCount)
+        {
+            int key = unchecked(bladesPerCluster * 1000000 + Mathf.RoundToInt(clusterRadius * 1000f) * 1000 + Mathf.RoundToInt(bladeHeight * 100f) * 10 + planeCount);
+            Mesh shared;
+            if (sharedClusterMeshes.TryGetValue(key, out shared) && shared != null) return shared;
+            shared = BuildClusterMesh(new System.Random(0x5F3759DF ^ key), planeCount);
+            shared.name = "Runtime Grass Cluster " + key;
+            shared.hideFlags = HideFlags.HideAndDontSave;
+            sharedClusterMeshes[key] = shared;
+            return shared;
         }
 
         static Material CreateDefaultMaterial()
