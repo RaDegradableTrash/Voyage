@@ -8,20 +8,20 @@ namespace Voyage.TerrainSystem
     [DisallowMultipleComponent]
     public sealed class InteractiveGrassTile : MonoBehaviour
     {
-        [Min(0.25f)] public float clusterSpacing = 0.5f;
-        [Min(1)] public int bladesPerCluster = 8;
-        [Min(0.05f)] public float clusterRadius = 0.48f;
-        [Min(0.1f)] public float bladeHeight = 1.1f;
-        [Range(0f, 1f)] public float density = 0.85f;
+        [Min(0.25f)] public float clusterSpacing = 0.38f;
+        [Min(1)] public int bladesPerCluster = 16;
+        [Min(0.05f)] public float clusterRadius = 0.62f;
+        [Min(0.1f)] public float bladeHeight = 1.6f;
+        [Range(0f, 1f)] public float density = 1f;
         [Min(1)] public int clustersPerFrame = 96;
         [Min(1)] public int runtimeClusterBudget = 100000;
         [Header("Stylized appearance")]
-        public Color baseColor = new Color(0.25f, 0.36f, 0.09f, 1f);
-        public Color rootColor = new Color(0.20f, 0.28f, 0.105f, 1f);
-        public Color shadowColor = new Color(0.16f, 0.24f, 0.045f, 1f);
-        public Color tipColor = new Color(0.42f, 0.40f, 0.11f, 1f);
-        public Color backsideColor = new Color(0.30f, 0.32f, 0.085f, 1f);
-        public Color fadeColor = new Color(0.055f, 0.16f, 0.045f, 1f);
+        public Color baseColor = new Color(0.72f, 0.38f, 0.10f, 1f);
+        public Color rootColor = new Color(0.58f, 0.30f, 0.08f, 1f);
+        public Color shadowColor = new Color(0.46f, 0.23f, 0.06f, 1f);
+        public Color tipColor = new Color(0.84f, 0.49f, 0.14f, 1f);
+        public Color backsideColor = new Color(0.65f, 0.32f, 0.08f, 1f);
+        public Color fadeColor = new Color(0.30f, 0.17f, 0.05f, 1f);
         [Min(0.001f)] public float macroScale = 0.018f;
         [Range(0f, 1f)] public float macroStrength = 0.42f;
         [Range(0f, 1f)] public float alphaClip = 0.35f;
@@ -79,7 +79,7 @@ namespace Voyage.TerrainSystem
 
         void OnValidate()
         {
-            clusterSpacing = Mathf.Max(1f, clusterSpacing);
+            clusterSpacing = Mathf.Max(0.25f, clusterSpacing);
             bladesPerCluster = Mathf.Clamp(bladesPerCluster, 1, 32);
             clusterRadius = Mathf.Max(0.05f, clusterRadius);
             bladeHeight = Mathf.Max(0.1f, bladeHeight);
@@ -582,12 +582,15 @@ namespace Voyage.TerrainSystem
                 // yellow palette. Migrate only those exact legacy defaults at
                 // runtime so old tiles receive the softer root/ground blend
                 // without overwriting deliberate per-tile art tuning.
-                Color resolvedBaseColor = IsLegacyGrassColor(baseColor, 0.34f, 0.43f, 0.08f)
-                    ? new Color(0.25f, 0.36f, 0.09f, 1f) : baseColor;
-                Color resolvedTipColor = IsLegacyGrassColor(tipColor, 0.58f, 0.48f, 0.10f)
-                    ? new Color(0.42f, 0.40f, 0.11f, 1f) : tipColor;
-                Color resolvedBacksideColor = IsLegacyGrassColor(backsideColor, 0.43f, 0.36f, 0.07f)
-                    ? new Color(0.30f, 0.32f, 0.085f, 1f) : backsideColor;
+                Color resolvedBaseColor = IsLegacyGrassColor(baseColor, 0.34f, 0.43f, 0.08f) ||
+                                           IsLegacyGrassColor(baseColor, 0.25f, 0.36f, 0.09f)
+                    ? new Color(0.72f, 0.38f, 0.10f, 1f) : baseColor;
+                Color resolvedTipColor = IsLegacyGrassColor(tipColor, 0.58f, 0.48f, 0.10f) ||
+                                          IsLegacyGrassColor(tipColor, 0.42f, 0.40f, 0.11f)
+                    ? new Color(0.84f, 0.49f, 0.14f, 1f) : tipColor;
+                Color resolvedBacksideColor = IsLegacyGrassColor(backsideColor, 0.43f, 0.36f, 0.07f) ||
+                                               IsLegacyGrassColor(backsideColor, 0.30f, 0.32f, 0.085f)
+                    ? new Color(0.65f, 0.32f, 0.08f, 1f) : backsideColor;
                 runtimeMaterial.SetColor("_BaseColor", resolvedBaseColor);
                 runtimeMaterial.SetColor("_RootColor", rootColor);
                 runtimeMaterial.SetColor("_ShadowColor", shadowColor);

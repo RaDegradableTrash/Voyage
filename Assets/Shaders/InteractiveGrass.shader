@@ -3,12 +3,12 @@ Shader "Voyage/Grass/InteractiveLit"
     Properties
     {
         _Color ("Grass Color", Color) = (0.28, 0.38, 0.14, 1)
-        _BaseColor ("Base Color", Color) = (0.25, 0.36, 0.09, 1)
-        _RootColor ("Root Ground Color", Color) = (0.20, 0.28, 0.105, 1)
-        _ShadowColor ("Shadow Color", Color) = (0.16, 0.24, 0.045, 1)
-        _TipColor ("Tip Color", Color) = (0.42, 0.40, 0.11, 1)
-        _BacksideColor ("Backside Warm Color", Color) = (0.30, 0.32, 0.085, 1)
-        _FadeColor ("Distance Ground Color", Color) = (0.055, 0.16, 0.045, 1)
+        _BaseColor ("Base Color", Color) = (0.72, 0.38, 0.10, 1)
+        _RootColor ("Root Ground Color", Color) = (0.58, 0.30, 0.08, 1)
+        _ShadowColor ("Shadow Color", Color) = (0.46, 0.23, 0.06, 1)
+        _TipColor ("Clump Variation Color", Color) = (0.84, 0.49, 0.14, 1)
+        _BacksideColor ("Backside Warm Color", Color) = (0.65, 0.32, 0.08, 1)
+        _FadeColor ("Distance Meadow Color", Color) = (0.30, 0.17, 0.05, 1)
         _MacroScale ("Macro Variation Scale", Float) = 0.018
         _MacroStrength ("Macro Variation Strength", Range(0,1)) = 0.42
         _AlphaClip ("Alpha Clip", Range(0,1)) = 0.35
@@ -374,21 +374,14 @@ Shader "Voyage/Grass/InteractiveLit"
                 float macro = frac(sin(dot(floor(input.positionWS.xz * max(_MacroScale, 0.001)), float2(12.9898, 78.233))) * 43758.5453);
                 float macroStrength = lerp(_MacroStrength, 0.08, input.farBlend);
                 macro = lerp(1.0, lerp(0.82, 1.18, macro), macroStrength);
-                half heightBlend = saturate(input.uv.y * 1.35);
-                half3 grassColor = lerp(_ShadowColor.rgb, _BaseColor.rgb, heightBlend);
-                grassColor = lerp(grassColor, _TipColor.rgb, saturate((input.uv.y - 0.55) * 1.8));
-                // Fade the lowest part of every blade into the terrain tone.
-                // This hides the artificial card/ground seam without making
-                // the whole blade dark.
-                half rootBlend = smoothstep(0.02h, 0.48h, input.uv.y);
-                grassColor = lerp(_RootColor.rgb, grassColor, rootBlend);
+                // Keep each blade a single authored warm-gold color. The
+                // reference look gets its variation from neighboring clumps,
+                // not from a visible root-to-tip gradient on every blade.
+                half bladeVariation = saturate(input.instanceRandom.x * 0.75h + input.instanceRandom.y * 0.25h);
+                half3 grassColor = lerp(_BaseColor.rgb, _TipColor.rgb, bladeVariation);
                 half randomVariation = lerp(0.82h, 1.12h, input.instanceRandom.y);
                 randomVariation = lerp(randomVariation, 1.0h, input.farBlend * 0.82h);
-                // Keep the lowest part visually quiet. Applying the full
-                // macro/random contrast at the root makes each blade expose
-                // a bright outline against the darker terrain and exaggerates
-                // the apparent gaps between clusters.
-                grassColor *= lerp(1.0h, macro * randomVariation, rootBlend);
+                grassColor *= macro * randomVariation;
                 half3 litColor = grassColor * (ambient + direct + 0.12h);
                 half3 color = isFrontFace ? litColor : lerp(litColor, _BacksideColor.rgb, 0.38h);
                 if (_VoyageGrassDebugStateMachine > 0.5)

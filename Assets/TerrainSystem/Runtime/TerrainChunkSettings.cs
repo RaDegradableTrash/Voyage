@@ -27,26 +27,27 @@ namespace Voyage.TerrainSystem
         [Min(0.000001f)] public float boundaryPositionTolerance = 0.0001f;
         [Min(0.000001f)] public float boundaryHeightPrecision = 0.0001f;
         [Min(0.001f)] public float sourceMetersPerUnit = 1f;
+        [Tooltip("整体缩放源 FBX 后再分块。若 FBX 被 Unity 按 100 倍导入，设为 0.01。源 FBX 本身不会被修改。")]
         public string tileNameFormat = "Terrain_{0}_{1}";
         [Tooltip("Rebuild normals on generated terrain meshes so slopes and shadow receiving use the actual derived geometry.")]
         public bool recalculateNormals = true;
 
         [Header("Baked grass")]
         [Tooltip("Create one shared grass prototype during terrain baking; tile placement is generated on demand.")]
-        public bool bakeGrass = true;
-        [Min(0.25f)] public float grassClusterSpacing = 0.5f;
-        [Min(1)] public int grassBladesPerCluster = 12;
-        [Min(0.05f)] public float grassClusterRadius = 0.72f;
-        [Min(0.1f)] public float grassBladeHeight = 1.1f;
-        [Range(0f, 1f)] public float grassDensity = 0.96f;
-        [Min(1)] public int grassClusterBudget = 100000;
+        public bool bakeGrass = false;
+        [Min(0.25f)] public float grassClusterSpacing = 0.38f;
+        [Min(1)] public int grassBladesPerCluster = 16;
+        [Min(0.05f)] public float grassClusterRadius = 0.62f;
+        [Min(0.1f)] public float grassBladeHeight = 1.6f;
+        [Range(0f, 1f)] public float grassDensity = 1f;
+        [Min(1)] public int grassClusterBudget = 50000;
         [Header("Stylized grass appearance")]
-        public Color grassBaseColor = new Color(0.34f, 0.43f, 0.08f, 1f);
-        public Color grassRootColor = new Color(0.20f, 0.28f, 0.105f, 1f);
-        public Color grassShadowColor = new Color(0.16f, 0.24f, 0.045f, 1f);
-        public Color grassTipColor = new Color(0.58f, 0.48f, 0.10f, 1f);
-        public Color grassBacksideColor = new Color(0.43f, 0.36f, 0.07f, 1f);
-        public Color grassFadeColor = new Color(0.055f, 0.16f, 0.045f, 1f);
+        public Color grassBaseColor = new Color(0.72f, 0.38f, 0.10f, 1f);
+        public Color grassRootColor = new Color(0.58f, 0.30f, 0.08f, 1f);
+        public Color grassShadowColor = new Color(0.46f, 0.23f, 0.06f, 1f);
+        public Color grassTipColor = new Color(0.84f, 0.49f, 0.14f, 1f);
+        public Color grassBacksideColor = new Color(0.65f, 0.32f, 0.08f, 1f);
+        public Color grassFadeColor = new Color(0.30f, 0.17f, 0.05f, 1f);
         [Min(0.001f)] public float grassMacroScale = 0.018f;
         [Range(0f, 1f)] public float grassMacroStrength = 0.42f;
         [Range(0f, 1f)] public float grassAlphaClip = 0.35f;
