@@ -220,8 +220,14 @@ namespace Voyage.TerrainSystem
                 // Keep the terrain under the warm meadow grass. A deep
                 // green fallback makes every density gap read as a hole.
                 Color baseColor = new Color(0.34f, 0.24f, 0.10f, 1f);
+                Color shadowColor = new Color(0.25f, 0.18f, 0.08f, 1f);
+                Color ridgeColor = new Color(0.46f, 0.32f, 0.13f, 1f);
                 if (grasslandFallbackMaterial.HasProperty("_BaseColor")) grasslandFallbackMaterial.SetColor("_BaseColor", baseColor);
                 if (grasslandFallbackMaterial.HasProperty("_Color")) grasslandFallbackMaterial.SetColor("_Color", baseColor);
+                if (grasslandFallbackMaterial.HasProperty("_ShadowColor")) grasslandFallbackMaterial.SetColor("_ShadowColor", shadowColor);
+                if (grasslandFallbackMaterial.HasProperty("_RidgeColor")) grasslandFallbackMaterial.SetColor("_RidgeColor", ridgeColor);
+                if (grasslandFallbackMaterial.HasProperty("_MacroStrength")) grasslandFallbackMaterial.SetFloat("_MacroStrength", 0.12f);
+                if (grasslandFallbackMaterial.HasProperty("_HeightTint")) grasslandFallbackMaterial.SetFloat("_HeightTint", 0.10f);
                 if (grasslandFallbackMaterial.HasProperty("_Metallic")) grasslandFallbackMaterial.SetFloat("_Metallic", 0f);
                 if (grasslandFallbackMaterial.HasProperty("_Smoothness")) grasslandFallbackMaterial.SetFloat("_Smoothness", 0.15f);
                 grasslandFallbackMaterial.enableInstancing = true;
