@@ -61,6 +61,7 @@ namespace Voyage.TerrainSystem
         Matrix4x4[] instanceBatch;
         MaterialPropertyBlock instanceProperties;
         Mesh runtimeClusterMesh;
+        bool runtimeClusterMeshShared;
         Mesh runtimeDistantClusterMesh;
         public bool useIndirectRendering = true;
         ComputeBuffer indirectSourceBuffer;
@@ -129,6 +130,7 @@ namespace Voyage.TerrainSystem
                 // density/height settings. This updates old streamed tiles
                 // without creating a mesh for every tile.
                 runtimeClusterMesh = GetSharedClusterMesh(4);
+                runtimeClusterMeshShared = true;
                 instanceMatrices = new Matrix4x4[bakedClusters.Count];
                 for (int i = 0; i < instanceMatrices.Length; i++)
                 {
@@ -640,7 +642,7 @@ namespace Voyage.TerrainSystem
                 if (meshFilter != null && meshFilter.sharedMesh == mesh) meshFilter.sharedMesh = null;
             }
             if (mesh != null && mesh != bakedMesh) Destroy(mesh);
-            if (runtimeClusterMesh != null) Destroy(runtimeClusterMesh);
+            if (runtimeClusterMesh != null && !runtimeClusterMeshShared) Destroy(runtimeClusterMesh);
             if (runtimeDistantClusterMesh != null) Destroy(runtimeDistantClusterMesh);
             if (runtimeMaterial != null) Destroy(runtimeMaterial);
             ReleaseIndirectBuffers();
