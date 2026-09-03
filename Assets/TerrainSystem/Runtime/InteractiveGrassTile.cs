@@ -59,10 +59,12 @@ namespace Voyage.TerrainSystem
         Matrix4x4[] instanceBatch;
         MaterialPropertyBlock instanceProperties;
         Mesh runtimeClusterMesh;
+        Mesh runtimeDistantClusterMesh;
         public bool useIndirectRendering = true;
         ComputeBuffer indirectSourceBuffer;
         ComputeBuffer indirectVisibleBuffer;
         ComputeBuffer indirectArgsBuffer;
+        Mesh indirectMesh;
         ComputeShader indirectCullingShader;
         int indirectKernel = -1;
         Bounds indirectBounds;
@@ -122,6 +124,7 @@ namespace Voyage.TerrainSystem
                 }
                 instanceBatch = new Matrix4x4[1023];
                 instanceProperties = new MaterialPropertyBlock();
+                runtimeDistantClusterMesh = BuildClusterMesh(new System.Random(unchecked(tileCoordinate.x * 73856093 ^ tileCoordinate.y * 19349663 ^ 0x5F3759DF)), 2);
                 ApplyMaterialState();
                 return;
             }
@@ -163,7 +166,8 @@ namespace Voyage.TerrainSystem
             if (interaction != null && interaction.IsReady)
                 interaction.BindShaderProperties(instanceProperties);
             bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
-            Mesh drawMesh = hasBakedClusters ? bakedClusters.clusterMesh : runtimeClusterMesh != null ? runtimeClusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : null;
+            Mesh sourceMesh = hasBakedClusters ? bakedClusters.clusterMesh : runtimeClusterMesh != null ? runtimeClusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : null;
+            Mesh drawMesh = currentLod == 0 || runtimeDistantClusterMesh == null ? sourceMesh : runtimeDistantClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
             // Keep interactive grass on the regular instanced path while the
             // tire field is active. The indirect path uses a separate
@@ -208,7 +212,7 @@ namespace Voyage.TerrainSystem
                 if (indirectCullingShader == null) return false;
                 indirectKernel = indirectCullingShader.FindKernel("CSMain");
             }
-            if (indirectSourceBuffer == null || indirectSourceBuffer.count != instanceMatrices.Length)
+            if (indirectSourceBuffer == null || indirectSourceBuffer.count != instanceMatrices.Length || indirectMesh != drawMesh)
             {
                 ReleaseIndirectBuffers();
                 const int stride = sizeof(float) * 16;
@@ -217,6 +221,7 @@ namespace Voyage.TerrainSystem
                 indirectArgsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
                 indirectSourceBuffer.SetData(instanceMatrices);
                 indirectArgsBuffer.SetData(new uint[] { drawMesh.GetIndexCount(0), 0, drawMesh.GetIndexStart(0), drawMesh.GetBaseVertex(0), 0 });
+                indirectMesh = drawMesh;
                 indirectBounds = new Bounds(transform.position, new Vector3(100000f, 100000f, 100000f));
             }
             Camera camera = Camera.main;
@@ -263,6 +268,7 @@ namespace Voyage.TerrainSystem
             indirectSourceBuffer = null;
             indirectVisibleBuffer = null;
             indirectArgsBuffer = null;
+            indirectMesh = null;
         }
 
         IEnumerator BuildMeshAsync(Bounds worldBounds, Collider terrainCollider, int groundMask)
@@ -291,8 +297,13 @@ namespace Voyage.TerrainSystem
             bool prototypeNeedsExpandedGeometry = prototype != null &&
                                                   prototype.clusterMesh != null &&
                                                   prototype.clusterMesh.vertexCount < bladesPerCluster * 4 * 8;
+            int meshSeed = seed ^ unchecked((int)0x5F3759DF);
+            if (runtimeDistantClusterMesh == null)
+                runtimeDistantClusterMesh = BuildClusterMesh(new System.Random(meshSeed), 2);
             if (prototype == null || prototype.clusterMesh == null || prototypeNeedsExpandedGeometry)
-                runtimeClusterMesh = BuildClusterMesh(new System.Random(seed ^ unchecked((int)0x5F3759DF)));
+            {
+                runtimeClusterMesh = BuildClusterMesh(new System.Random(meshSeed), 4);
+            }
             // Publish one early batch for responsive streaming, then use
             // larger batches to avoid repeatedly allocating/copying the full
             // instance matrix array while the tile is still being sampled.
@@ -390,7 +401,7 @@ namespace Voyage.TerrainSystem
             ApplyMaterialState();
         }
 
-        Mesh BuildClusterMesh(System.Random random)
+        Mesh BuildClusterMesh(System.Random random, int planeCount)
         {
             var vertices = new List<Vector3>(bladesPerCluster * 32);
             var normals = new List<Vector3>(vertices.Capacity);
@@ -408,9 +419,12 @@ namespace Voyage.TerrainSystem
                 float yaw = (float)random.NextDouble() * Mathf.PI;
                 float variation = (float)random.NextDouble();
                 AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw, variation);
-                AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
-                AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
-                AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI * 0.25f, variation * 0.37f + 0.47f);
+                if (planeCount > 1)
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                if (planeCount > 2)
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
+                if (planeCount > 3)
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, triangles, local, h, w, yaw + Mathf.PI * 0.25f, variation * 0.37f + 0.47f);
             }
             var result = new Mesh { name = "Interactive Grass Cluster Mesh" };
             result.SetVertices(vertices); result.SetNormals(normals); result.SetUVs(0, uvs); result.SetUVs(1, randoms); result.SetUVs(2, bladeData); result.SetTriangles(triangles, 0, true); result.RecalculateBounds();
@@ -514,6 +528,7 @@ namespace Voyage.TerrainSystem
             }
             if (mesh != null && mesh != bakedMesh) Destroy(mesh);
             if (runtimeClusterMesh != null) Destroy(runtimeClusterMesh);
+            if (runtimeDistantClusterMesh != null) Destroy(runtimeDistantClusterMesh);
             if (runtimeMaterial != null) Destroy(runtimeMaterial);
             ReleaseIndirectBuffers();
             if (grassObject != null) Destroy(grassObject);
