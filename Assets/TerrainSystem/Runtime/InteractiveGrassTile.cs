@@ -68,6 +68,10 @@ namespace Voyage.TerrainSystem
         ComputeShader indirectCullingShader;
         int indirectKernel = -1;
         Bounds indirectBounds;
+        static readonly Plane[] sharedFrustumPlanes = new Plane[6];
+        static readonly Vector4[] sharedFrustumVectors = new Vector4[6];
+        static Camera sharedFrustumCamera;
+        static int sharedFrustumFrame = -1;
 
         void OnValidate()
         {
@@ -225,15 +229,25 @@ namespace Voyage.TerrainSystem
             }
             Camera camera = Camera.main;
             if (camera == null) return false;
-            Plane[] planes = GeometryUtility.CalculateFrustumPlanes(camera);
-            Vector4[] planeVectors = new Vector4[6];
-            for (int i = 0; i < planeVectors.Length; i++)
-                planeVectors[i] = new Vector4(planes[i].normal.x, planes[i].normal.y, planes[i].normal.z, planes[i].distance);
+            // Every indirect grass tile uses the same camera frustum in a
+            // frame. Cache the six planes and their compute-friendly vectors
+            // instead of allocating two arrays per tile per frame.
+            if (sharedFrustumFrame != Time.frameCount || sharedFrustumCamera != camera)
+            {
+                GeometryUtility.CalculateFrustumPlanes(camera, sharedFrustumPlanes);
+                for (int i = 0; i < sharedFrustumVectors.Length; i++)
+                {
+                    Plane plane = sharedFrustumPlanes[i];
+                    sharedFrustumVectors[i] = new Vector4(plane.normal.x, plane.normal.y, plane.normal.z, plane.distance);
+                }
+                sharedFrustumCamera = camera;
+                sharedFrustumFrame = Time.frameCount;
+            }
             indirectVisibleBuffer.SetCounterValue(0);
             indirectCullingShader.SetBuffer(indirectKernel, "_SourceMatrices", indirectSourceBuffer);
             indirectCullingShader.SetBuffer(indirectKernel, "_VisibleMatrices", indirectVisibleBuffer);
             indirectCullingShader.SetVector("_CameraPosition", camera.transform.position);
-            indirectCullingShader.SetVectorArray("_FrustumPlanes", planeVectors);
+            indirectCullingShader.SetVectorArray("_FrustumPlanes", sharedFrustumVectors);
             indirectCullingShader.SetFloat("_MaxDistance", Mathf.Max(fadeEnd, 1f));
             indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.58f : 0.24f);
             indirectCullingShader.SetFloat("_InstanceRadius", Mathf.Max(1f, bladeHeight + clusterRadius));
