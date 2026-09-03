@@ -20,6 +20,7 @@ Shader "Voyage/Grass/InteractiveLit"
         _RecoverySpeed ("Recovery Speed", Float) = 1.2
         _InteractionEnabled ("Interaction Enabled", Float) = 1
         _ImmediateInteractionEnabled ("Close Wheel Interaction", Float) = 1
+        _FieldInteractionEnabled ("Field Interaction", Float) = 1
         _DistantAlphaClip ("Distant Alpha Clip", Float) = 0
         _Density ("Density", Range(0,1)) = 1
         _AmbientStrength ("Ambient Strength", Range(0,2)) = 0.75
@@ -45,7 +46,6 @@ Shader "Voyage/Grass/InteractiveLit"
             #pragma fragment frag
             #pragma multi_compile_instancing
             #pragma instancing_options procedural:ConfigureProcedural
-            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
             #pragma multi_compile_fog
             #pragma target 3.5
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
@@ -103,6 +103,7 @@ Shader "Voyage/Grass/InteractiveLit"
             float _RecoverySpeed;
             float _InteractionEnabled;
             float _ImmediateInteractionEnabled;
+            float _FieldInteractionEnabled;
             float _DistantAlphaClip;
             float _Density;
             float _AmbientStrength;
@@ -228,7 +229,9 @@ Shader "Voyage/Grass/InteractiveLit"
                 // Keep sampling the field for diagnostics/recovery telemetry,
                 // but do not let a stale or reprojected texel bend an entire
                 // streamed tile. Actual deformation below is wheel-local.
-                float2 fieldBend = SampleBend(FieldUV(positionWS), temporaryWeight, recoveryAge);
+                float2 fieldBend = 0.0;
+                if (_FieldInteractionEnabled > 0.5)
+                    fieldBend = SampleBend(FieldUV(positionWS), temporaryWeight, recoveryAge);
                 // Direct wheel-space influence is intentionally local and is
                 // evaluated from world coordinates, so a bad tile/field
                 // reprojection can never flatten an entire grass chunk.
