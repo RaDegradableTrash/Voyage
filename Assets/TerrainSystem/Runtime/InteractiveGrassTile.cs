@@ -11,21 +11,21 @@ namespace Voyage.TerrainSystem
         static readonly Dictionary<int, Mesh> sharedClusterMeshes = new Dictionary<int, Mesh>();
 
         [Min(0.25f)] public float clusterSpacing = 0.38f;
-        [Min(1)] public int bladesPerCluster = 16;
-        [Min(0.05f)] public float clusterRadius = 0.62f;
-        [Min(0.1f)] public float bladeHeight = 1.6f;
+        [Min(1)] public int bladesPerCluster = 18;
+        [Min(0.05f)] public float clusterRadius = 0.70f;
+        [Min(0.1f)] public float bladeHeight = 1.75f;
         [Range(0f, 1f)] public float density = 1f;
         [Min(1)] public int clustersPerFrame = 96;
         [Min(1)] public int runtimeClusterBudget = 100000;
         [Header("Stylized appearance")]
-        public Color baseColor = new Color(0.72f, 0.38f, 0.10f, 1f);
-        public Color rootColor = new Color(0.58f, 0.30f, 0.08f, 1f);
-        public Color shadowColor = new Color(0.46f, 0.23f, 0.06f, 1f);
-        public Color tipColor = new Color(0.84f, 0.49f, 0.14f, 1f);
-        public Color backsideColor = new Color(0.65f, 0.32f, 0.08f, 1f);
-        public Color fadeColor = new Color(0.30f, 0.17f, 0.05f, 1f);
+        public Color baseColor = new Color(0.64f, 0.42f, 0.14f, 1f);
+        public Color rootColor = new Color(0.48f, 0.33f, 0.12f, 1f);
+        public Color shadowColor = new Color(0.40f, 0.28f, 0.10f, 1f);
+        public Color tipColor = new Color(0.78f, 0.56f, 0.22f, 1f);
+        public Color backsideColor = new Color(0.57f, 0.37f, 0.12f, 1f);
+        public Color fadeColor = new Color(0.36f, 0.24f, 0.09f, 1f);
         [Min(0.001f)] public float macroScale = 0.018f;
-        [Range(0f, 1f)] public float macroStrength = 0.42f;
+        [Range(0f, 1f)] public float macroStrength = 0.20f;
         [Range(0f, 1f)] public float alphaClip = 0.35f;
         [Min(0f)] public float fadeStart = 105f;
         [Min(0.01f)] public float fadeEnd = 495f;

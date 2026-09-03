@@ -3,12 +3,12 @@ Shader "Voyage/Grass/InteractiveLit"
     Properties
     {
         _Color ("Grass Color", Color) = (0.28, 0.38, 0.14, 1)
-        _BaseColor ("Base Color", Color) = (0.72, 0.38, 0.10, 1)
-        _RootColor ("Root Ground Color", Color) = (0.58, 0.30, 0.08, 1)
-        _ShadowColor ("Shadow Color", Color) = (0.46, 0.23, 0.06, 1)
-        _TipColor ("Clump Variation Color", Color) = (0.84, 0.49, 0.14, 1)
-        _BacksideColor ("Backside Warm Color", Color) = (0.65, 0.32, 0.08, 1)
-        _FadeColor ("Distance Meadow Color", Color) = (0.30, 0.17, 0.05, 1)
+        _BaseColor ("Base Color", Color) = (0.64, 0.42, 0.14, 1)
+        _RootColor ("Root Ground Color", Color) = (0.48, 0.33, 0.12, 1)
+        _ShadowColor ("Shadow Color", Color) = (0.40, 0.28, 0.10, 1)
+        _TipColor ("Clump Variation Color", Color) = (0.78, 0.56, 0.22, 1)
+        _BacksideColor ("Backside Warm Color", Color) = (0.57, 0.37, 0.12, 1)
+        _FadeColor ("Distance Meadow Color", Color) = (0.36, 0.24, 0.09, 1)
         _MacroScale ("Macro Variation Scale", Float) = 0.018
         _MacroStrength ("Macro Variation Strength", Range(0,1)) = 0.42
         _AlphaClip ("Alpha Clip", Range(0,1)) = 0.35

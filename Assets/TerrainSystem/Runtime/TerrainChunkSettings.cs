@@ -35,21 +35,21 @@ namespace Voyage.TerrainSystem
         [Header("Baked grass")]
         [Tooltip("Create one shared grass prototype during terrain baking; tile placement is generated on demand.")]
         public bool bakeGrass = false;
-        [Min(0.25f)] public float grassClusterSpacing = 0.38f;
-        [Min(1)] public int grassBladesPerCluster = 16;
-        [Min(0.05f)] public float grassClusterRadius = 0.62f;
-        [Min(0.1f)] public float grassBladeHeight = 1.6f;
+        [Min(0.25f)] public float grassClusterSpacing = 0.34f;
+        [Min(1)] public int grassBladesPerCluster = 18;
+        [Min(0.05f)] public float grassClusterRadius = 0.70f;
+        [Min(0.1f)] public float grassBladeHeight = 1.75f;
         [Range(0f, 1f)] public float grassDensity = 1f;
-        [Min(1)] public int grassClusterBudget = 50000;
+        [Min(1)] public int grassClusterBudget = 80000;
         [Header("Stylized grass appearance")]
-        public Color grassBaseColor = new Color(0.72f, 0.38f, 0.10f, 1f);
-        public Color grassRootColor = new Color(0.58f, 0.30f, 0.08f, 1f);
-        public Color grassShadowColor = new Color(0.46f, 0.23f, 0.06f, 1f);
-        public Color grassTipColor = new Color(0.84f, 0.49f, 0.14f, 1f);
-        public Color grassBacksideColor = new Color(0.65f, 0.32f, 0.08f, 1f);
-        public Color grassFadeColor = new Color(0.30f, 0.17f, 0.05f, 1f);
+        public Color grassBaseColor = new Color(0.64f, 0.42f, 0.14f, 1f);
+        public Color grassRootColor = new Color(0.48f, 0.33f, 0.12f, 1f);
+        public Color grassShadowColor = new Color(0.40f, 0.28f, 0.10f, 1f);
+        public Color grassTipColor = new Color(0.78f, 0.56f, 0.22f, 1f);
+        public Color grassBacksideColor = new Color(0.57f, 0.37f, 0.12f, 1f);
+        public Color grassFadeColor = new Color(0.36f, 0.24f, 0.09f, 1f);
         [Min(0.001f)] public float grassMacroScale = 0.018f;
-        [Range(0f, 1f)] public float grassMacroStrength = 0.42f;
+        [Range(0f, 1f)] public float grassMacroStrength = 0.20f;
         [Range(0f, 1f)] public float grassAlphaClip = 0.35f;
         [Min(0f)] public float grassFadeStart = 105f;
         [Min(0.01f)] public float grassFadeEnd = 495f;
