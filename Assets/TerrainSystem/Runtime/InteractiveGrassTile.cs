@@ -68,6 +68,10 @@ namespace Voyage.TerrainSystem
         ComputeShader indirectCullingShader;
         int indirectKernel = -1;
         Bounds indirectBounds;
+        RenderTexture boundInteractionField;
+        RenderTexture boundPermanentInteractionField;
+        Vector4 boundInteractionWorld;
+        bool hasBoundInteractionWorld;
         static readonly Plane[] sharedFrustumPlanes = new Plane[6];
         static readonly Vector4[] sharedFrustumVectors = new Vector4[6];
         static Camera sharedFrustumCamera;
@@ -168,7 +172,15 @@ namespace Voyage.TerrainSystem
             // wheel data on the first visible frame.
             BindInteractionField();
             if (interaction != null && interaction.IsReady)
-                interaction.BindShaderProperties(instanceProperties);
+            {
+                // Close LOD uses the per-draw property block for guaranteed
+                // live wheel contact. Indirect mid/far LODs use the globals
+                // published by GrassInteractionSystem; clearing a reused
+                // block prevents stale close-LOD wheel data from leaking into
+                // a distant tile.
+                if (currentLod == 0) interaction.BindShaderProperties(instanceProperties);
+                else instanceProperties.Clear();
+            }
             bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
             Mesh sourceMesh = hasBakedClusters ? bakedClusters.clusterMesh : runtimeClusterMesh != null ? runtimeClusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : null;
             Mesh drawMesh = currentLod == 0 || runtimeDistantClusterMesh == null ? sourceMesh : runtimeDistantClusterMesh;
@@ -268,9 +280,23 @@ namespace Voyage.TerrainSystem
             // This is a per-tile material instance. Bind the live field
             // locally so a material-local texture slot cannot mask the
             // dynamic tire interaction data published by the system.
-            runtimeMaterial.SetTexture("_VoyageGrassInteraction", interaction.Field);
-            runtimeMaterial.SetTexture("_VoyageGrassPermanentInteraction", interaction.PermanentField);
-            runtimeMaterial.SetVector("_VoyageGrassInteractionWorld", interaction.WorldToUv);
+            Vector4 world = interaction.WorldToUv;
+            if (boundInteractionField != interaction.Field)
+            {
+                runtimeMaterial.SetTexture("_VoyageGrassInteraction", interaction.Field);
+                boundInteractionField = interaction.Field;
+            }
+            if (boundPermanentInteractionField != interaction.PermanentField)
+            {
+                runtimeMaterial.SetTexture("_VoyageGrassPermanentInteraction", interaction.PermanentField);
+                boundPermanentInteractionField = interaction.PermanentField;
+            }
+            if (!hasBoundInteractionWorld || boundInteractionWorld != world)
+            {
+                runtimeMaterial.SetVector("_VoyageGrassInteractionWorld", world);
+                boundInteractionWorld = world;
+                hasBoundInteractionWorld = true;
+            }
         }
 
         void ReleaseIndirectBuffers()
