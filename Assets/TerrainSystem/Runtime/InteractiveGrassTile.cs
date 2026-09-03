@@ -237,7 +237,16 @@ namespace Voyage.TerrainSystem
                 indirectSourceBuffer.SetData(instanceMatrices);
                 indirectArgsBuffer.SetData(new uint[] { drawMesh.GetIndexCount(0), 0, drawMesh.GetIndexStart(0), drawMesh.GetBaseVertex(0), 0 });
                 indirectMesh = drawMesh;
-                indirectBounds = new Bounds(transform.position, new Vector3(100000f, 100000f, 100000f));
+                // Keep the vertical extent conservative because terrain
+                // bounds use a tall Y sentinel, but use the actual tile XZ
+                // footprint so Unity can reject off-screen indirect draws
+                // before dispatching the culling shader.
+                Vector3 boundsCenter = debugWorldBounds.center;
+                Vector3 boundsSize = debugWorldBounds.size;
+                boundsSize.x = Mathf.Max(1f, boundsSize.x + (bladeHeight + clusterRadius) * 2f);
+                boundsSize.z = Mathf.Max(1f, boundsSize.z + (bladeHeight + clusterRadius) * 2f);
+                boundsSize.y = Mathf.Max(1000f, Mathf.Min(boundsSize.y, 100000f));
+                indirectBounds = new Bounds(boundsCenter, boundsSize);
             }
             Camera camera = Camera.main;
             if (camera == null) return false;
