@@ -169,13 +169,12 @@ namespace Voyage.TerrainSystem
             Mesh sourceMesh = hasBakedClusters ? bakedClusters.clusterMesh : runtimeClusterMesh != null ? runtimeClusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : null;
             Mesh drawMesh = currentLod == 0 || runtimeDistantClusterMesh == null ? sourceMesh : runtimeDistantClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
-            // Keep interactive grass on the regular instanced path while the
-            // tire field is active. The indirect path uses a separate
-            // StructuredBuffer matrix stream; on some Unity/DX12 variants
-            // that path can render correctly while silently losing the
-            // per-draw wheel property block. Direct instancing guarantees the
-            // exact wheel data bound above reaches the vertex shader.
-            if (useIndirectRendering && (interaction == null || !interaction.IsReady) && TryDrawIndirect(drawMesh)) return;
+            // Keep the close LOD on direct instancing so the live wheel
+            // footprint is guaranteed to reach the vertex shader. Mid/far
+            // LODs no longer perform the six-wheel immediate test; they can
+            // therefore use GPU indirect culling even while the interaction
+            // field is active, reducing dozens of CPU draw calls to one.
+            if (useIndirectRendering && (currentLod >= 1 || interaction == null || !interaction.IsReady) && TryDrawIndirect(drawMesh)) return;
             // Generated prefabs may carry a material serialized before the
             // instanced grass path existed. Enforce this immediately before
             // drawing so stale material state cannot disable the whole pass.
