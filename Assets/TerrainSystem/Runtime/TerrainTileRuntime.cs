@@ -209,32 +209,26 @@ namespace Voyage.TerrainSystem
         private static void ApplyTerrainPalette(MeshRenderer renderer)
         {
             Material[] materials = renderer.sharedMaterials;
+            if (materials == null || materials.Length == 0) return;
+            if (grasslandFallbackMaterial == null)
+            {
+                Shader shader = Shader.Find("Voyage/Terrain/Stylized");
+                if (shader == null) shader = Shader.Find("Universal Render Pipeline/Lit");
+                if (shader == null) shader = Shader.Find("Standard");
+                if (shader == null) return;
+                grasslandFallbackMaterial = new Material(shader) { name = "Runtime Grassland Terrain Material" };
+                // Keep the terrain under the warm meadow grass. A deep
+                // green fallback makes every density gap read as a hole.
+                Color baseColor = new Color(0.34f, 0.24f, 0.10f, 1f);
+                if (grasslandFallbackMaterial.HasProperty("_BaseColor")) grasslandFallbackMaterial.SetColor("_BaseColor", baseColor);
+                if (grasslandFallbackMaterial.HasProperty("_Color")) grasslandFallbackMaterial.SetColor("_Color", baseColor);
+                if (grasslandFallbackMaterial.HasProperty("_Metallic")) grasslandFallbackMaterial.SetFloat("_Metallic", 0f);
+                if (grasslandFallbackMaterial.HasProperty("_Smoothness")) grasslandFallbackMaterial.SetFloat("_Smoothness", 0.15f);
+                grasslandFallbackMaterial.enableInstancing = true;
+            }
             bool changed = false;
             for (int i = 0; i < materials.Length; i++)
             {
-                Material material = materials[i];
-                if (material == null) continue;
-                // Generated terrain tiles are the grassland surface; their FBX
-                // material can be embedded under an unstable importer name.
-                // Replacing the whole tile material array avoids white/pink
-                // islands from stale source placeholders and keeps the palette
-                // consistent with the interactive grass.
-                if (grasslandFallbackMaterial == null)
-                {
-                    Shader shader = Shader.Find("Voyage/Terrain/Stylized");
-                    if (shader == null) shader = Shader.Find("Universal Render Pipeline/Lit");
-                    if (shader == null) shader = Shader.Find("Standard");
-                    if (shader == null) continue;
-                    grasslandFallbackMaterial = new Material(shader) { name = "Runtime Grassland Terrain Material" };
-                    // Keep the terrain under the warm meadow grass. A deep
-                    // green fallback makes every density gap read as a hole.
-                    Color baseColor = new Color(0.34f, 0.24f, 0.10f, 1f);
-                    if (grasslandFallbackMaterial.HasProperty("_BaseColor")) grasslandFallbackMaterial.SetColor("_BaseColor", baseColor);
-                    if (grasslandFallbackMaterial.HasProperty("_Color")) grasslandFallbackMaterial.SetColor("_Color", baseColor);
-                    if (grasslandFallbackMaterial.HasProperty("_Metallic")) grasslandFallbackMaterial.SetFloat("_Metallic", 0f);
-                    if (grasslandFallbackMaterial.HasProperty("_Smoothness")) grasslandFallbackMaterial.SetFloat("_Smoothness", 0.15f);
-                    grasslandFallbackMaterial.enableInstancing = true;
-                }
                 materials[i] = grasslandFallbackMaterial;
                 changed = true;
             }

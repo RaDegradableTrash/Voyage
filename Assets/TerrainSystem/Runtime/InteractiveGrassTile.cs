@@ -68,6 +68,9 @@ namespace Voyage.TerrainSystem
         ComputeBuffer indirectVisibleBuffer;
         ComputeBuffer indirectArgsBuffer;
         Mesh indirectMesh;
+        int lastIndirectCullFrame = -100;
+        int lastIndirectCullLod = -1;
+        Vector3 lastIndirectCullCameraPosition;
         ComputeShader indirectCullingShader;
         int indirectKernel = -1;
         Bounds indirectBounds;
@@ -273,16 +276,25 @@ namespace Voyage.TerrainSystem
                 sharedFrustumCamera = camera;
                 sharedFrustumFrame = Time.frameCount;
             }
-            indirectVisibleBuffer.SetCounterValue(0);
-            indirectCullingShader.SetBuffer(indirectKernel, "_SourceMatrices", indirectSourceBuffer);
-            indirectCullingShader.SetBuffer(indirectKernel, "_VisibleMatrices", indirectVisibleBuffer);
-            indirectCullingShader.SetVector("_CameraPosition", camera.transform.position);
-            indirectCullingShader.SetVectorArray("_FrustumPlanes", sharedFrustumVectors);
-            indirectCullingShader.SetFloat("_MaxDistance", Mathf.Max(fadeEnd, 1f));
-            indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.42f : 0.04f);
-            indirectCullingShader.SetFloat("_InstanceRadius", Mathf.Max(1f, bladeHeight + clusterRadius));
-            indirectCullingShader.Dispatch(indirectKernel, Mathf.CeilToInt(instanceMatrices.Length / 64f), 1, 1);
-            ComputeBuffer.CopyCount(indirectVisibleBuffer, indirectArgsBuffer, sizeof(uint));
+            bool recull = currentLod != lastIndirectCullLod ||
+                          Time.frameCount - lastIndirectCullFrame >= 3 ||
+                          (camera.transform.position - lastIndirectCullCameraPosition).sqrMagnitude > 4f;
+            if (recull)
+            {
+                indirectVisibleBuffer.SetCounterValue(0);
+                indirectCullingShader.SetBuffer(indirectKernel, "_SourceMatrices", indirectSourceBuffer);
+                indirectCullingShader.SetBuffer(indirectKernel, "_VisibleMatrices", indirectVisibleBuffer);
+                indirectCullingShader.SetVector("_CameraPosition", camera.transform.position);
+                indirectCullingShader.SetVectorArray("_FrustumPlanes", sharedFrustumVectors);
+                indirectCullingShader.SetFloat("_MaxDistance", Mathf.Max(fadeEnd, 1f));
+                indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.42f : 0.04f);
+                indirectCullingShader.SetFloat("_InstanceRadius", Mathf.Max(1f, bladeHeight + clusterRadius));
+                indirectCullingShader.Dispatch(indirectKernel, Mathf.CeilToInt(instanceMatrices.Length / 64f), 1, 1);
+                ComputeBuffer.CopyCount(indirectVisibleBuffer, indirectArgsBuffer, sizeof(uint));
+                lastIndirectCullFrame = Time.frameCount;
+                lastIndirectCullLod = currentLod;
+                lastIndirectCullCameraPosition = camera.transform.position;
+            }
             runtimeMaterial.SetBuffer("_VoyageGrassMatrices", indirectVisibleBuffer);
             Graphics.DrawMeshInstancedIndirect(drawMesh, 0, runtimeMaterial, indirectBounds, indirectArgsBuffer, 0,
                 instanceProperties, UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, camera,
@@ -326,6 +338,8 @@ namespace Voyage.TerrainSystem
             indirectVisibleBuffer = null;
             indirectArgsBuffer = null;
             indirectMesh = null;
+            lastIndirectCullFrame = -100;
+            lastIndirectCullLod = -1;
         }
 
         IEnumerator BuildMeshAsync(Bounds worldBounds, Collider terrainCollider, int groundMask)
