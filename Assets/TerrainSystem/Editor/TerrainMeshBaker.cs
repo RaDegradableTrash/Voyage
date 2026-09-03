@@ -261,12 +261,24 @@ namespace Voyage.TerrainSystem.Editor
             AssetDatabase.CreateAsset(lod2, lodFolder + tileName + "_LOD2.asset");
             AssetDatabase.CreateAsset(lod3, lodFolder + tileName + "_LOD3.asset");
             for (int i = 0; i < skirts.Length; i++) if (skirts[i] != null) AssetDatabase.CreateAsset(skirts[i], lodFolder + skirts[i].name + ".asset");
+            GrassChunkAsset bakedGrass = settings.bakeGrass
+                ? GrassMeshBaker.BuildAsset(data.triangles, tileOrigin, coordinate, settings, tileName + "_Grass")
+                : null;
+            if (bakedGrass != null)
+            {
+                // Keep the baked runtime asset distinct from the removable
+                // legacy *_Grass.asset cache handled by the editor window.
+                AssetDatabase.CreateAsset(bakedGrass, lodFolder + tileName + "_BakedGrass.asset");
+                if (bakedGrass.clusterMesh != null)
+                    AssetDatabase.AddObjectToAsset(bakedGrass.clusterMesh, bakedGrass);
+            }
             AssetDatabase.SaveAssets();
 
             GameObject prefabRoot = new GameObject(tileName);
             TerrainTileRuntime runtime = prefabRoot.AddComponent<TerrainTileRuntime>();
             InteractiveGrassTile grassRuntime = prefabRoot.AddComponent<InteractiveGrassTile>();
             grassRuntime.prototype = grassPrototype;
+            grassRuntime.bakedClusters = bakedGrass;
             grassRuntime.tileCoordinate = coordinate;
             grassRuntime.clusterSpacing = settings.grassClusterSpacing;
             grassRuntime.bladesPerCluster = settings.grassBladesPerCluster;
