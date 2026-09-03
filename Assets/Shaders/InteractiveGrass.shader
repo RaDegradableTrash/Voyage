@@ -19,6 +19,7 @@ Shader "Voyage/Grass/InteractiveLit"
         _BendStrength ("Interaction Bend", Float) = 1.0
         _RecoverySpeed ("Recovery Speed", Float) = 1.2
         _InteractionEnabled ("Interaction Enabled", Float) = 1
+        _ImmediateInteractionEnabled ("Close Wheel Interaction", Float) = 1
         _Density ("Density", Range(0,1)) = 1
         _AmbientStrength ("Ambient Strength", Range(0,2)) = 0.75
         _DirectLightStrength ("Direct Light Strength", Range(0,2)) = 1.0
@@ -100,6 +101,7 @@ Shader "Voyage/Grass/InteractiveLit"
             float _BendStrength;
             float _RecoverySpeed;
             float _InteractionEnabled;
+            float _ImmediateInteractionEnabled;
             float _Density;
             float _AmbientStrength;
             float _DirectLightStrength;
@@ -122,10 +124,9 @@ Shader "Voyage/Grass/InteractiveLit"
                 float3 normalWS : TEXCOORD1;
                 float2 uv : TEXCOORD2;
                 float2 instanceRandom : TEXCOORD3;
-                float4 shadowCoord : TEXCOORD4;
-                float farBlend : TEXCOORD5;
-                float bendAmount : TEXCOORD6;
-                float directBendAmount : TEXCOORD7;
+                float farBlend : TEXCOORD4;
+                float bendAmount : TEXCOORD5;
+                float directBendAmount : TEXCOORD6;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -214,7 +215,13 @@ Shader "Voyage/Grass/InteractiveLit"
                 // Direct wheel-space influence is intentionally local and is
                 // evaluated from world coordinates, so a bad tile/field
                 // reprojection can never flatten an entire grass chunk.
-                float2 immediateWheelBend = SampleImmediateWheelBend(positionWS);
+                // The six-wheel distance test is expensive at this vertex
+                // count. Keep it for the close LOD where tire contact is
+                // visible; mid/far LODs still use the filtered interaction
+                // field and therefore retain the broad tire trail.
+                float2 immediateWheelBend = _ImmediateInteractionEnabled > 0.5
+                    ? SampleImmediateWheelBend(positionWS)
+                    : 0.0;
                 // The wheel array is the authoritative footprint. Do not add
                 // a second body-derived footprint here: its inferred axle
                 // spacing can overlap an adjacent streamed tile and make a
@@ -310,7 +317,6 @@ Shader "Voyage/Grass/InteractiveLit"
                 output.normalWS = NormalizeNormalPerVertex(normalize(baseNormalWS + normalTilt));
                 output.uv = input.uv;
                 output.instanceRandom = input.instanceRandom;
-                output.shadowCoord = TransformWorldToShadowCoord(positionWS);
                 output.farBlend = farBlend;
                 // Keep the debug channel separate from wind: a red pixel must
                 // mean direct tire influence, not merely a wind-bent blade.
