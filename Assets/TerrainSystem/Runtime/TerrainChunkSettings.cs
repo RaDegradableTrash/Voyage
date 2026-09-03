@@ -80,7 +80,7 @@ namespace Voyage.TerrainSystem
         [Min(0)] public int loadedRadius = 1;
         [Min(0)] public int preloadRadius = 2;
         [Min(1)] public int unloadRadius = 3;
-        [Min(1)] public int maxConcurrentLoads = 2;
+        [Min(1)] public int maxConcurrentLoads = 1;
         [Min(0.1f)] public float retryDelay = 2f;
         [Min(0)] public int maxLoadRetries = 3;
         public bool prioritizeForward = true;

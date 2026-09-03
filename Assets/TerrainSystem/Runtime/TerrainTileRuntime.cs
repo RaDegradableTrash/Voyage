@@ -84,7 +84,7 @@ namespace Voyage.TerrainSystem
             }
 
             float distance = Vector3.Distance(bounds.ClosestPoint(cameraPosition), cameraPosition);
-            int lod = distance < settings.lod1Distance ? 0 : distance < settings.lod2Distance ? 1 : distance < settings.lod3Distance ? 2 : 3;
+            int lod = distance < settings.lod0Distance ? 0 : distance < settings.lod1Distance ? 1 : distance < settings.lod2Distance ? 2 : 3;
             SetLod(lod);
             EnsureGrassForCurrentLod(bounds);
             UpdateGrassInteractionProximity();
@@ -226,7 +226,9 @@ namespace Voyage.TerrainSystem
                     if (shader == null) shader = Shader.Find("Standard");
                     if (shader == null) continue;
                     grasslandFallbackMaterial = new Material(shader) { name = "Runtime Grassland Terrain Material" };
-                    Color baseColor = new Color(0.20f, 0.28f, 0.105f, 1f);
+                    // Keep the terrain under the warm meadow grass. A deep
+                    // green fallback makes every density gap read as a hole.
+                    Color baseColor = new Color(0.34f, 0.24f, 0.10f, 1f);
                     if (grasslandFallbackMaterial.HasProperty("_BaseColor")) grasslandFallbackMaterial.SetColor("_BaseColor", baseColor);
                     if (grasslandFallbackMaterial.HasProperty("_Color")) grasslandFallbackMaterial.SetColor("_Color", baseColor);
                     if (grasslandFallbackMaterial.HasProperty("_Metallic")) grasslandFallbackMaterial.SetFloat("_Metallic", 0f);

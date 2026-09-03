@@ -31,6 +31,9 @@ public sealed class DrivingCore : MonoBehaviour
     TerrainTileIndex terrainIndex;
     GrassInteractionSystem grassInteraction;
     readonly Dictionary<Vector2Int, GameObject> loadedTerrainTiles = new Dictionary<Vector2Int, GameObject>();
+    readonly Queue<TerrainTileRecord> pendingTerrainLoads = new Queue<TerrainTileRecord>();
+    readonly HashSet<Vector2Int> pendingTerrainCoordinates = new HashSet<Vector2Int>();
+    Coroutine terrainLoadRoutine;
     Vector2Int streamedCenter;
     bool hasStreamedCenter;
 
@@ -119,6 +122,8 @@ public sealed class DrivingCore : MonoBehaviour
         }
         Vector3 spawnPoint = new Vector3(-24f, 0f, -24f);
         StreamTerrain(spawnPoint, true);
+        while (loadedTerrainTiles.Count == 0 && pendingTerrainLoads.Count > 0)
+            yield return null;
         Physics.SyncTransforms();
         Debug.Log("FBX TERRAIN // loaded " + loadedTerrainTiles.Count + " nearby modeled blocks");
         yield return null;
@@ -154,25 +159,28 @@ public sealed class DrivingCore : MonoBehaviour
         for (int x = center.x - loadRadius; x <= center.x + loadRadius; x++)
             wanted.Add(new Vector2Int(x, y));
 
+        List<TerrainTileRecord> candidates = new List<TerrainTileRecord>();
         for (int i = 0; i < terrainIndex.tiles.Count; i++)
         {
             TerrainTileRecord record = terrainIndex.tiles[i];
-            if (record == null || !wanted.Contains(record.coordinate) || loadedTerrainTiles.ContainsKey(record.coordinate)) continue;
-            GameObject prefab = Resources.Load<GameObject>(record.resourcePath);
-            if (prefab == null) continue;
-            // Generated tile meshes are centered around local (0, 0, 0); place
-            // the root at the record center so neighboring tiles do not stack.
-            GameObject tileObject = Instantiate(prefab, record.bounds.center, Quaternion.identity);
-            tileObject.name = "FBX TERRAIN BLOCK " + record.coordinate;
-            TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
-            if (tile != null)
-            {
-                tile.Initialize(record, settings, false, position);
-                int distance = Mathf.Max(Mathf.Abs(record.coordinate.x - center.x), Mathf.Abs(record.coordinate.y - center.y));
-                tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
-            }
-            loadedTerrainTiles.Add(record.coordinate, tileObject);
+            if (record == null || !wanted.Contains(record.coordinate) ||
+                loadedTerrainTiles.ContainsKey(record.coordinate) ||
+                pendingTerrainCoordinates.Contains(record.coordinate)) continue;
+            candidates.Add(record);
         }
+        candidates.Sort((a, b) =>
+        {
+            float da = (a.bounds.center - position).sqrMagnitude;
+            float db = (b.bounds.center - position).sqrMagnitude;
+            return da.CompareTo(db);
+        });
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            pendingTerrainLoads.Enqueue(candidates[i]);
+            pendingTerrainCoordinates.Add(candidates[i].coordinate);
+        }
+        if (terrainLoadRoutine == null && pendingTerrainLoads.Count > 0)
+            terrainLoadRoutine = StartCoroutine(ProcessTerrainLoads(settings));
 
         UpdateLoadedTerrainLods(position, settings, center);
 
@@ -188,6 +196,41 @@ public sealed class DrivingCore : MonoBehaviour
             if (tile != null) Destroy(tile);
             loadedTerrainTiles.Remove(stale[i]);
         }
+    }
+
+    IEnumerator ProcessTerrainLoads(TerrainChunkSettings settings)
+    {
+        while (pendingTerrainLoads.Count > 0)
+        {
+            TerrainTileRecord record = pendingTerrainLoads.Dequeue();
+            pendingTerrainCoordinates.Remove(record.coordinate);
+            Vector2Int currentCenter = settings.WorldToTile(Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f));
+            int distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
+            int loadRadius = Mathf.Max(settings.loadedRadius, settings.preloadRadius);
+            if (distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
+            {
+                GameObject prefab = Resources.Load<GameObject>(record.resourcePath);
+                if (prefab != null)
+                {
+                    // Instantiate one tile per frame. This prevents a camera
+                    // move from synchronously creating an entire ring of
+                    // terrain, colliders, grass buffers, and materials.
+                    GameObject tileObject = Instantiate(prefab, record.bounds.center, Quaternion.identity);
+                    tileObject.name = "FBX TERRAIN BLOCK " + record.coordinate;
+                    TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
+                    if (tile != null)
+                    {
+                        Vector3 viewer = Player != null ? Player.transform.position : record.bounds.center;
+                        tile.Initialize(record, settings, false, viewer);
+                        tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
+                    }
+                    loadedTerrainTiles.Add(record.coordinate, tileObject);
+                }
+            }
+            Physics.SyncTransforms();
+            yield return null;
+        }
+        terrainLoadRoutine = null;
     }
 
     void UpdateLoadedTerrainLods(Vector3 position, TerrainChunkSettings settings, Vector2Int center)
