@@ -87,6 +87,15 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
     public Vector3 CurrentVelocity { get { return body != null ? body.linearVelocity : Vector3.zero; } }
     public Vector3 ForwardDirection { get { return transform.right * forwardSign; } }
     public VehicleState State { get { return state; } }
+    public int GrassInteractionWheelCount { get { return wheels.Length; } }
+    public Vector3 GetGrassInteractionWheelPosition(int index)
+    {
+        if (index < 0 || index >= wheels.Length || wheels[index] == null)
+            return transform.position;
+        WheelData wheel = wheels[index];
+        if (wheel.grounded) return wheel.contactPoint;
+        return transform.TransformPoint(wheel.localHardpoint - Vector3.up * suspensionLength - Vector3.up * tireRadius);
+    }
     public int GroundedCount
     {
         get

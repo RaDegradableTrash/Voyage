@@ -84,7 +84,7 @@ namespace Voyage.TerrainSystem
             }
 
             float distance = Vector3.Distance(bounds.ClosestPoint(cameraPosition), cameraPosition);
-            int lod = distance < settings.lod1Distance ? 0 : distance < settings.lod2Distance ? 1 : distance < settings.lod3Distance ? 2 : 3;
+            int lod = distance < settings.lod0Distance ? 0 : distance < settings.lod1Distance ? 1 : distance < settings.lod2Distance ? 2 : 3;
             SetLod(lod);
             EnsureGrassForCurrentLod(bounds);
             UpdateGrassInteractionProximity();
@@ -103,6 +103,24 @@ namespace Voyage.TerrainSystem
             if (grass == null && currentLod < 3)
                 grass = gameObject.AddComponent<InteractiveGrassTile>();
             if (grass == null) return;
+            if (settings != null)
+            {
+                Shader.SetGlobalVector("_VoyageGrassWind", new Vector4(
+                    settings.grassWindDirection.x, settings.grassWindDirection.y,
+                    settings.grassWindSpeed, settings.grassWindGust));
+                grass.baseColor = settings.grassBaseColor;
+                grass.rootColor = settings.grassRootColor;
+                grass.shadowColor = settings.grassShadowColor;
+                grass.tipColor = settings.grassTipColor;
+                grass.backsideColor = settings.grassBacksideColor;
+                grass.fadeColor = settings.grassFadeColor;
+                grass.macroScale = settings.grassMacroScale;
+                grass.macroStrength = settings.grassMacroStrength;
+                grass.alphaClip = settings.grassAlphaClip;
+                grass.fadeStart = settings.grassFadeStart;
+                grass.fadeEnd = settings.grassFadeEnd;
+                grass.useIndirectRendering = settings.useIndirectGrass;
+            }
             // Legacy prefabs do not contain the baked cluster asset. Configure
             // their runtime fallback from the current settings so they do not
             // silently fall back to the sparse component defaults. Keep the
@@ -119,7 +137,7 @@ namespace Voyage.TerrainSystem
                 // but made the streamed fallback visibly empty. Keep the
                 // budget authored in settings while still protecting against
                 // an accidental unbounded value.
-                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 50000);
+                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 100000);
                 grass.fullDensityBelowSlope = settings.grassFullDensityBelowSlope;
                 grass.noGrassAboveSlope = settings.grassNoGrassAboveSlope;
             }
@@ -191,29 +209,32 @@ namespace Voyage.TerrainSystem
         private static void ApplyTerrainPalette(MeshRenderer renderer)
         {
             Material[] materials = renderer.sharedMaterials;
+            if (materials == null || materials.Length == 0) return;
+            if (grasslandFallbackMaterial == null)
+            {
+                Shader shader = Shader.Find("Voyage/Terrain/Stylized");
+                if (shader == null) shader = Shader.Find("Universal Render Pipeline/Lit");
+                if (shader == null) shader = Shader.Find("Standard");
+                if (shader == null) return;
+                grasslandFallbackMaterial = new Material(shader) { name = "Runtime Grassland Terrain Material" };
+                // Keep the terrain under the warm meadow grass. A deep
+                // green fallback makes every density gap read as a hole.
+                Color baseColor = new Color(0.34f, 0.24f, 0.10f, 1f);
+                Color shadowColor = new Color(0.25f, 0.18f, 0.08f, 1f);
+                Color ridgeColor = new Color(0.46f, 0.32f, 0.13f, 1f);
+                if (grasslandFallbackMaterial.HasProperty("_BaseColor")) grasslandFallbackMaterial.SetColor("_BaseColor", baseColor);
+                if (grasslandFallbackMaterial.HasProperty("_Color")) grasslandFallbackMaterial.SetColor("_Color", baseColor);
+                if (grasslandFallbackMaterial.HasProperty("_ShadowColor")) grasslandFallbackMaterial.SetColor("_ShadowColor", shadowColor);
+                if (grasslandFallbackMaterial.HasProperty("_RidgeColor")) grasslandFallbackMaterial.SetColor("_RidgeColor", ridgeColor);
+                if (grasslandFallbackMaterial.HasProperty("_MacroStrength")) grasslandFallbackMaterial.SetFloat("_MacroStrength", 0.12f);
+                if (grasslandFallbackMaterial.HasProperty("_HeightTint")) grasslandFallbackMaterial.SetFloat("_HeightTint", 0.10f);
+                if (grasslandFallbackMaterial.HasProperty("_Metallic")) grasslandFallbackMaterial.SetFloat("_Metallic", 0f);
+                if (grasslandFallbackMaterial.HasProperty("_Smoothness")) grasslandFallbackMaterial.SetFloat("_Smoothness", 0.15f);
+                grasslandFallbackMaterial.enableInstancing = true;
+            }
             bool changed = false;
             for (int i = 0; i < materials.Length; i++)
             {
-                Material material = materials[i];
-                if (material == null) continue;
-                // Generated terrain tiles are the grassland surface; their FBX
-                // material can be embedded under an unstable importer name.
-                // Replacing the whole tile material array avoids white/pink
-                // islands from stale source placeholders and keeps the palette
-                // consistent with the interactive grass.
-                if (grasslandFallbackMaterial == null)
-                {
-                    Shader shader = Shader.Find("Universal Render Pipeline/Lit");
-                    if (shader == null) shader = Shader.Find("Standard");
-                    if (shader == null) continue;
-                    grasslandFallbackMaterial = new Material(shader) { name = "Runtime Grassland Terrain Material" };
-                    Color baseColor = new Color(0.20f, 0.28f, 0.105f, 1f);
-                    if (grasslandFallbackMaterial.HasProperty("_BaseColor")) grasslandFallbackMaterial.SetColor("_BaseColor", baseColor);
-                    if (grasslandFallbackMaterial.HasProperty("_Color")) grasslandFallbackMaterial.SetColor("_Color", baseColor);
-                    if (grasslandFallbackMaterial.HasProperty("_Metallic")) grasslandFallbackMaterial.SetFloat("_Metallic", 0f);
-                    if (grasslandFallbackMaterial.HasProperty("_Smoothness")) grasslandFallbackMaterial.SetFloat("_Smoothness", 0.15f);
-                    grasslandFallbackMaterial.enableInstancing = true;
-                }
                 materials[i] = grasslandFallbackMaterial;
                 changed = true;
             }

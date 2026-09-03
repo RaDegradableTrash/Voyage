@@ -11,25 +11,58 @@ namespace Voyage.TerrainSystem
     [DefaultExecutionOrder(-200)]
     public sealed class GrassInteractionSystem : MonoBehaviour
     {
+        public enum GrassDebugState
+        {
+            Outside,
+            WindOnly,
+            NearbyIdle,
+            Pressing,
+            Recovering
+        }
+
+        [Header("Debug")]
+        [Tooltip("Color grass by its current wheel interaction state and show wheel state text in Game view.")]
+        public bool debugGrassStateMachine;
+        [Tooltip("Draw the streamed grass-tile state and wheel influence bounds in the Scene view.")]
+        public bool debugDrawTileStates = true;
+        [Tooltip("Runtime key used to toggle the debug overlay and shader colors.")]
+        public KeyCode debugToggleKey = KeyCode.F10;
+
         public static GrassInteractionSystem Instance { get; private set; }
 
         [Header("World-space field")]
         [Min(16)] public int resolution = 512;
         [Min(16f)] public float worldSize = 160f;
-        [Min(0.01f)] public float decayPerSecond = 0.28f;
+        [Tooltip("Exponential recovery speed; 0.3 leaves about 5% of the press after 10 seconds, with per-blade variation in the shader.")]
+        [Min(0.01f)] public float decayPerSecond = 0.3f;
         [Min(0.01f)] public float maxStampDistance = 12f;
         [Min(1f)] public float maxTeleportDistance = 80f;
         [Min(0.1f)] public float speedForFullBend = 12f;
+        [Tooltip("Rigidbody mass at which a tire applies maximum grass pressure.")]
+        [Min(1f)] public float massForFullPressure = 2500f;
+        [Tooltip("Minimum horizontal vehicle speed required to refresh wheel impressions. Prevents parked suspension jitter from resetting recovery.")]
+        [Min(0f)] public float minimumVehicleSpeed = 0.08f;
+        [Tooltip("Minimum horizontal wheel/contact movement used to create a tire segment.")]
+        [Min(0f)] public float minimumWheelTravel = 0.02f;
         [Min(1)] public int liveStampsPerFrame = 96;
         [Min(64)] public int maxPendingStamps = 2048;
         [Min(1)] public int permanentRebuildStampsPerFrame = 96;
-        public bool recordPermanentTracks = true;
+        // Vehicle impressions are temporary gameplay feedback. Keeping this
+        // off ensures every tire track recovers instead of remaining bent.
+        public bool recordPermanentTracks = false;
         public Transform followTarget;
 
         readonly List<Transform> vehicles = new List<Transform>();
         readonly List<WheelState> wheelStates = new List<WheelState>();
         readonly List<EmitterState> emitters = new List<EmitterState>();
         readonly Queue<PendingStamp> pendingStamps = new Queue<PendingStamp>();
+        const int MaxShaderWheels = 8;
+        readonly Vector4[] shaderWheelPositions = new Vector4[MaxShaderWheels];
+        readonly Vector4[] shaderWheelDirections = new Vector4[MaxShaderWheels];
+        Vector4 shaderVehicleData;
+        Vector4 shaderVehicleParams;
+        Vector3 previousFollowTargetPosition;
+        bool hasPreviousFollowTargetPosition;
         RenderTexture field;
         RenderTexture scratch;
         RenderTexture permanentField;
@@ -49,8 +82,18 @@ namespace Voyage.TerrainSystem
         sealed class WheelState
         {
             public Transform wheel;
+            public Rigidbody body;
+            public VehicleTerrainFollower terrainFollower;
+            // -1 means this is a real WheelCollider.  Runtime raycast cars
+            // use the follower's contact array instead of a WheelCollider.
+            public int followerWheelIndex = -1;
+            public float radius;
             public Vector3 previous;
             public bool valid;
+            public GrassDebugState debugState;
+            public float lastPressedTime = -1000f;
+            public Vector3 shaderMotionVelocity;
+            public bool pressingThisFrame;
         }
 
         sealed class EmitterState
@@ -79,6 +122,9 @@ namespace Voyage.TerrainSystem
             maxStampDistance = Mathf.Max(0.01f, maxStampDistance);
             maxTeleportDistance = Mathf.Max(maxStampDistance, maxTeleportDistance);
             speedForFullBend = Mathf.Max(0.1f, speedForFullBend);
+            massForFullPressure = Mathf.Max(1f, massForFullPressure);
+            minimumVehicleSpeed = Mathf.Max(0f, minimumVehicleSpeed);
+            minimumWheelTravel = Mathf.Max(0f, minimumWheelTravel);
             liveStampsPerFrame = Mathf.Max(1, liveStampsPerFrame);
             maxPendingStamps = Mathf.Max(64, maxPendingStamps);
             permanentRebuildStampsPerFrame = Mathf.Max(1, permanentRebuildStampsPerFrame);
@@ -90,6 +136,112 @@ namespace Voyage.TerrainSystem
         public int RegisteredWheelCount => wheelStates.Count;
         public int PendingStampCount => pendingStamps.Count;
         public Vector4 WorldToUv => new Vector4(fieldCenter.x, fieldCenter.z, worldSize, resolution);
+
+        public void BindShaderProperties(Material target)
+        {
+            if (target == null || !initialized) return;
+            target.SetTexture("_VoyageGrassInteraction", field);
+            target.SetTexture("_VoyageGrassPermanentInteraction", permanentField);
+            target.SetVector("_VoyageGrassInteractionWorld", WorldToUv);
+            target.SetVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
+            target.SetVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
+            SetIndividualWheelProperties(target);
+            target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
+            target.SetVector("_VoyageGrassVehicleData", shaderVehicleData);
+            target.SetVector("_VoyageGrassVehicleParams", shaderVehicleParams);
+            target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
+        }
+
+        public void BindShaderProperties(MaterialPropertyBlock target)
+        {
+            if (target == null || !initialized) return;
+            target.SetTexture("_VoyageGrassInteraction", field);
+            target.SetTexture("_VoyageGrassPermanentInteraction", permanentField);
+            target.SetVector("_VoyageGrassInteractionWorld", WorldToUv);
+            target.SetVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
+            target.SetVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
+            SetIndividualWheelProperties(target);
+            target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
+            target.SetVector("_VoyageGrassVehicleData", shaderVehicleData);
+            target.SetVector("_VoyageGrassVehicleParams", shaderVehicleParams);
+            target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
+        }
+
+        void SetIndividualWheelProperties(Material target)
+        {
+            target.SetVector("_VoyageGrassWheel0", shaderWheelPositions[0]);
+            target.SetVector("_VoyageGrassWheel1", shaderWheelPositions[1]);
+            target.SetVector("_VoyageGrassWheel2", shaderWheelPositions[2]);
+            target.SetVector("_VoyageGrassWheel3", shaderWheelPositions[3]);
+            target.SetVector("_VoyageGrassWheel4", shaderWheelPositions[4]);
+            target.SetVector("_VoyageGrassWheel5", shaderWheelPositions[5]);
+            target.SetVector("_VoyageGrassWheelDirection0", shaderWheelDirections[0]);
+            target.SetVector("_VoyageGrassWheelDirection1", shaderWheelDirections[1]);
+            target.SetVector("_VoyageGrassWheelDirection2", shaderWheelDirections[2]);
+            target.SetVector("_VoyageGrassWheelDirection3", shaderWheelDirections[3]);
+            target.SetVector("_VoyageGrassWheelDirection4", shaderWheelDirections[4]);
+            target.SetVector("_VoyageGrassWheelDirection5", shaderWheelDirections[5]);
+        }
+
+        void SetIndividualWheelProperties(MaterialPropertyBlock target)
+        {
+            target.SetVector("_VoyageGrassWheel0", shaderWheelPositions[0]);
+            target.SetVector("_VoyageGrassWheel1", shaderWheelPositions[1]);
+            target.SetVector("_VoyageGrassWheel2", shaderWheelPositions[2]);
+            target.SetVector("_VoyageGrassWheel3", shaderWheelPositions[3]);
+            target.SetVector("_VoyageGrassWheel4", shaderWheelPositions[4]);
+            target.SetVector("_VoyageGrassWheel5", shaderWheelPositions[5]);
+            target.SetVector("_VoyageGrassWheelDirection0", shaderWheelDirections[0]);
+            target.SetVector("_VoyageGrassWheelDirection1", shaderWheelDirections[1]);
+            target.SetVector("_VoyageGrassWheelDirection2", shaderWheelDirections[2]);
+            target.SetVector("_VoyageGrassWheelDirection3", shaderWheelDirections[3]);
+            target.SetVector("_VoyageGrassWheelDirection4", shaderWheelDirections[4]);
+            target.SetVector("_VoyageGrassWheelDirection5", shaderWheelDirections[5]);
+        }
+
+        public GrassDebugState GetDebugState(Vector3 position)
+        {
+            float nearestDistance = float.MaxValue;
+            bool hasMovingWheel = false;
+            for (int i = 0; i < wheelStates.Count; i++)
+            {
+                WheelState wheel = wheelStates[i];
+                if (!wheel.valid || wheel.wheel == null) continue;
+                Vector3 anchor = GetWheelAnchor(wheel);
+                float distance = Vector2.Distance(new Vector2(position.x, position.z),
+                                                  new Vector2(anchor.x, anchor.z));
+                nearestDistance = Mathf.Min(nearestDistance, distance);
+                if (wheel.debugState == GrassDebugState.Pressing) hasMovingWheel = true;
+            }
+
+            if (nearestDistance == float.MaxValue) return GrassDebugState.Outside;
+            if (hasMovingWheel && nearestDistance <= 2.4f) return GrassDebugState.Pressing;
+            if (nearestDistance <= 2.4f) return GrassDebugState.NearbyIdle;
+            return GrassDebugState.WindOnly;
+        }
+
+        public GrassDebugState GetDebugState(Bounds bounds, out float nearestWheelDistance, out int pressingWheelCount)
+        {
+            nearestWheelDistance = float.MaxValue;
+            pressingWheelCount = 0;
+            bool recovering = false;
+            for (int i = 0; i < wheelStates.Count; i++)
+            {
+                WheelState wheel = wheelStates[i];
+                if (!wheel.valid || wheel.wheel == null) continue;
+                Vector3 anchor = GetWheelAnchor(wheel);
+                Vector3 closest = bounds.ClosestPoint(anchor);
+                float distance = Vector2.Distance(new Vector2(anchor.x, anchor.z), new Vector2(closest.x, closest.z));
+                nearestWheelDistance = Mathf.Min(nearestWheelDistance, distance);
+                float influenceRadius = Mathf.Max(2.4f, wheel.radius * 3f);
+                if (distance <= influenceRadius && wheel.debugState == GrassDebugState.Pressing) pressingWheelCount++;
+                if (distance <= influenceRadius && wheel.debugState == GrassDebugState.Recovering) recovering = true;
+            }
+            if (pressingWheelCount > 0) return GrassDebugState.Pressing;
+            if (recovering) return GrassDebugState.Recovering;
+            if (nearestWheelDistance <= 2.4f) return GrassDebugState.NearbyIdle;
+            return nearestWheelDistance == float.MaxValue ? GrassDebugState.Outside : GrassDebugState.WindOnly;
+        }
 
         void Awake()
         {
@@ -128,10 +280,21 @@ namespace Voyage.TerrainSystem
             if (initialized) PublishGlobals();
         }
 
+        void Update()
+        {
+            if (debugToggleKey != KeyCode.None && Input.GetKeyDown(debugToggleKey))
+            {
+                debugGrassStateMachine = !debugGrassStateMachine;
+                PublishGlobals();
+            }
+        }
+
         public void SetTarget(Transform target)
         {
             if (followTarget == target) return;
             followTarget = target;
+            previousFollowTargetPosition = target != null ? target.position : Vector3.zero;
+            hasPreviousFollowTargetPosition = target != null;
             // A new target means the old wheel contact baselines are not
             // spatially continuous. Force a fresh world-space anchor and let
             // the next valid WheelCollider hit establish new baselines.
@@ -145,7 +308,43 @@ namespace Voyage.TerrainSystem
             vehicles.Add(vehicle.transform);
             WheelCollider[] colliders = vehicle.GetComponentsInChildren<WheelCollider>(true);
             for (int i = 0; i < colliders.Length; i++)
-                wheelStates.Add(new WheelState { wheel = colliders[i].transform });
+            {
+                Transform wheel = colliders[i].transform;
+                Rigidbody body = vehicle.GetComponent<Rigidbody>();
+                if (body == null) body = wheel.GetComponentInParent<Rigidbody>();
+                VehicleTerrainFollower terrainFollower = vehicle.GetComponent<VehicleTerrainFollower>();
+                if (terrainFollower == null) terrainFollower = wheel.GetComponentInParent<VehicleTerrainFollower>();
+                wheelStates.Add(new WheelState
+                {
+                    wheel = wheel,
+                    body = body,
+                    terrainFollower = terrainFollower,
+                    radius = Mathf.Max(0.35f, colliders[i].radius)
+                });
+            }
+
+            if (colliders.Length == 0)
+            {
+                PlayerCar playerCar = vehicle.GetComponent<PlayerCar>();
+                VehicleTerrainFollower follower = vehicle.GetComponent<VehicleTerrainFollower>();
+                IReadOnlyList<Transform> runtimeWheels = playerCar != null ? playerCar.GrassInteractionWheelTransforms : null;
+                if (runtimeWheels != null)
+                {
+                    for (int i = 0; i < runtimeWheels.Count; i++)
+                    {
+                        Transform wheel = runtimeWheels[i];
+                        if (wheel == null) continue;
+                        wheelStates.Add(new WheelState
+                        {
+                        wheel = wheel,
+                        body = vehicle.GetComponent<Rigidbody>(),
+                        terrainFollower = follower,
+                        followerWheelIndex = i,
+                        radius = follower != null ? Mathf.Max(0.35f, follower.tireRadius) : 0.45f
+                        });
+                    }
+                }
+            }
         }
 
         public void RegisterEmitter(Transform target, float radius, float minimumTravel)
@@ -187,11 +386,30 @@ namespace Voyage.TerrainSystem
                     wheelStates.RemoveAt(i);
                 }
             }
+            for (int i = emitters.Count - 1; i >= 0; i--)
+            {
+                Transform emitter = emitters[i].target;
+                if (emitter == null || emitter == root || emitter.IsChildOf(root))
+                    emitters.RemoveAt(i);
+            }
         }
 
         void LateUpdate()
         {
             if (!initialized) return;
+
+            // The vehicle is spawned asynchronously and may be recreated
+            // after a domain/scene reload. Recover the live target and its
+            // interaction registration instead of depending on one bootstrap
+            // callback to run in the right order.
+            if (followTarget == null)
+            {
+                PlayerCar playerCar = FindAnyObjectByType<PlayerCar>();
+                if (playerCar != null) SetTarget(playerCar.transform);
+            }
+            if (followTarget != null && !HasRegisteredVehicle(followTarget))
+                RegisterVehicle(followTarget.gameObject);
+
             if (followTarget != null)
             {
                 Vector3 targetCenter = followTarget.position;
@@ -236,6 +454,8 @@ namespace Voyage.TerrainSystem
             Swap();
             ProcessPermanentFieldRebuild();
 
+            EnsureRuntimeVehicleWheels();
+
             for (int i = vehicles.Count - 1; i >= 0; i--)
                 if (vehicles[i] == null) vehicles.RemoveAt(i);
 
@@ -249,33 +469,68 @@ namespace Voyage.TerrainSystem
                     continue;
                 }
                 WheelCollider collider = state.wheel.GetComponent<WheelCollider>();
-                if (collider == null)
+                // The project vehicle is a raycast vehicle: its four visual
+                // wheel transforms are the interaction sources, but they do
+                // not have WheelCollider components. Do not delete those
+                // states just because they are not physics WheelColliders.
+                if (collider == null && state.terrainFollower == null)
                 {
                     if (permanentTrackStore != null) permanentTrackStore.ForgetSource(state.wheel);
                     wheelStates.RemoveAt(i);
                     continue;
                 }
-                if (!collider.GetGroundHit(out WheelHit hit)) { state.valid = false; continue; }
-                Vector3 current = hit.point;
+                // Use the wheel pivot's XZ as the footprint anchor. WheelCollider
+                // contact points are solver results and can remain fixed (or
+                // report no hit) while the chassis is being driven over a
+                // streamed mesh. The pivot follows every axle, so all wheels
+                // produce a continuous world-space tire path.
+                Vector3 current = GetWheelAnchor(state);
                 if (!state.valid) { state.previous = current; state.valid = true; continue; }
-                bool currentOutside = IsOutsideField(current, collider.radius);
-                bool previousOutside = IsOutsideField(state.previous, collider.radius);
+                state.pressingThisFrame = false;
+                bool currentOutside = IsOutsideField(current, state.radius);
+                bool previousOutside = IsOutsideField(state.previous, state.radius);
                 // Do not queue or persist tracks for entities that are wholly
                 // outside the active world-space window. Keeping the latest
                 // contact as the baseline still lets a distant wheel enter
                 // the window without producing a teleport-length segment.
                 if (currentOutside && previousOutside)
                 {
+                    state.debugState = GrassDebugState.Outside;
                     state.previous = current;
                     continue;
                 }
                 Vector3 delta = current - state.previous;
                 float distance = new Vector2(delta.x, delta.z).magnitude;
                 if (distance > maxTeleportDistance) state.previous = current;
-                else if (distance > 0.001f)
+                else if (IsVehicleMoving(state, distance, out Vector3 motionVelocity))
                 {
+                    if (motionVelocity.sqrMagnitude < 0.0001f && distance > 0.0001f)
+                        motionVelocity = (current - state.previous) / Mathf.Max(Time.deltaTime, 0.0001f);
+                    motionVelocity.y = 0f;
+                    state.shaderMotionVelocity = motionVelocity;
+                    state.pressingThisFrame = true;
+                    state.debugState = GrassDebugState.Pressing;
+                    state.lastPressedTime = Time.time;
                     Transform wheelSource = state.wheel;
-                    QueueSegment(state.previous, current, collider.radius, wheelSource);
+                    // On a WheelCollider the reported contact point can stay
+                    // almost fixed while the rigidbody travels over a smooth
+                    // triangle. Use the contact point as the footprint anchor
+                    // and the body velocity to reconstruct the tire path in
+                    // that case. This also keeps the path directional instead
+                    // of degenerating into an upward-facing point stamp.
+                    Vector3 from = state.previous;
+                    if (distance <= minimumWheelTravel)
+                        from = current - motionVelocity * Time.deltaTime;
+                    QueueSegment(from, current, state.radius, wheelSource);
+                }
+                else if (Time.time - state.lastPressedTime < 10f)
+                {
+                    state.debugState = GrassDebugState.Recovering;
+                }
+                else
+                {
+                    state.shaderMotionVelocity = Vector3.zero;
+                    state.debugState = GrassDebugState.NearbyIdle;
                 }
                 state.previous = current;
             }
@@ -303,6 +558,107 @@ namespace Voyage.TerrainSystem
             }
             ProcessPendingStamps();
             PublishGlobals();
+        }
+
+        bool HasRegisteredVehicle(Transform root)
+        {
+            for (int i = 0; i < vehicles.Count; i++)
+                if (vehicles[i] == root) return true;
+            return false;
+        }
+
+        void EnsureRuntimeVehicleWheels()
+        {
+            for (int vehicleIndex = 0; vehicleIndex < vehicles.Count; vehicleIndex++)
+            {
+                Transform root = vehicles[vehicleIndex];
+                if (root == null) continue;
+                PlayerCar playerCar = root.GetComponent<PlayerCar>();
+                if (playerCar == null) continue;
+                VehicleTerrainFollower follower = root.GetComponent<VehicleTerrainFollower>();
+                IReadOnlyList<Transform> runtimeWheels = playerCar.GrassInteractionWheelTransforms;
+                if (runtimeWheels == null) continue;
+                for (int wheelIndex = 0; wheelIndex < runtimeWheels.Count; wheelIndex++)
+                {
+                    Transform wheel = runtimeWheels[wheelIndex];
+                    if (wheel == null || HasWheelState(wheel)) continue;
+                    wheelStates.Add(new WheelState
+                    {
+                    wheel = wheel,
+                        body = root.GetComponent<Rigidbody>(),
+                        terrainFollower = follower,
+                        followerWheelIndex = wheelIndex,
+                        radius = follower != null ? Mathf.Max(0.35f, follower.tireRadius) : 0.45f
+                    });
+                }
+            }
+        }
+
+        bool HasWheelState(Transform wheel)
+        {
+            for (int i = 0; i < wheelStates.Count; i++)
+                if (wheelStates[i].wheel == wheel) return true;
+            return false;
+        }
+
+        Vector3 GetWheelAnchor(WheelState state)
+        {
+            if (state != null && state.terrainFollower != null && state.followerWheelIndex >= 0)
+            {
+                // PlayerCar can expose six visual wheels while the raycast
+                // follower owns only four suspension records. Never index the
+                // follower with the extra visual wheels: invalid indices fall
+                // back to the vehicle root and make unrelated grass respond
+                // as if it were under a tire. The visual wheel pivot is the
+                // authoritative XZ footprint for every axle; Y is irrelevant
+                // to the world-space grass field and shader footprint.
+                Vector3 visualWheelPosition = state.wheel != null ? state.wheel.position : state.terrainFollower.transform.position;
+                visualWheelPosition.y -= state.terrainFollower.tireRadius;
+                return visualWheelPosition;
+            }
+            if (state != null && state.wheel != null)
+            {
+                WheelCollider collider = state.wheel.GetComponent<WheelCollider>();
+                if (collider != null && collider.GetGroundHit(out WheelHit groundHit))
+                    return groundHit.point;
+            }
+            return state != null && state.wheel != null ? state.wheel.position : Vector3.zero;
+        }
+
+        bool IsVehicleMoving(WheelState state, float observedDistance, out Vector3 motionVelocity)
+        {
+            // WheelCollider contact points can move while a parked vehicle's
+            // suspension settles. Those changes must not keep refreshing the
+            // grass recovery timer. Prefer the same velocity source that
+            // drives the vehicle. The raycast vehicle can be advanced by
+            // VehicleTerrainFollower while its Rigidbody velocity is near
+            // zero, so consulting Rigidbody alone silently disables all
+            // wheel interaction for that vehicle.
+            motionVelocity = Vector3.zero;
+            if (state.terrainFollower != null && state.terrainFollower.enabled)
+            {
+                motionVelocity = state.terrainFollower.CurrentVelocity;
+            }
+            else if (state.body != null)
+            {
+                motionVelocity = state.body.linearVelocity;
+            }
+
+            motionVelocity.y = 0f;
+            if (motionVelocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed)
+                return true;
+
+            // A WheelCollider can lag one or more render frames behind the
+            // chassis while suspension/mesh streaming settles. In that
+            // interval the wheel displacement is still authoritative: it is
+            // the actual footprint change that must refresh the grass.
+            if (observedDistance >= minimumWheelTravel)
+                return true;
+
+            // Keep transform-driven rigs supported when they have no velocity
+            // provider, but never use this fallback for a parked physical car.
+            if (state.terrainFollower != null || state.body != null) return false;
+            return observedDistance / Mathf.Max(Time.deltaTime, 0.0001f) >= 0.2f;
         }
 
         bool IsOutsideField(Vector3 position, float radius)
@@ -352,8 +708,16 @@ namespace Voyage.TerrainSystem
             // Grass is displaced away from the moving object, not in front of
             // it. This also makes permanent tire tracks use the same physical
             // orientation as the temporary pressed-grass field.
-            Vector2 dir = (b - a).sqrMagnitude > 0.000001f ? -(b - a).normalized : Vector2.up;
-            float strength = Mathf.Lerp(0.28f, 1f, Mathf.Clamp01(speed / speedForFullBend));
+            // Grass falls in the vehicle's travel direction, matching the
+            // wake behind each tire rather than bending away from the tire.
+            Vector2 dir = (b - a).sqrMagnitude > 0.000001f ? (b - a).normalized : Vector2.up;
+            float speedPressure = Mathf.Lerp(0.24f, 0.82f, Mathf.Clamp01(speed / speedForFullBend));
+            Rigidbody body = source != null ? source.GetComponentInParent<Rigidbody>() : null;
+            float massPressure = body != null ? Mathf.InverseLerp(250f, massForFullPressure, body.mass) : 0.55f;
+            // A heavy vehicle leaves a stronger stored impression than a light
+            // prop at the same speed. The resulting B channel also drives the
+            // pressure-dependent decay in GrassInteractionField.shader.
+            float strength = Mathf.Clamp01(speedPressure * Mathf.Lerp(0.72f, 1.42f, massPressure));
             if (recordPermanentTracks && permanentTrackStore != null)
                 permanentTrackStore.RecordSegment(from, to, radius, strength, source);
             float margin = Mathf.Max(radius * 1.25f, worldSize / resolution);
@@ -378,7 +742,10 @@ namespace Voyage.TerrainSystem
             stampMaterial.SetVector("_StampA", new Vector4(a.x, a.y, 0f, 0f));
             stampMaterial.SetVector("_StampB", new Vector4(b.x, b.y, 0f, 0f));
             stampMaterial.SetVector("_StampDirection", new Vector4(dir.x, dir.y, 0f, 0f));
-            stampMaterial.SetFloat("_StampRadius", Mathf.Max(radius * 1.25f / worldSize, 1f / resolution));
+            // A wheel contact is smaller than the visible crushed-grass band.
+            // Use a wider stamp so the entire tire footprint reads as bent
+            // grass instead of a nearly invisible one-pixel line.
+            stampMaterial.SetFloat("_StampRadius", Mathf.Max(radius * 2.0f / worldSize, 2f / resolution));
             stampMaterial.SetFloat("_StampStrength", strength);
             Graphics.Blit(source, destination, stampMaterial);
         }
@@ -394,6 +761,119 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalTexture("_VoyageGrassInteraction", field);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", WorldToUv);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", permanentField);
+
+            int count = Mathf.Min(MaxShaderWheels, wheelStates.Count);
+            for (int i = 0; i < MaxShaderWheels; i++)
+            {
+                if (i < count && wheelStates[i].valid && wheelStates[i].wheel != null)
+                {
+                    WheelState wheel = wheelStates[i];
+                    Vector3 position = GetWheelAnchor(wheel);
+                    Vector3 velocity = wheel.pressingThisFrame ? wheel.shaderMotionVelocity : Vector3.zero;
+                    velocity.y = 0f;
+                    Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized : Vector3.forward;
+                    shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);
+                    float radius = Mathf.Max(1.8f, wheel.radius * 5.5f);
+                    float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
+                    // Keep all wheel parameters in a Vector4. This avoids
+                    // platform-specific float-array material binding issues.
+                    shaderWheelPositions[i] = new Vector4(position.x, position.z, radius, strength);
+                }
+                else
+                {
+                    shaderWheelPositions[i] = Vector4.zero;
+                    shaderWheelDirections[i] = new Vector4(0f, 0f, 0f, 1f);
+                }
+            }
+            if (count == 0 && followTarget != null)
+            {
+                VehicleTerrainFollower follower = followTarget.GetComponent<VehicleTerrainFollower>();
+                if (follower != null)
+                {
+                    Vector3 velocity = follower.CurrentVelocity;
+                    velocity.y = 0f;
+                    Vector3 rootDeltaVelocity = hasPreviousFollowTargetPosition
+                        ? (followTarget.position - previousFollowTargetPosition) / Mathf.Max(Time.deltaTime, 0.0001f)
+                        : Vector3.zero;
+                    if (velocity.sqrMagnitude < 0.01f) velocity = rootDeltaVelocity;
+                    Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized : follower.ForwardDirection.normalized;
+                    count = Mathf.Min(MaxShaderWheels, follower.GrassInteractionWheelCount);
+                    for (int i = 0; i < count; i++)
+                    {
+                        Vector3 position = follower.GetGrassInteractionWheelPosition(i);
+                        float radius = Mathf.Max(1.8f, follower.tireRadius * 5.5f);
+                        float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
+                        shaderWheelPositions[i] = new Vector4(position.x, position.z, radius, strength);
+                        shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);
+                    }
+                }
+            }
+            Shader.SetGlobalVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
+            Shader.SetGlobalVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
+            // Publish scalar slots as well as arrays. Some DX12 instanced
+            // variants do not preserve a Vector4 array or MPB override, while
+            // scalar material uniforms remain available to every draw.
+            Shader.SetGlobalVector("_VoyageGrassWheel0", shaderWheelPositions[0]);
+            Shader.SetGlobalVector("_VoyageGrassWheel1", shaderWheelPositions[1]);
+            Shader.SetGlobalVector("_VoyageGrassWheel2", shaderWheelPositions[2]);
+            Shader.SetGlobalVector("_VoyageGrassWheel3", shaderWheelPositions[3]);
+            Shader.SetGlobalVector("_VoyageGrassWheel4", shaderWheelPositions[4]);
+            Shader.SetGlobalVector("_VoyageGrassWheel5", shaderWheelPositions[5]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection0", shaderWheelDirections[0]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection1", shaderWheelDirections[1]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection2", shaderWheelDirections[2]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection3", shaderWheelDirections[3]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection4", shaderWheelDirections[4]);
+            Shader.SetGlobalVector("_VoyageGrassWheelDirection5", shaderWheelDirections[5]);
+            Shader.SetGlobalFloat("_VoyageGrassWheelCount", count);
+            shaderVehicleData = Vector4.zero;
+            shaderVehicleParams = Vector4.zero;
+            if (followTarget != null)
+            {
+                VehicleTerrainFollower follower = followTarget.GetComponent<VehicleTerrainFollower>();
+                Vector3 forward = follower != null ? follower.ForwardDirection : followTarget.right;
+                forward.y = 0f;
+                if (forward.sqrMagnitude < 0.001f) forward = Vector3.forward;
+                forward.Normalize();
+                Vector3 velocity = follower != null ? follower.CurrentVelocity : Vector3.zero;
+                Vector3 rootDeltaVelocity = hasPreviousFollowTargetPosition
+                    ? (followTarget.position - previousFollowTargetPosition) / Mathf.Max(Time.deltaTime, 0.0001f)
+                    : Vector3.zero;
+                if (velocity.sqrMagnitude < 0.01f) velocity = rootDeltaVelocity;
+                velocity.y = 0f;
+                float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
+                shaderVehicleData = new Vector4(followTarget.position.x, followTarget.position.z, forward.x, forward.z);
+                // PlayerCar's runtime vehicle uses local X as its forward
+                // axis and local Z as its axle width.
+                shaderVehicleParams = new Vector4(1.35f, 1.02f, 0.95f, strength);
+                previousFollowTargetPosition = followTarget.position;
+                hasPreviousFollowTargetPosition = true;
+            }
+            Shader.SetGlobalVector("_VoyageGrassVehicleData", shaderVehicleData);
+            Shader.SetGlobalVector("_VoyageGrassVehicleParams", shaderVehicleParams);
+            Shader.SetGlobalFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
+        }
+
+        void OnGUI()
+        {
+            if (!debugGrassStateMachine || !Application.isPlaying) return;
+            GUI.color = Color.white;
+            GUILayout.BeginArea(new Rect(12f, 72f, 620f, 360f), GUI.skin.box);
+            GUILayout.Label("GRASS INTERACTION STATE MACHINE");
+            GUILayout.Label($"Wheel sources: {wheelStates.Count} | pending stamps: {pendingStamps.Count}");
+            for (int i = 0; i < wheelStates.Count; i++)
+            {
+                WheelState wheel = wheelStates[i];
+                if (wheel.wheel == null) continue;
+                Vector3 p = GetWheelAnchor(wheel);
+                GUILayout.Label($"Wheel {i}: {wheel.debugState}  anchor=({p.x:0.0}, {p.y:0.0}, {p.z:0.0})  pressed={wheel.pressingThisFrame}");
+            }
+            InteractiveGrassTile[] tiles = FindObjectsByType<InteractiveGrassTile>(FindObjectsSortMode.None);
+            GUILayout.Label($"Visible tile states: {tiles.Length}");
+            for (int i = 0; i < tiles.Length && i < 18; i++)
+                GUILayout.Label($"Tile {tiles[i].tileCoordinate}: {tiles[i].DebugState}  nearest={tiles[i].DebugNearestWheelDistance:0.0}m  pressing wheels={tiles[i].DebugPressingWheelCount}");
+            GUILayout.Label("Shader: red=direct wheel, blue=field, gray=wind only; tile gizmos: red=pressing, blue=recovering, yellow=nearby idle, gray=wind/outside");
+            GUILayout.EndArea();
         }
 
         void BeginPermanentFieldRebuild(Vector3 previousCenter, bool onlyNewArea)

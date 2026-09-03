@@ -87,6 +87,8 @@ public class PlayerCar : MonoBehaviour
     float externalSpeedMultiplier = 1f;
     float surfaceProbeClock;
     bool grounded;
+
+    public IReadOnlyList<Transform> GrassInteractionWheelTransforms { get { return wheels; } }
     bool cachedAirborne;
     float nextAirborneProbe;
     readonly RaycastHit[] airborneHits = new RaycastHit[16];
