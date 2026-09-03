@@ -198,7 +198,7 @@ namespace Voyage.TerrainSystem
             if (!runtimeMaterial.enableInstancing) return;
             // Retain a continuous mid/far meadow; the shader handles the
             // color/alpha transition and very low LOD density becomes noise.
-            float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.58f : 0.24f;
+            float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.58f : 0.12f;
             int visibleCount = Mathf.Clamp(Mathf.CeilToInt(instanceMatrices.Length * lodDensity), 1, instanceMatrices.Length);
             // The instance array is generated in grid order. Copying the first
             // visibleCount entries would therefore remove an entire spatial
@@ -270,7 +270,7 @@ namespace Voyage.TerrainSystem
             indirectCullingShader.SetVector("_CameraPosition", camera.transform.position);
             indirectCullingShader.SetVectorArray("_FrustumPlanes", sharedFrustumVectors);
             indirectCullingShader.SetFloat("_MaxDistance", Mathf.Max(fadeEnd, 1f));
-            indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.58f : 0.24f);
+            indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.58f : 0.12f);
             indirectCullingShader.SetFloat("_InstanceRadius", Mathf.Max(1f, bladeHeight + clusterRadius));
             indirectCullingShader.Dispatch(indirectKernel, Mathf.CeilToInt(instanceMatrices.Length / 64f), 1, 1);
             ComputeBuffer.CopyCount(indirectVisibleBuffer, indirectArgsBuffer, sizeof(uint));
@@ -357,8 +357,28 @@ namespace Voyage.TerrainSystem
             // instance matrix array while the tile is still being sampled.
             int nextPublishCount = 256;
             int processedClusters = 0;
-            for (int z = 0; z < countZ && clusterPositions.Count < runtimeClusterBudget; z += candidateStep) for (int x = 0; x < countX && clusterPositions.Count < runtimeClusterBudget; x += candidateStep)
+            Vector3 viewerPosition = Camera.main != null ? Camera.main.transform.position : worldBounds.center;
+            GrassInteractionSystem interaction = GrassInteractionSystem.Instance;
+            if (interaction != null && interaction.followTarget != null)
+                viewerPosition = interaction.followTarget.position;
+            Vector3 viewerLocal = transform.InverseTransformPoint(viewerPosition);
+            int viewerX = Mathf.Clamp(Mathf.FloorToInt((viewerLocal.x + halfX) / Mathf.Max(worldBounds.size.x, 0.001f) * countX), 0, countX - 1);
+            int viewerZ = Mathf.Clamp(Mathf.FloorToInt((viewerLocal.z + halfZ) / Mathf.Max(worldBounds.size.z, 0.001f) * countZ), 0, countZ - 1);
+            viewerX = (viewerX / candidateStep) * candidateStep;
+            viewerZ = (viewerZ / candidateStep) * candidateStep;
+            // Generate the grid from the viewer outward. The old fixed
+            // top-left-to-bottom-right order left the grass under the vehicle
+            // waiting behind thousands of unrelated terrain samples.
+            for (int zOrder = 0; zOrder < countZ * 2 && clusterPositions.Count < runtimeClusterBudget; zOrder++)
             {
+                int zOffset = zOrder == 0 ? 0 : zOrder % 2 == 1 ? -(zOrder + 1) / 2 : zOrder / 2;
+                int z = viewerZ + zOffset * candidateStep;
+                if (z < 0 || z >= countZ) continue;
+                for (int xOrder = 0; xOrder < countX * 2 && clusterPositions.Count < runtimeClusterBudget; xOrder++)
+                {
+                    int xOffset = xOrder == 0 ? 0 : xOrder % 2 == 1 ? -(xOrder + 1) / 2 : xOrder / 2;
+                    int x = viewerX + xOffset * candidateStep;
+                    if (x < 0 || x >= countX) continue;
                 processedClusters++;
                 if (processedClusters >= clustersPerFrame)
                 {
@@ -425,6 +445,7 @@ namespace Voyage.TerrainSystem
                 {
                     PublishRuntimeInstances(clusterPositions, clusterRotations, clusterScales);
                     nextPublishCount = clusterPositions.Count + 1024;
+                }
                 }
             }
             if (clusterPositions.Count == 0)
@@ -547,7 +568,10 @@ namespace Voyage.TerrainSystem
                 runtimeMaterial.SetFloat("_InteractionEnabled", currentLod < 3 ? 1f : 0f);
                 runtimeMaterial.SetFloat("_ImmediateInteractionEnabled", currentLod == 0 ? 1f : 0f);
                 runtimeMaterial.SetFloat("_FieldInteractionEnabled", currentLod <= 1 ? 1f : 0f);
-                runtimeMaterial.SetFloat("_DistantAlphaClip", currentLod == 2 ? 1f : 0f);
+                // Keep the far LOD on smooth ground-color fading. Ordered
+                // alpha clipping turns sparse distant blades into visible
+                // snow-like pixel noise.
+                runtimeMaterial.SetFloat("_DistantAlphaClip", 0f);
                 runtimeMaterial.SetFloat("_WindStrength", currentLod == 0 ? 0.48f : currentLod == 1 ? 0.28f : 0.12f);
                 runtimeMaterial.SetFloat("_WindSpeed", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.9f : 0.68f);
                 runtimeMaterial.SetFloat("_BendStrength", currentLod == 0 ? 1.55f : currentLod == 1 ? 1.25f : 0.9f);
