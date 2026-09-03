@@ -62,9 +62,9 @@ namespace Voyage.TerrainSystem
         [Range(1f, 90f)] public float grassNoGrassAboveSlope = 58f;
 
         [Header("LOD distances in metres")]
-        public float lod0Distance = 150f;
-        public float lod1Distance = 400f;
-        public float lod2Distance = 1000f;
+        public float lod0Distance = 90f;
+        public float lod1Distance = 240f;
+        public float lod2Distance = 650f;
         public float lod3Distance = 3000f;
         [Range(0.01f, 1f)] public float lod1Quality = 0.5f;
         [Range(0.01f, 1f)] public float lod2Quality = 0.25f;

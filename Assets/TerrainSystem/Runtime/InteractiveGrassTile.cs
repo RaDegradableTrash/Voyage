@@ -104,7 +104,7 @@ namespace Voyage.TerrainSystem
             meshFilter = child.AddComponent<MeshFilter>();
             meshRenderer = child.AddComponent<MeshRenderer>();
             meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            meshRenderer.receiveShadows = false;
+            meshRenderer.receiveShadows = true;
             Material sourceMaterial = material != null ? material : prototype != null ? prototype.material : null;
             runtimeMaterial = sourceMaterial != null ? new Material(sourceMaterial) : CreateDefaultMaterial();
             if (runtimeMaterial != null)
@@ -207,7 +207,7 @@ namespace Voyage.TerrainSystem
             if (!runtimeMaterial.enableInstancing) return;
             // Retain a continuous mid/far meadow; the shader handles the
             // color/alpha transition and very low LOD density becomes noise.
-            float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.58f : 0.12f;
+            float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.42f : 0.04f;
             int visibleCount = Mathf.Clamp(Mathf.CeilToInt(instanceMatrices.Length * lodDensity), 1, instanceMatrices.Length);
             // The instance array is generated in grid order. Copying the first
             // visibleCount entries would therefore remove an entire spatial
@@ -223,7 +223,7 @@ namespace Voyage.TerrainSystem
                     instanceBatch[batchIndex] = instanceMatrices[sampleIndex];
                 }
                 Graphics.DrawMeshInstanced(drawMesh, 0, runtimeMaterial, instanceBatch, count, instanceProperties,
-                    UnityEngine.Rendering.ShadowCastingMode.Off, false, gameObject.layer, null, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
+                    UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, null, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
             }
         }
 
@@ -279,13 +279,13 @@ namespace Voyage.TerrainSystem
             indirectCullingShader.SetVector("_CameraPosition", camera.transform.position);
             indirectCullingShader.SetVectorArray("_FrustumPlanes", sharedFrustumVectors);
             indirectCullingShader.SetFloat("_MaxDistance", Mathf.Max(fadeEnd, 1f));
-            indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.58f : 0.12f);
+            indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.42f : 0.04f);
             indirectCullingShader.SetFloat("_InstanceRadius", Mathf.Max(1f, bladeHeight + clusterRadius));
             indirectCullingShader.Dispatch(indirectKernel, Mathf.CeilToInt(instanceMatrices.Length / 64f), 1, 1);
             ComputeBuffer.CopyCount(indirectVisibleBuffer, indirectArgsBuffer, sizeof(uint));
             runtimeMaterial.SetBuffer("_VoyageGrassMatrices", indirectVisibleBuffer);
             Graphics.DrawMeshInstancedIndirect(drawMesh, 0, runtimeMaterial, indirectBounds, indirectArgsBuffer, 0,
-                instanceProperties, UnityEngine.Rendering.ShadowCastingMode.Off, false, gameObject.layer, camera,
+                instanceProperties, UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, camera,
                 UnityEngine.Rendering.LightProbeUsage.BlendProbes);
             return true;
         }

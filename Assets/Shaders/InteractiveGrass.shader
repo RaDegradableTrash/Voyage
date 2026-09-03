@@ -47,6 +47,7 @@ Shader "Voyage/Grass/InteractiveLit"
             #pragma multi_compile_instancing
             #pragma instancing_options procedural:ConfigureProcedural
             #pragma multi_compile_fog
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
             #pragma target 3.5
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
@@ -130,6 +131,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 float farBlend : TEXCOORD4;
                 float bendAmount : TEXCOORD5;
                 float directBendAmount : TEXCOORD6;
+                float4 shadowCoord : TEXCOORD7;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -324,6 +326,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 positionWS.y = clamp(positionWS.y, minBladeY, maxBladeY);
 
                 output.positionWS = positionWS;
+                output.shadowCoord = TransformWorldToShadowCoord(positionWS);
                 output.positionCS = TransformWorldToHClip(positionWS);
                 float3 normalOS = dot(input.normalOS, input.normalOS) > 0.01 ? input.normalOS : float3(0, 1, 0);
                 float3 baseNormalWS = NormalizeNormalPerVertex(TransformObjectToWorldNormal(normalOS));
@@ -363,14 +366,12 @@ Shader "Voyage/Grass/InteractiveLit"
                     fade = 1.0;
                 }
 
-                // Grass is deliberately not part of the shadow-map pass. Use
-                // direct light only here as well, so shadow-map precision does
-                // not make dense cards flicker against one another.
-                Light mainLight = GetMainLight();
-                half3 normalWS = normalize(input.normalWS);
-                half ndotl = saturate(dot(normalWS, mainLight.direction));
-                half3 ambient = SampleSH(normalWS) * _AmbientStrength;
-                half3 direct = mainLight.color * ndotl * _DirectLightStrength;
+                // Keep the authored grass color independent of sun direction
+                // and ambient light. Only the main-light shadow attenuation is
+                // applied, so external objects can shade the meadow without
+                // introducing self-lighting or card-to-card gradients.
+                Light mainLight = GetMainLight(input.shadowCoord);
+                half shadowAttenuation = saturate(mainLight.shadowAttenuation);
                 float macro = frac(sin(dot(floor(input.positionWS.xz * max(_MacroScale, 0.001)), float2(12.9898, 78.233))) * 43758.5453);
                 float macroStrength = lerp(_MacroStrength, 0.08, input.farBlend);
                 macro = lerp(1.0, lerp(0.82, 1.18, macro), macroStrength);
@@ -382,8 +383,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 half randomVariation = lerp(0.82h, 1.12h, input.instanceRandom.y);
                 randomVariation = lerp(randomVariation, 1.0h, input.farBlend * 0.82h);
                 grassColor *= macro * randomVariation;
-                half3 litColor = grassColor * (ambient + direct + 0.12h);
-                half3 color = isFrontFace ? litColor : lerp(litColor, _BacksideColor.rgb, 0.38h);
+                half3 color = grassColor * shadowAttenuation;
                 if (_VoyageGrassDebugStateMachine > 0.5)
                 {
                     float immediate = length(SampleImmediateWheelBend(input.positionWS));
