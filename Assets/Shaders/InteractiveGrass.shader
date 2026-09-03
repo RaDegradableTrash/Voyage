@@ -20,6 +20,7 @@ Shader "Voyage/Grass/InteractiveLit"
         _RecoverySpeed ("Recovery Speed", Float) = 1.2
         _InteractionEnabled ("Interaction Enabled", Float) = 1
         _ImmediateInteractionEnabled ("Close Wheel Interaction", Float) = 1
+        _DistantAlphaClip ("Distant Alpha Clip", Float) = 0
         _Density ("Density", Range(0,1)) = 1
         _AmbientStrength ("Ambient Strength", Range(0,2)) = 0.75
         _DirectLightStrength ("Direct Light Strength", Range(0,2)) = 1.0
@@ -102,6 +103,7 @@ Shader "Voyage/Grass/InteractiveLit"
             float _RecoverySpeed;
             float _InteractionEnabled;
             float _ImmediateInteractionEnabled;
+            float _DistantAlphaClip;
             float _Density;
             float _AmbientStrength;
             float _DirectLightStrength;
@@ -189,6 +191,21 @@ Shader "Voyage/Grass/InteractiveLit"
                     }
                 }
                 return result;
+            }
+
+            float DistantDitherThreshold(float2 pixelPosition)
+            {
+                int2 cell = (int2)floor(pixelPosition) & 3;
+                int index = cell.x + cell.y * 4;
+                // 4x4 Bayer matrix, normalized to the center of each step.
+                const float4 row0 = float4(0.03125, 0.53125, 0.15625, 0.65625);
+                const float4 row1 = float4(0.78125, 0.28125, 0.90625, 0.40625);
+                const float4 row2 = float4(0.21875, 0.71875, 0.09375, 0.59375);
+                const float4 row3 = float4(0.96875, 0.46875, 0.84375, 0.34375);
+                if (index < 4) return row0[index];
+                if (index < 8) return row1[index - 4];
+                if (index < 12) return row2[index - 8];
+                return row3[index - 12];
             }
 
             Varyings vert(Attributes input)
@@ -334,6 +351,14 @@ Shader "Voyage/Grass/InteractiveLit"
                 float cameraDistance = distance(input.positionWS, GetCameraPositionWS());
                 float fade = 1.0 - smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance);
                 float distanceGroundBlend = smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance);
+                if (_DistantAlphaClip > 0.5 && cameraDistance > _FadeStart)
+                {
+                    // Far LOD uses alpha clip instead of blending. This
+                    // keeps the fade silhouette while avoiding a full
+                    // transparent fragment blend for every crossed card.
+                    clip(fade - DistantDitherThreshold(input.positionCS.xy));
+                    fade = 1.0;
+                }
 
                 // Grass is deliberately not part of the shadow-map pass. Use
                 // direct light only here as well, so shadow-map precision does

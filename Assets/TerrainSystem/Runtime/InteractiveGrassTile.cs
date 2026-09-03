@@ -498,6 +498,7 @@ namespace Voyage.TerrainSystem
                 // ignore tire stamps entirely. LOD3 has no grass draw anyway.
                 runtimeMaterial.SetFloat("_InteractionEnabled", currentLod < 3 ? 1f : 0f);
                 runtimeMaterial.SetFloat("_ImmediateInteractionEnabled", currentLod == 0 ? 1f : 0f);
+                runtimeMaterial.SetFloat("_DistantAlphaClip", currentLod == 2 ? 1f : 0f);
                 runtimeMaterial.SetFloat("_WindStrength", currentLod == 0 ? 0.48f : currentLod == 1 ? 0.28f : 0.12f);
                 runtimeMaterial.SetFloat("_WindSpeed", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.9f : 0.68f);
                 runtimeMaterial.SetFloat("_BendStrength", currentLod == 0 ? 1.55f : currentLod == 1 ? 1.25f : 0.9f);
