@@ -16,11 +16,11 @@ namespace Voyage.TerrainSystem
         [Min(1)] public int clustersPerFrame = 96;
         [Min(1)] public int runtimeClusterBudget = 100000;
         [Header("Stylized appearance")]
-        public Color baseColor = new Color(0.34f, 0.43f, 0.08f, 1f);
+        public Color baseColor = new Color(0.25f, 0.36f, 0.09f, 1f);
         public Color rootColor = new Color(0.20f, 0.28f, 0.105f, 1f);
         public Color shadowColor = new Color(0.16f, 0.24f, 0.045f, 1f);
-        public Color tipColor = new Color(0.58f, 0.48f, 0.10f, 1f);
-        public Color backsideColor = new Color(0.43f, 0.36f, 0.07f, 1f);
+        public Color tipColor = new Color(0.42f, 0.40f, 0.11f, 1f);
+        public Color backsideColor = new Color(0.30f, 0.32f, 0.085f, 1f);
         public Color fadeColor = new Color(0.055f, 0.16f, 0.045f, 1f);
         [Min(0.001f)] public float macroScale = 0.018f;
         [Range(0f, 1f)] public float macroStrength = 0.42f;
@@ -578,11 +578,21 @@ namespace Voyage.TerrainSystem
                 // Density is resolved by placement and LOD instance count.
                 // Clipping individual blades makes dense clumps look sparse.
                 runtimeMaterial.SetFloat("_Density", 1f);
-                runtimeMaterial.SetColor("_BaseColor", baseColor);
+                // Existing generated prefabs serialized the previous, very
+                // yellow palette. Migrate only those exact legacy defaults at
+                // runtime so old tiles receive the softer root/ground blend
+                // without overwriting deliberate per-tile art tuning.
+                Color resolvedBaseColor = IsLegacyGrassColor(baseColor, 0.34f, 0.43f, 0.08f)
+                    ? new Color(0.25f, 0.36f, 0.09f, 1f) : baseColor;
+                Color resolvedTipColor = IsLegacyGrassColor(tipColor, 0.58f, 0.48f, 0.10f)
+                    ? new Color(0.42f, 0.40f, 0.11f, 1f) : tipColor;
+                Color resolvedBacksideColor = IsLegacyGrassColor(backsideColor, 0.43f, 0.36f, 0.07f)
+                    ? new Color(0.30f, 0.32f, 0.085f, 1f) : backsideColor;
+                runtimeMaterial.SetColor("_BaseColor", resolvedBaseColor);
                 runtimeMaterial.SetColor("_RootColor", rootColor);
                 runtimeMaterial.SetColor("_ShadowColor", shadowColor);
-                runtimeMaterial.SetColor("_TipColor", tipColor);
-                runtimeMaterial.SetColor("_BacksideColor", backsideColor);
+                runtimeMaterial.SetColor("_TipColor", resolvedTipColor);
+                runtimeMaterial.SetColor("_BacksideColor", resolvedBacksideColor);
                 runtimeMaterial.SetColor("_FadeColor", fadeColor);
                 runtimeMaterial.SetFloat("_MacroScale", macroScale);
                 runtimeMaterial.SetFloat("_MacroStrength", macroStrength);
@@ -591,6 +601,13 @@ namespace Voyage.TerrainSystem
                 runtimeMaterial.SetFloat("_FadeEnd", fadeEnd);
                 runtimeMaterial.SetFloat("_BladeHeight", bladeHeight);
             }
+        }
+
+        static bool IsLegacyGrassColor(Color color, float r, float g, float b)
+        {
+            return Mathf.Abs(color.r - r) < 0.001f &&
+                   Mathf.Abs(color.g - g) < 0.001f &&
+                   Mathf.Abs(color.b - b) < 0.001f;
         }
 
         void OnDestroy()

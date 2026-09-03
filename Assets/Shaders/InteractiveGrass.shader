@@ -3,11 +3,11 @@ Shader "Voyage/Grass/InteractiveLit"
     Properties
     {
         _Color ("Grass Color", Color) = (0.28, 0.38, 0.14, 1)
-        _BaseColor ("Base Color", Color) = (0.34, 0.43, 0.08, 1)
+        _BaseColor ("Base Color", Color) = (0.25, 0.36, 0.09, 1)
         _RootColor ("Root Ground Color", Color) = (0.20, 0.28, 0.105, 1)
         _ShadowColor ("Shadow Color", Color) = (0.16, 0.24, 0.045, 1)
-        _TipColor ("Tip Color", Color) = (0.58, 0.48, 0.10, 1)
-        _BacksideColor ("Backside Warm Color", Color) = (0.43, 0.36, 0.07, 1)
+        _TipColor ("Tip Color", Color) = (0.42, 0.40, 0.11, 1)
+        _BacksideColor ("Backside Warm Color", Color) = (0.30, 0.32, 0.085, 1)
         _FadeColor ("Distance Ground Color", Color) = (0.055, 0.16, 0.045, 1)
         _MacroScale ("Macro Variation Scale", Float) = 0.018
         _MacroStrength ("Macro Variation Strength", Range(0,1)) = 0.42
@@ -380,10 +380,15 @@ Shader "Voyage/Grass/InteractiveLit"
                 // Fade the lowest part of every blade into the terrain tone.
                 // This hides the artificial card/ground seam without making
                 // the whole blade dark.
-                grassColor = lerp(_RootColor.rgb, grassColor, smoothstep(0.02, 0.34, input.uv.y));
+                half rootBlend = smoothstep(0.02h, 0.48h, input.uv.y);
+                grassColor = lerp(_RootColor.rgb, grassColor, rootBlend);
                 half randomVariation = lerp(0.82h, 1.12h, input.instanceRandom.y);
                 randomVariation = lerp(randomVariation, 1.0h, input.farBlend * 0.82h);
-                grassColor *= macro * randomVariation;
+                // Keep the lowest part visually quiet. Applying the full
+                // macro/random contrast at the root makes each blade expose
+                // a bright outline against the darker terrain and exaggerates
+                // the apparent gaps between clusters.
+                grassColor *= lerp(1.0h, macro * randomVariation, rootBlend);
                 half3 litColor = grassColor * (ambient + direct + 0.12h);
                 half3 color = isFrontFace ? litColor : lerp(litColor, _BacksideColor.rgb, 0.38h);
                 if (_VoyageGrassDebugStateMachine > 0.5)
