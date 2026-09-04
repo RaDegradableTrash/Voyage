@@ -33,8 +33,8 @@ namespace Voyage.TerrainSystem
         public bool recalculateNormals = true;
 
         [Header("Baked grass")]
-        [Tooltip("Create one shared grass prototype during terrain baking; tile placement is generated on demand.")]
-        public bool bakeGrass = false;
+        [Tooltip("Bake deterministic per-tile grass placement so streaming never raycasts thousands of candidates at runtime.")]
+        public bool bakeGrass = true;
         [Min(0.25f)] public float grassClusterSpacing = 0.34f;
         [Min(1)] public int grassBladesPerCluster = 18;
         [Min(0.05f)] public float grassClusterRadius = 0.70f;

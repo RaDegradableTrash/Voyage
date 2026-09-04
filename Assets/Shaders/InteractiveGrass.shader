@@ -23,6 +23,7 @@ Shader "Voyage/Grass/InteractiveLit"
         _FieldInteractionEnabled ("Field Interaction", Float) = 1
         _DistantAlphaClip ("Distant Alpha Clip", Float) = 0
         _Density ("Density", Range(0,1)) = 1
+        _TileFade ("Tile Fade", Range(0,1)) = 1
         _AmbientStrength ("Ambient Strength", Range(0,2)) = 0.75
         _DirectLightStrength ("Direct Light Strength", Range(0,2)) = 1.0
         _BladeHeight ("Blade Height", Float) = 1.0
@@ -72,6 +73,8 @@ Shader "Voyage/Grass/InteractiveLit"
             float _VoyageGrassWheelCount;
             float4 _VoyageGrassVehicleData;
             float4 _VoyageGrassVehicleParams;
+            float4 _VoyageAtmosphereColor;
+            float4 _VoyageAtmosphereRange;
             float _VoyageGrassDebugStateMachine;
             float4 _Color;
             float4 _BaseColor;
@@ -107,6 +110,7 @@ Shader "Voyage/Grass/InteractiveLit"
             float _FieldInteractionEnabled;
             float _DistantAlphaClip;
             float _Density;
+            float _TileFade;
             float _AmbientStrength;
             float _DirectLightStrength;
             float _BladeHeight;
@@ -132,6 +136,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 float bendAmount : TEXCOORD5;
                 float directBendAmount : TEXCOORD6;
                 float4 shadowCoord : TEXCOORD7;
+                half fogFactor : TEXCOORD8;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -328,6 +333,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 output.positionWS = positionWS;
                 output.shadowCoord = TransformWorldToShadowCoord(positionWS);
                 output.positionCS = TransformWorldToHClip(positionWS);
+                output.fogFactor = ComputeFogFactor(output.positionCS.z);
                 float3 normalOS = dot(input.normalOS, input.normalOS) > 0.01 ? input.normalOS : float3(0, 1, 0);
                 float3 baseNormalWS = NormalizeNormalPerVertex(TransformObjectToWorldNormal(normalOS));
                 // Keep lighting coherent with the displaced blade. Without a
@@ -355,7 +361,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 float bladeWidth = lerp(1.0, 0.16, saturate(input.uv.y));
                 clip(centerMask - max(1.0 - bladeWidth, _AlphaClip));
                 float cameraDistance = distance(input.positionWS, GetCameraPositionWS());
-                float fade = 1.0 - smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance);
+                float fade = (1.0 - smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance)) * _TileFade;
                 float distanceGroundBlend = smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance);
                 if (_DistantAlphaClip > 0.5 && cameraDistance > _FadeStart)
                 {
@@ -370,8 +376,13 @@ Shader "Voyage/Grass/InteractiveLit"
                 // and ambient light. Only the main-light shadow attenuation is
                 // applied, so external objects can shade the meadow without
                 // introducing self-lighting or card-to-card gradients.
-                Light mainLight = GetMainLight(input.shadowCoord);
-                half shadowAttenuation = saturate(mainLight.shadowAttenuation);
+                // Do not sample the shadow map from this procedural card
+                // shader. On DX12 an invalid per-card shadow coordinate can
+                // become NaN and contaminate the entire fragment color.
+                // Realtime shadows remain enabled on the vehicle/URP Lit
+                // objects; the grass keeps a stable authored base tone.
+                Light mainLight = GetMainLight();
+                half shadowLight = 1.0h;
                 float macro = frac(sin(dot(floor(input.positionWS.xz * max(_MacroScale, 0.001)), float2(12.9898, 78.233))) * 43758.5453);
                 float macroStrength = lerp(_MacroStrength, 0.08, input.farBlend);
                 macro = lerp(1.0, lerp(0.82, 1.18, macro), macroStrength);
@@ -383,7 +394,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 half randomVariation = lerp(0.82h, 1.12h, input.instanceRandom.y);
                 randomVariation = lerp(randomVariation, 1.0h, input.farBlend * 0.82h);
                 grassColor *= macro * randomVariation;
-                half3 color = grassColor * shadowAttenuation;
+                half3 color = grassColor * shadowLight;
                 if (_VoyageGrassDebugStateMachine > 0.5)
                 {
                     float immediate = length(SampleImmediateWheelBend(input.positionWS));
@@ -398,7 +409,15 @@ Shader "Voyage/Grass/InteractiveLit"
                 // The distant grass must converge toward the deep-green terrain
                 // before its alpha fades, otherwise yellow/red tips remain
                 // visible as a mismatched transparent veil.
-                color = lerp(color, _FadeColor.rgb, distanceGroundBlend * 0.82h);
+                half3 horizonColor = _VoyageAtmosphereRange.w > 0.5
+                    ? _VoyageAtmosphereColor.rgb
+                    : _FadeColor.rgb;
+                color = lerp(color, horizonColor, distanceGroundBlend * 0.82h);
+                color = MixFog(color, input.fogFactor);
+                if (any(color != color)) color = _BaseColor.rgb;
+                // Streaming and fog transitions must never expose a black
+                // card; the ground palette remains the minimum visible tone.
+                color = max(color, _RootColor.rgb * 0.22h);
                 // Keep the near field fully opaque and let the terrain show
                 // through progressively in the transition band. This avoids
                 // the hard dither horizon produced by distance clip alone.

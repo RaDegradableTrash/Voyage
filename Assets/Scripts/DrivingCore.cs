@@ -122,11 +122,36 @@ public sealed class DrivingCore : MonoBehaviour
         }
         Vector3 spawnPoint = new Vector3(-24f, 0f, -24f);
         StreamTerrain(spawnPoint, true);
-        while (loadedTerrainTiles.Count == 0 && pendingTerrainLoads.Count > 0)
+        // Do not spawn a controllable vehicle into an empty streaming bubble.
+        // The visible radius must be ready before the player can outrun it.
+        while (!AreVisibleTerrainTilesReady(spawnPoint) &&
+               (pendingTerrainLoads.Count > 0 || terrainLoadRoutine != null))
             yield return null;
         Physics.SyncTransforms();
         Debug.Log("FBX TERRAIN // loaded " + loadedTerrainTiles.Count + " nearby modeled blocks");
         yield return null;
+    }
+
+    bool AreVisibleTerrainTilesReady(Vector3 position)
+    {
+        if (terrainIndex == null || terrainIndex.settings == null) return false;
+        TerrainChunkSettings settings = terrainIndex.settings;
+        Vector2Int center = settings.WorldToTile(position);
+        bool found = false;
+        for (int i = 0; i < terrainIndex.tiles.Count; i++)
+        {
+            TerrainTileRecord record = terrainIndex.tiles[i];
+            if (record == null || Mathf.Max(Mathf.Abs(record.coordinate.x - center.x),
+                                            Mathf.Abs(record.coordinate.y - center.y)) > settings.loadedRadius)
+                continue;
+            found = true;
+            GameObject tileObject;
+            if (!loadedTerrainTiles.TryGetValue(record.coordinate, out tileObject) || tileObject == null)
+                return false;
+            TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
+            if (tile != null && !tile.GrassBuildFinished) return false;
+        }
+        return found;
     }
 
     void UpdateTerrainStreaming()
@@ -200,31 +225,32 @@ public sealed class DrivingCore : MonoBehaviour
 
     IEnumerator ProcessTerrainLoads(TerrainChunkSettings settings)
     {
+        const int tilesPerFrame = 4;
         while (pendingTerrainLoads.Count > 0)
         {
-            TerrainTileRecord record = pendingTerrainLoads.Dequeue();
-            pendingTerrainCoordinates.Remove(record.coordinate);
-            Vector2Int currentCenter = settings.WorldToTile(Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f));
-            int distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
-            int loadRadius = Mathf.Max(settings.loadedRadius, settings.preloadRadius);
-            if (distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
+            for (int batch = 0; batch < tilesPerFrame && pendingTerrainLoads.Count > 0; batch++)
             {
-                GameObject prefab = Resources.Load<GameObject>(record.resourcePath);
-                if (prefab != null)
+                TerrainTileRecord record = pendingTerrainLoads.Dequeue();
+                pendingTerrainCoordinates.Remove(record.coordinate);
+                Vector2Int currentCenter = settings.WorldToTile(Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f));
+                int distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
+                int loadRadius = Mathf.Max(settings.loadedRadius, settings.preloadRadius);
+                if (distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
                 {
-                    // Instantiate one tile per frame. This prevents a camera
-                    // move from synchronously creating an entire ring of
-                    // terrain, colliders, grass buffers, and materials.
-                    GameObject tileObject = Instantiate(prefab, record.bounds.center, Quaternion.identity);
-                    tileObject.name = "FBX TERRAIN BLOCK " + record.coordinate;
-                    TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
-                    if (tile != null)
+                    GameObject prefab = Resources.Load<GameObject>(record.resourcePath);
+                    if (prefab != null)
                     {
-                        Vector3 viewer = Player != null ? Player.transform.position : record.bounds.center;
-                        tile.Initialize(record, settings, false, viewer);
-                        tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
+                        GameObject tileObject = Instantiate(prefab, record.bounds.center, Quaternion.identity);
+                        tileObject.name = "FBX TERRAIN BLOCK " + record.coordinate;
+                        TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
+                        if (tile != null)
+                        {
+                            Vector3 viewer = Player != null ? Player.transform.position : record.bounds.center;
+                            tile.Initialize(record, settings, false, viewer);
+                            tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
+                        }
+                        loadedTerrainTiles.Add(record.coordinate, tileObject);
                     }
-                    loadedTerrainTiles.Add(record.coordinate, tileObject);
                 }
             }
             Physics.SyncTransforms();
@@ -267,6 +293,15 @@ public sealed class DrivingCore : MonoBehaviour
         Material material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
         material.name = name;
         material.color = color;
+        // Procedural fallback materials must remain readable when the key
+        // light is fully shadowed. This is still a Lit material, so realtime
+        // shadows continue to darken it instead of flattening the lighting.
+        if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", color);
+        if (material.HasProperty("_EmissionColor"))
+        {
+            material.SetColor("_EmissionColor", color * 0.32f);
+            material.EnableKeyword("_EMISSION");
+        }
         return material;
     }
 

@@ -24,7 +24,7 @@ namespace Voyage.TerrainSystem
         [Tooltip("Color grass by its current wheel interaction state and show wheel state text in Game view.")]
         public bool debugGrassStateMachine;
         [Tooltip("Draw the streamed grass-tile state and wheel influence bounds in the Scene view.")]
-        public bool debugDrawTileStates = true;
+        public bool debugDrawTileStates;
         [Tooltip("Runtime key used to toggle the debug overlay and shader colors.")]
         public KeyCode debugToggleKey = KeyCode.F10;
 

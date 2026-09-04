@@ -57,6 +57,8 @@ namespace Voyage.TerrainSystem
         public float DebugNearestWheelDistance { get; private set; } = float.MaxValue;
         public int DebugPressingWheelCount { get; private set; }
         bool initialized;
+        float tileFade;
+        public bool BuildFinished { get; private set; }
         Matrix4x4[] instanceMatrices;
         Matrix4x4[] instanceBatch;
         MaterialPropertyBlock instanceProperties;
@@ -64,6 +66,10 @@ namespace Voyage.TerrainSystem
         bool runtimeClusterMeshShared;
         Mesh runtimeDistantClusterMesh;
         public bool useIndirectRendering = true;
+        [Tooltip("Keep grass visible in additional scene cameras and the editor Scene view. The main gameplay camera remains GPU culled.")]
+        public bool renderInAdditionalCameras = true;
+        [Tooltip("Collect per-tile wheel diagnostics even when the global grass debug UI is hidden.")]
+        public bool collectDebugState;
         ComputeBuffer indirectSourceBuffer;
         ComputeBuffer indirectVisibleBuffer;
         ComputeBuffer indirectArgsBuffer;
@@ -82,6 +88,7 @@ namespace Voyage.TerrainSystem
         static readonly Vector4[] sharedFrustumVectors = new Vector4[6];
         static Camera sharedFrustumCamera;
         static int sharedFrustumFrame = -1;
+        static Camera[] sharedCameras = new Camera[4];
 
         void OnValidate()
         {
@@ -100,6 +107,8 @@ namespace Voyage.TerrainSystem
         {
             if (initialized || buildRoutine != null) return;
             initialized = true;
+            tileFade = 0f;
+            BuildFinished = false;
             debugWorldBounds = worldBounds;
             GameObject child = new GameObject("Interactive Grass");
             grassObject = child;
@@ -146,6 +155,7 @@ namespace Voyage.TerrainSystem
                 instanceProperties = new MaterialPropertyBlock();
                 runtimeDistantClusterMesh = BuildClusterMesh(new System.Random(unchecked(tileCoordinate.x * 73856093 ^ tileCoordinate.y * 19349663 ^ 0x5F3759DF)), 2);
                 ApplyMaterialState();
+                BuildFinished = true;
                 return;
             }
             if (bakedMesh != null)
@@ -154,6 +164,7 @@ namespace Voyage.TerrainSystem
                 meshFilter.sharedMesh = bakedMesh;
                 meshRenderer.enabled = true;
                 ApplyMaterialState();
+                BuildFinished = true;
                 return;
             }
             Transform collisionRoot = transform.Find("Collision");
@@ -166,7 +177,9 @@ namespace Voyage.TerrainSystem
             GrassInteractionSystem interaction = GrassInteractionSystem.Instance;
             float nearest;
             int pressing;
-            if (interaction != null && interaction.IsReady)
+            bool diagnosticsEnabled = collectDebugState ||
+                                      (interaction != null && (interaction.debugGrassStateMachine || interaction.debugDrawTileStates));
+            if (diagnosticsEnabled && interaction != null && interaction.IsReady)
                 DebugState = interaction.GetDebugState(debugWorldBounds, out nearest, out pressing);
             else
             {
@@ -183,31 +196,64 @@ namespace Voyage.TerrainSystem
             // waiting until after those checks leaves its material with stale
             // wheel data on the first visible frame.
             BindInteractionField();
-            if (interaction != null && interaction.IsReady)
-            {
-                // Close LOD uses the per-draw property block for guaranteed
-                // live wheel contact. Indirect mid/far LODs use the globals
-                // published by GrassInteractionSystem; clearing a reused
-                // block prevents stale close-LOD wheel data from leaking into
-                // a distant tile.
-                if (currentLod == 0) interaction.BindShaderProperties(instanceProperties);
-                else instanceProperties.Clear();
-            }
+            bool shouldBeVisible = currentLod < 3 && (instanceMatrices != null || meshRenderer != null);
+            float previousTileFade = tileFade;
+            tileFade = Mathf.MoveTowards(tileFade, shouldBeVisible ? 1f : 0f,
+                                         Time.deltaTime * (shouldBeVisible ? 2.8f : 8f));
+            if (Mathf.Abs(tileFade - previousTileFade) > 0.0001f)
+                ApplyMaterialState();
+            // Wheel slots and interaction textures are published globally.
+            // Keeping the property block free of per-wheel overrides allows
+            // close grass to use the same GPU-culled indirect path as the
+            // middle and far LODs without losing live tyre deformation.
+            instanceProperties.Clear();
             bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
             Mesh sourceMesh = runtimeClusterMesh != null ? runtimeClusterMesh : hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : null;
             Mesh drawMesh = currentLod == 0 || runtimeDistantClusterMesh == null ? sourceMesh : runtimeDistantClusterMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
-            // Keep the close LOD on direct instancing so the live wheel
-            // footprint is guaranteed to reach the vertex shader. Mid/far
-            // LODs no longer perform the six-wheel immediate test; they can
-            // therefore use GPU indirect culling even while the interaction
-            // field is active, reducing dozens of CPU draw calls to one.
-            if (useIndirectRendering && (currentLod >= 1 || interaction == null || !interaction.IsReady) && TryDrawIndirect(drawMesh)) return;
+            // Every drawable LOD uses compute culling when available. The
+            // global wheel slots are compatible with procedural instancing,
+            // so LOD0 no longer needs dozens of unculled 1023-instance draws.
+            if (useIndirectRendering && TryDrawIndirect(drawMesh))
+            {
+                DrawAdditionalCameras(drawMesh, Camera.main);
+                return;
+            }
             // Generated prefabs may carry a material serialized before the
             // instanced grass path existed. Enforce this immediately before
             // drawing so stale material state cannot disable the whole pass.
             if (!runtimeMaterial.enableInstancing) runtimeMaterial.enableInstancing = true;
             if (!runtimeMaterial.enableInstancing) return;
+            DrawDirect(drawMesh, null);
+        }
+
+        void DrawAdditionalCameras(Mesh drawMesh, Camera mainCamera)
+        {
+            if (!renderInAdditionalCameras) return;
+            int cameraCount = Camera.allCamerasCount;
+            if (sharedCameras.Length < cameraCount) sharedCameras = new Camera[Mathf.NextPowerOfTwo(cameraCount)];
+            int found = Camera.GetAllCameras(sharedCameras);
+            Camera sceneCamera = null;
+#if UNITY_EDITOR
+            if (UnityEditor.SceneView.lastActiveSceneView != null)
+                sceneCamera = UnityEditor.SceneView.lastActiveSceneView.camera;
+#endif
+            bool drewSceneCamera = false;
+            for (int i = 0; i < found; i++)
+            {
+                Camera camera = sharedCameras[i];
+                if (camera == null || camera == mainCamera || !camera.enabled ||
+                    camera.cameraType == CameraType.Preview)
+                    continue;
+                DrawDirect(drawMesh, camera);
+                if (camera == sceneCamera) drewSceneCamera = true;
+            }
+            if (sceneCamera != null && sceneCamera != mainCamera && sceneCamera.enabled && !drewSceneCamera)
+                DrawDirect(drawMesh, sceneCamera);
+        }
+
+        void DrawDirect(Mesh drawMesh, Camera targetCamera)
+        {
             // Retain a continuous mid/far meadow; the shader handles the
             // color/alpha transition and very low LOD density becomes noise.
             float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.42f : 0.04f;
@@ -226,7 +272,7 @@ namespace Voyage.TerrainSystem
                     instanceBatch[batchIndex] = instanceMatrices[sampleIndex];
                 }
                 Graphics.DrawMeshInstanced(drawMesh, 0, runtimeMaterial, instanceBatch, count, instanceProperties,
-                    UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, null, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
+                    UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, targetCamera, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
             }
         }
 
@@ -474,12 +520,14 @@ namespace Voyage.TerrainSystem
             if (clusterPositions.Count == 0)
             {
                 buildRoutine = null;
+                BuildFinished = true;
                 yield break;
             }
             PublishRuntimeInstances(clusterPositions, clusterRotations, clusterScales);
             meshRenderer.enabled = false;
             ApplyMaterialState();
             buildRoutine = null;
+            BuildFinished = true;
         }
 
         void PublishRuntimeInstances(List<Vector3> positions, List<Quaternion> rotations, List<float> scales)
@@ -579,7 +627,9 @@ namespace Voyage.TerrainSystem
 
         public void SetLod(int lod)
         {
-            currentLod = Mathf.Clamp(lod, 0, 3);
+            int nextLod = Mathf.Clamp(lod, 0, 3);
+            if (currentLod != nextLod) tileFade = 0f;
+            currentLod = nextLod;
             if (grassObject != null) grassObject.SetActive(currentLod < 3);
             ApplyMaterialState();
         }
@@ -603,16 +653,17 @@ namespace Voyage.TerrainSystem
                 runtimeMaterial.SetFloat("_InteractionEnabled", currentLod < 3 ? 1f : 0f);
                 runtimeMaterial.SetFloat("_ImmediateInteractionEnabled", currentLod == 0 ? 1f : 0f);
                 runtimeMaterial.SetFloat("_FieldInteractionEnabled", currentLod <= 1 ? 1f : 0f);
-                // Keep the far LOD on smooth ground-color fading. Ordered
-                // alpha clipping turns sparse distant blades into visible
-                // snow-like pixel noise.
-                runtimeMaterial.SetFloat("_DistantAlphaClip", 0f);
+                // Far cards use ordered clipping to avoid blending every
+                // overlapping transparent fragment. Close and middle grass
+                // retain the smooth authored fade.
+                runtimeMaterial.SetFloat("_DistantAlphaClip", currentLod >= 2 ? 1f : 0f);
                 runtimeMaterial.SetFloat("_WindStrength", currentLod == 0 ? 0.48f : currentLod == 1 ? 0.28f : 0.12f);
                 runtimeMaterial.SetFloat("_WindSpeed", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.9f : 0.68f);
                 runtimeMaterial.SetFloat("_BendStrength", currentLod == 0 ? 1.55f : currentLod == 1 ? 1.25f : 0.9f);
                 // Density is resolved by placement and LOD instance count.
                 // Clipping individual blades makes dense clumps look sparse.
                 runtimeMaterial.SetFloat("_Density", 1f);
+                runtimeMaterial.SetFloat("_TileFade", tileFade);
                 // Existing generated prefabs serialized the previous, very
                 // yellow palette. Migrate only those exact legacy defaults at
                 // runtime so old tiles receive the softer root/ground blend

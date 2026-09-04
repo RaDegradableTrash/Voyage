@@ -12,6 +12,7 @@ namespace Voyage.TerrainSystem
         [SerializeField] private bool hlod;
         private Collider[] colliders;
         private static Material grasslandFallbackMaterial;
+        private static bool terrainShaderDiagnosticLogged;
         private int currentLod = -1;
         private TerrainChunkSettings settings;
         private bool collisionStateKnown;
@@ -21,6 +22,14 @@ namespace Voyage.TerrainSystem
         public Bounds Bounds => bounds;
         public int CurrentLod => currentLod;
         public bool IsHlod => currentLod >= 3;
+        public bool GrassBuildFinished
+        {
+            get
+            {
+                InteractiveGrassTile grass = GetComponent<InteractiveGrassTile>();
+                return grass == null || grass.BuildFinished;
+            }
+        }
         public bool CollisionEnabled
         {
             get
@@ -40,6 +49,11 @@ namespace Voyage.TerrainSystem
         {
             DisableGeneratedSkirts();
             EnsureCollisionCollider();
+            // Bind a valid terrain shader before the streaming system selects
+            // its first LOD. Generated/imported prefabs can serialize empty
+            // material slots, which otherwise render the first visible frame
+            // as a black terrain tile.
+            ConfigureLighting();
             if (colliders == null) colliders = GetComponentsInChildren<Collider>(true);
             // Generated prefabs may have all LOD roots active in serialized
             // legacy data. Normalize immediately so there is never a frame of
@@ -137,7 +151,8 @@ namespace Voyage.TerrainSystem
                 // but made the streamed fallback visibly empty. Keep the
                 // budget authored in settings while still protecting against
                 // an accidental unbounded value.
-                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 100000);
+                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 24000);
+                grass.clustersPerFrame = Mathf.Max(grass.clustersPerFrame, 768);
                 grass.fullDensityBelowSlope = settings.grassFullDensityBelowSlope;
                 grass.noGrassAboveSlope = settings.grassNoGrassAboveSlope;
             }
@@ -197,6 +212,14 @@ namespace Voyage.TerrainSystem
             {
                 MeshRenderer renderer = renderers[i];
                 ApplyTerrainPalette(renderer);
+                if (!terrainShaderDiagnosticLogged && Application.isPlaying)
+                {
+                    Material diagnosticMaterial = renderer.sharedMaterial;
+                    Debug.Log("TERRAIN SHADER // renderer=" + renderer.name +
+                              " shader=" + (diagnosticMaterial == null || diagnosticMaterial.shader == null ? "NULL" : diagnosticMaterial.shader.name) +
+                              " base=" + (diagnosticMaterial != null && diagnosticMaterial.HasProperty("_BaseColor") ? diagnosticMaterial.GetColor("_BaseColor").ToString() : "n/a"));
+                    terrainShaderDiagnosticLogged = true;
+                }
                 renderer.shadowCastingMode = ShadowCastingMode.On;
                 renderer.receiveShadows = true;
                 renderer.lightProbeUsage = LightProbeUsage.BlendProbes;
@@ -209,7 +232,11 @@ namespace Voyage.TerrainSystem
         private static void ApplyTerrainPalette(MeshRenderer renderer)
         {
             Material[] materials = renderer.sharedMaterials;
-            if (materials == null || materials.Length == 0) return;
+            // Some imported/generated LOD renderers serialize an empty or
+            // null material array. Leaving that slot empty renders the whole
+            // terrain silhouette black in URP.
+            if (materials == null || materials.Length == 0)
+                materials = new Material[1];
             if (grasslandFallbackMaterial == null)
             {
                 Shader shader = Shader.Find("Voyage/Terrain/Stylized");
@@ -219,14 +246,16 @@ namespace Voyage.TerrainSystem
                 grasslandFallbackMaterial = new Material(shader) { name = "Runtime Grassland Terrain Material" };
                 // Keep the terrain under the warm meadow grass. A deep
                 // green fallback makes every density gap read as a hole.
-                Color baseColor = new Color(0.34f, 0.24f, 0.10f, 1f);
-                Color shadowColor = new Color(0.25f, 0.18f, 0.08f, 1f);
-                Color ridgeColor = new Color(0.46f, 0.32f, 0.13f, 1f);
+                // Keep the bare terrain in the same warm palette as grass so
+                // streamed density gaps read as ground, never as black holes.
+                Color baseColor = new Color(0.64f, 0.42f, 0.14f, 1f);
+                Color shadowColor = new Color(0.48f, 0.33f, 0.12f, 1f);
+                Color ridgeColor = new Color(0.78f, 0.56f, 0.22f, 1f);
                 if (grasslandFallbackMaterial.HasProperty("_BaseColor")) grasslandFallbackMaterial.SetColor("_BaseColor", baseColor);
                 if (grasslandFallbackMaterial.HasProperty("_Color")) grasslandFallbackMaterial.SetColor("_Color", baseColor);
                 if (grasslandFallbackMaterial.HasProperty("_ShadowColor")) grasslandFallbackMaterial.SetColor("_ShadowColor", shadowColor);
                 if (grasslandFallbackMaterial.HasProperty("_RidgeColor")) grasslandFallbackMaterial.SetColor("_RidgeColor", ridgeColor);
-                if (grasslandFallbackMaterial.HasProperty("_MacroStrength")) grasslandFallbackMaterial.SetFloat("_MacroStrength", 0.12f);
+                if (grasslandFallbackMaterial.HasProperty("_MacroStrength")) grasslandFallbackMaterial.SetFloat("_MacroStrength", 0.22f);
                 if (grasslandFallbackMaterial.HasProperty("_HeightTint")) grasslandFallbackMaterial.SetFloat("_HeightTint", 0.10f);
                 if (grasslandFallbackMaterial.HasProperty("_Metallic")) grasslandFallbackMaterial.SetFloat("_Metallic", 0f);
                 if (grasslandFallbackMaterial.HasProperty("_Smoothness")) grasslandFallbackMaterial.SetFloat("_Smoothness", 0.15f);

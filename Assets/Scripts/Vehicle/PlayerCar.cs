@@ -83,6 +83,7 @@ public class PlayerCar : MonoBehaviour
     [Header("Diagnostics")]
     public bool diagnosticLogging = false;
     string surfaceType = "GROUND";
+    static bool vehicleShaderDiagnosticLogged;
     float surfaceGripValue = 1f;
     float externalSpeedMultiplier = 1f;
     float surfaceProbeClock;
@@ -281,6 +282,7 @@ public class PlayerCar : MonoBehaviour
         // names and authored facing direction are the source of truth.
         visualBody = model.transform;
         DisableEmbeddedCameras(model);
+        EnsureVehicleMaterialsVisible(model);
 
         // VehicleManual is the authoritative wheel layout. Its component
         // contains the four transforms that were marked in the prefab, so
@@ -376,6 +378,71 @@ public class PlayerCar : MonoBehaviour
             Bounds bounds = renderers[0].bounds;
             for (int i = 1; i < renderers.Length; i++) bounds.Encapsulate(renderers[i].bounds);
             AddModelMeshColliders(model);
+        }
+    }
+
+    void EnsureVehicleMaterialsVisible(GameObject model)
+    {
+        Shader litShader = Shader.Find("Universal Render Pipeline/Lit");
+        if (litShader == null) return;
+        Renderer[] renderers = model.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer renderer = renderers[i];
+            if (renderer == null) continue;
+            Material[] materials = renderer.materials;
+            if (materials == null || materials.Length == 0)
+                materials = new[] { new Material(litShader) { name = renderer.name + " (URP fallback)" } };
+            for (int j = 0; j < materials.Length; j++)
+            {
+                Material source = materials[j];
+                if (source == null)
+                {
+                    source = new Material(litShader) { name = renderer.name + " (URP fallback)" };
+                    source.SetColor("_BaseColor", new Color(0.06f, 0.22f, 0.48f, 1f));
+                    materials[j] = source;
+                }
+                Material material = source;
+                // The imported reference vehicle can contain legacy Standard
+                // materials. Convert only incompatible shaders, preserving
+                // their authored color and texture when possible.
+                if (material.shader == null ||
+                    (material.shader.name != "Universal Render Pipeline/Lit" &&
+                     material.shader.name != "Universal Render Pipeline/Simple Lit"))
+                {
+                    material = new Material(litShader) { name = source.name + " (URP)" };
+                    if (source.HasProperty("_BaseColor")) material.SetColor("_BaseColor", source.GetColor("_BaseColor"));
+                    else if (source.HasProperty("_Color")) material.SetColor("_BaseColor", source.GetColor("_Color"));
+                    if (source.HasProperty("_BaseColorMap")) material.SetTexture("_BaseColorMap", source.GetTexture("_BaseColorMap"));
+                    materials[j] = material;
+                }
+                // A small emission floor keeps the silhouette readable when
+                // the day/night controller is at its darkest sample, without
+                // turning the vehicle into an unlit object during daytime.
+                if (material.HasProperty("_BaseColor") && material.HasProperty("_EmissionColor"))
+                {
+                    Color baseColor = material.GetColor("_BaseColor");
+                    if (baseColor.maxColorComponent < 0.015f &&
+                        !renderer.name.ToLowerInvariant().Contains("wheel") &&
+                        !renderer.name.ToLowerInvariant().Contains("tire"))
+                        baseColor = new Color(0.06f, 0.22f, 0.48f, 1f);
+                    // Keep the authored color when valid, but repair imported
+                    // black slots before deriving the emission floor.
+                    material.SetColor("_BaseColor", baseColor);
+                    material.SetColor("_EmissionColor", baseColor * 0.42f);
+                    material.EnableKeyword("_EMISSION");
+                }
+            }
+            renderer.materials = materials;
+            if (!vehicleShaderDiagnosticLogged && Application.isPlaying && materials.Length > 0)
+            {
+                Material diagnosticMaterial = materials[0];
+                Debug.Log("VEHICLE SHADER // renderer=" + renderer.name +
+                          " shader=" + (diagnosticMaterial == null || diagnosticMaterial.shader == null ? "NULL" : diagnosticMaterial.shader.name) +
+                          " base=" + (diagnosticMaterial != null && diagnosticMaterial.HasProperty("_BaseColor") ? diagnosticMaterial.GetColor("_BaseColor").ToString() : "n/a") +
+                          " emission=" + (diagnosticMaterial != null && diagnosticMaterial.HasProperty("_EmissionColor") ? diagnosticMaterial.GetColor("_EmissionColor").ToString() : "n/a"));
+                vehicleShaderDiagnosticLogged = true;
+            }
         }
     }
 

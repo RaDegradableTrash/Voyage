@@ -34,7 +34,13 @@ Shader "Voyage/Terrain/Stylized"
             CBUFFER_END
 
             struct Attributes { float4 positionOS : POSITION; float3 normalOS : NORMAL; };
-            struct Varyings { float4 positionCS : SV_POSITION; float3 positionWS : TEXCOORD0; float3 normalWS : TEXCOORD1; };
+            struct Varyings
+            {
+                float4 positionCS : SV_POSITION;
+                float3 positionWS : TEXCOORD0;
+                float3 normalWS : TEXCOORD1;
+                half fogFactor : TEXCOORD2;
+            };
 
             Varyings vert(Attributes input)
             {
@@ -43,6 +49,7 @@ Shader "Voyage/Terrain/Stylized"
                 output.positionCS = position.positionCS;
                 output.positionWS = position.positionWS;
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
+                output.fogFactor = ComputeFogFactor(position.positionCS.z);
                 return output;
             }
 
@@ -56,9 +63,21 @@ Shader "Voyage/Terrain/Stylized"
                 half3 color = lerp(_ShadowColor.rgb, _BaseColor.rgb, slope);
                 color = lerp(color, _RidgeColor.rgb, saturate(heightBand * slope - 0.35h));
                 color *= macro;
+                // Keep this custom terrain shader independent from per-pixel
+                // shadow coordinates; invalid DX12 shadow data can otherwise
+                // turn the complete terrain fragment into NaN/black.
                 Light mainLight = GetMainLight();
-                half lighting = 0.55h + 0.45h * saturate(dot(normalWS, mainLight.direction));
+                half directLight = saturate(dot(normalWS, mainLight.direction));
+                // Preserve terrain readability when the realtime shadow map
+                // or main-light sample is unavailable, while still allowing
+                // actual shadows to darken the ground.
+                half lighting = lerp(0.34h, 1.0h, directLight);
                 color *= lerp(1.0h, lighting, 0.72h);
+                color = MixFog(color, input.fogFactor);
+                if (any(color != color)) color = _BaseColor.rgb;
+                // Keep the terrain surface readable even if an external fog
+                // or lighting state briefly resolves to black.
+                color = max(color, _ShadowColor.rgb * 0.22h);
                 return half4(color, 1.0h);
             }
             ENDHLSL
