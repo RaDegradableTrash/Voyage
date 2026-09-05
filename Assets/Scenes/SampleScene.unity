@@ -146,7 +146,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 2da03596c32dfe14e99c7902e08fea9b, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::Voyage.TerrainSystem.TerrainTileScenePreview
   index: {fileID: 11400000, guid: 5b9e08294af951b4ea8a3ec7556f74ef, type: 2}
   settings: {fileID: 11400000, guid: 317c301a1bee2bf409d8012b96a49fd6, type: 2}
@@ -351,6 +351,114 @@ PrefabInstance:
     m_AddedGameObjects: []
     m_AddedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: d0e1f2a3b4c5467890abcdef12345678, type: 3}
+--- !u!1 &880000001
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 880000002}
+  - component: {fileID: 880000003}
+  - component: {fileID: 880000004}
+  - component: {fileID: 880000005}
+  m_Layer: 0
+  m_Name: VOYAGE // LIGHTING SYSTEMS
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &880000002
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 880000001}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+--- !u!114 &880000003
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 880000001}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 89c580b2661eb1e4db2d16dc1986c73d, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Voyage.Lighting::DayNightSystem
+  currentTime: 12
+  advanceTime: 1
+  dayDuration: 60
+  timeScale: 1
+  sunriseTime: 6
+  sunsetTime: 18
+  sun: {fileID: 0}
+  moon: {fileID: 0}
+  daySunIntensity: 0.95
+  nightSunIntensity: 0.035
+  moonIntensity: 0.1
+  daySunColor: {r: 1, g: 0.91, b: 0.78, a: 1}
+  sunsetSunColor: {r: 0.95, g: 0.5, b: 0.3, a: 1}
+  moonColor: {r: 0.42, g: 0.5, b: 0.72, a: 1}
+  sunShadowStrength: 0.72
+  moonShadowStrength: 0.3
+  dayAmbientIntensity: 0.34
+  nightAmbientIntensity: 0.1
+  dayReflectionIntensity: 0.28
+  nightReflectionIntensity: 0.015
+  daySkyColor: {r: 0.42, g: 0.52, b: 0.62, a: 1}
+  horizonSkyColor: {r: 0.82, g: 0.34, b: 0.22, a: 1}
+  nightSkyColor: {r: 0.018, g: 0.028, b: 0.06, a: 1}
+  manageOtherDirectionalLights: 1
+--- !u!114 &880000004
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 880000001}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: efdabae70322a5c4da7dcd070811f9f7, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Voyage.Lighting::FogSystem
+  enableFog: 1
+  dayColor: {r: 0.43, g: 0.57, b: 0.66, a: 1}
+  horizonColor: {r: 0.95, g: 0.46, b: 0.25, a: 1}
+  dawnColor: {r: 0.72, g: 0.4, b: 0.46, a: 1}
+  nightColor: {r: 0.018, g: 0.028, b: 0.06, a: 1}
+  dayStart: 52
+  nightStart: 36
+  dayEnd: 720
+  nightEnd: 560
+  horizonIntensity: 0.72
+  contribution: 1
+--- !u!114 &880000005
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 880000001}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c24b7e3cb4da4cd796f4b9947eae137f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Voyage.Lighting::CloudLightingBridge
+  dayAmbient: {r: 0.42, g: 0.52, b: 0.62, a: 1}
+  nightAmbient: {r: 0.025, g: 0.035, b: 0.08, a: 1}
+  dayLight: 1
+  nightLight: 0.08
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -360,3 +468,4 @@ SceneRoots:
   - {fileID: 3930454710137168796}
   - {fileID: 7000000000000000100}
   - {fileID: 795487373}
+  - {fileID: 880000002}

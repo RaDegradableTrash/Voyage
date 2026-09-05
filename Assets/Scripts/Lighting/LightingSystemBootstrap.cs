@@ -7,14 +7,8 @@ namespace Voyage.Lighting
     [Preserve]
     public static class LightingSystemBootstrap
     {
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-        static void Install()
-        {
-            EnsureInstalled();
-        }
-
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
-        static void VerifyAfterSceneLoad() => EnsureInstalled();
+        static void InstallAfterSceneLoad() => EnsureInstalled();
 
         static void EnsureInstalled()
         {
