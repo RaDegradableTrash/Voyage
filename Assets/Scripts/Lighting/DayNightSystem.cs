@@ -70,6 +70,7 @@ namespace Voyage.Lighting
             Instance = this;
             EnsureLights();
             EnsureSkybox();
+            EnsureCamera();
             ConfigureCameras();
             EnsureCelestialVisuals();
             Apply();
@@ -214,6 +215,24 @@ namespace Voyage.Lighting
                 camera.clearFlags = CameraClearFlags.SolidColor;
                 camera.backgroundColor = Color.black;
             }
+        }
+
+        static void EnsureCamera()
+        {
+            if (FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length > 0) return;
+            GameObject go = new GameObject("Voyage Runtime Camera");
+            go.tag = "MainCamera";
+            go.transform.SetPositionAndRotation(new Vector3(0f, 4f, -10f), Quaternion.identity);
+            Camera camera = go.AddComponent<Camera>();
+            camera.fieldOfView = 67f;
+            camera.nearClipPlane = .3f;
+            camera.farClipPlane = 1000f;
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.backgroundColor = Color.black;
+            go.AddComponent<AudioListener>();
+            // DrivingCore binds its follow target to Camera.main during startup.
+            System.Type followType = System.Type.GetType("FollowCamera, Assembly-CSharp");
+            if (followType != null && go.GetComponent(followType) == null) go.AddComponent(followType);
         }
 
         void EnsureCelestialVisuals()
