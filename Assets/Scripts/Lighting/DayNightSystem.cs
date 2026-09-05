@@ -238,11 +238,16 @@ namespace Voyage.Lighting
         void EnsureCelestialVisuals()
         {
             if (sunVisual != null && moonVisual != null) return;
-            Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
+            Shader shader = Shader.Find("Voyage/Celestial");
+            if (shader == null) shader = Shader.Find("Universal Render Pipeline/Unlit");
             if (shader == null) shader = Shader.Find("Unlit/Color");
             if (shader == null) return;
             sunVisualMaterial = new Material(shader) { name = "Voyage Sun Visual" };
             moonVisualMaterial = new Material(shader) { name = "Voyage Moon Visual" };
+            sunVisualMaterial.renderQueue = 4000;
+            moonVisualMaterial.renderQueue = 4000;
+            if (sunVisualMaterial.HasProperty("_ZTest")) sunVisualMaterial.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
+            if (moonVisualMaterial.HasProperty("_ZTest")) moonVisualMaterial.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
             SetMaterialColor(sunVisualMaterial, new Color(1f, .72f, .25f, 1f));
             SetMaterialColor(moonVisualMaterial, new Color(.62f, .75f, 1f, 1f));
             sunVisual = CreateCelestialVisual("Voyage Sun Disc", sunVisualMaterial, 42f);
