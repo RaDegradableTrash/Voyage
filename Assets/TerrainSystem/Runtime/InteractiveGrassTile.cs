@@ -9,6 +9,9 @@ namespace Voyage.TerrainSystem
     public sealed class InteractiveGrassTile : MonoBehaviour
     {
         static readonly Dictionary<int, Mesh> sharedClusterMeshes = new Dictionary<int, Mesh>();
+        static int samplingFrame = -1;
+        static int samplesThisFrame;
+        const int MaxSamplesPerFrame = 768;
 
         [Min(0.25f)] public float clusterSpacing = 0.38f;
         [Min(1)] public int bladesPerCluster = 18;
@@ -64,7 +67,6 @@ namespace Voyage.TerrainSystem
         MaterialPropertyBlock instanceProperties;
         Mesh runtimeClusterMesh;
         bool runtimeClusterMeshShared;
-        Mesh runtimeDistantClusterMesh;
         public bool useIndirectRendering = true;
         [Tooltip("Keep grass visible in additional scene cameras and the editor Scene view. The main gameplay camera remains GPU culled.")]
         public bool renderInAdditionalCameras = true;
@@ -153,7 +155,6 @@ namespace Voyage.TerrainSystem
                 }
                 instanceBatch = new Matrix4x4[1023];
                 instanceProperties = new MaterialPropertyBlock();
-                runtimeDistantClusterMesh = BuildClusterMesh(new System.Random(unchecked(tileCoordinate.x * 73856093 ^ tileCoordinate.y * 19349663 ^ 0x5F3759DF)), 2);
                 ApplyMaterialState();
                 BuildFinished = true;
                 return;
@@ -174,6 +175,7 @@ namespace Voyage.TerrainSystem
 
         void LateUpdate()
         {
+            if (!initialized || runtimeMaterial == null) return;
             GrassInteractionSystem interaction = GrassInteractionSystem.Instance;
             float nearest;
             int pressing;
@@ -209,7 +211,9 @@ namespace Voyage.TerrainSystem
             instanceProperties.Clear();
             bool hasBakedClusters = bakedClusters != null && bakedClusters.clusterMesh != null && bakedClusters.Count > 0;
             Mesh sourceMesh = runtimeClusterMesh != null ? runtimeClusterMesh : hasBakedClusters ? bakedClusters.clusterMesh : prototype != null && prototype.clusterMesh != null ? prototype.clusterMesh : null;
-            Mesh drawMesh = currentLod == 0 || runtimeDistantClusterMesh == null ? sourceMesh : runtimeDistantClusterMesh;
+            // Keep cluster topology stable. Distance selection already limits
+            // far cost, without swapping every blade in a tile simultaneously.
+            Mesh drawMesh = sourceMesh;
             if (drawMesh == null || instanceMatrices == null || currentLod >= 3 || runtimeMaterial == null) return;
             // Every drawable LOD uses compute culling when available. The
             // global wheel slots are compatible with procedural instancing,
@@ -224,7 +228,8 @@ namespace Voyage.TerrainSystem
             // drawing so stale material state cannot disable the whole pass.
             if (!runtimeMaterial.enableInstancing) runtimeMaterial.enableInstancing = true;
             if (!runtimeMaterial.enableInstancing) return;
-            DrawDirect(drawMesh, null);
+            DrawDirect(drawMesh, Camera.main);
+            DrawAdditionalCameras(drawMesh, Camera.main);
         }
 
         void DrawAdditionalCameras(Mesh drawMesh, Camera mainCamera)
@@ -254,26 +259,49 @@ namespace Voyage.TerrainSystem
 
         void DrawDirect(Mesh drawMesh, Camera targetCamera)
         {
-            // Retain a continuous mid/far meadow; the shader handles the
-            // color/alpha transition and very low LOD density becomes noise.
-            float lodDensity = currentLod == 0 ? 1f : currentLod == 1 ? 0.42f : 0.04f;
-            int visibleCount = Mathf.Clamp(Mathf.CeilToInt(instanceMatrices.Length * lodDensity), 1, instanceMatrices.Length);
-            // The instance array is generated in grid order. Copying the first
-            // visibleCount entries would therefore remove an entire spatial
-            // section of the tile at lower LODs. Select evenly across the full
-            // array so density reduction remains spatially uniform.
-            for (int start = 0; start < visibleCount; start += 1023)
+            Camera viewer = targetCamera != null ? targetCamera : Camera.main;
+            int count = 0;
+            for (int i = 0; i < instanceMatrices.Length; i++)
             {
-                int count = Mathf.Min(1023, visibleCount - start);
-                for (int batchIndex = 0; batchIndex < count; batchIndex++)
+                Vector3 position = instanceMatrices[i].GetColumn(3);
+                if (viewer != null)
                 {
-                    int sampleIndex = Mathf.Min(instanceMatrices.Length - 1,
-                        (int)(((long)(start + batchIndex) * instanceMatrices.Length) / visibleCount));
-                    instanceBatch[batchIndex] = instanceMatrices[sampleIndex];
+                    float viewDistance = Vector3.Distance(position, viewer.transform.position);
+                    if (viewDistance > fadeEnd + bladeHeight + clusterRadius ||
+                        DistanceSelection(position) > DistanceDensity(viewDistance, fadeStart, fadeEnd) + 0.08f) continue;
                 }
-                Graphics.DrawMeshInstanced(drawMesh, 0, runtimeMaterial, instanceBatch, count, instanceProperties,
-                    UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, targetCamera, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
+                instanceBatch[count++] = instanceMatrices[i];
+                if (count < instanceBatch.Length) continue;
+                DrawBatch(drawMesh, targetCamera, count);
+                count = 0;
             }
+            if (count > 0) DrawBatch(drawMesh, targetCamera, count);
+        }
+
+        void DrawBatch(Mesh drawMesh, Camera targetCamera, int count)
+        {
+            Graphics.DrawMeshInstanced(drawMesh, 0, runtimeMaterial, instanceBatch, count, instanceProperties,
+                UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, targetCamera, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
+        }
+
+        // Keep these equations in sync with Shaders/GrassDistance.hlsl.
+        public static float DistanceSelection(Vector3 position)
+        {
+            unchecked
+            {
+                uint hash = (uint)Mathf.FloorToInt(position.x * 16f) * 73856093u ^
+                            (uint)Mathf.FloorToInt(position.z * 16f) * 19349663u;
+                hash ^= hash >> 13;
+                return (hash & 65535u) / 65536f;
+            }
+        }
+
+        public static float DistanceDensity(float distance, float nearDistance, float farDistance)
+        {
+            float middle = Mathf.Max(nearDistance + 0.01f, farDistance * 0.5f);
+            float nearBlend = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(nearDistance, middle, distance));
+            float farBlend = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(middle, Mathf.Max(middle + 0.01f, farDistance), distance));
+            return Mathf.Lerp(Mathf.Lerp(1f, 0.42f, nearBlend), 0.04f, farBlend);
         }
 
         bool TryDrawIndirect(Mesh drawMesh)
@@ -333,7 +361,7 @@ namespace Voyage.TerrainSystem
                 indirectCullingShader.SetVector("_CameraPosition", camera.transform.position);
                 indirectCullingShader.SetVectorArray("_FrustumPlanes", sharedFrustumVectors);
                 indirectCullingShader.SetFloat("_MaxDistance", Mathf.Max(fadeEnd, 1f));
-                indirectCullingShader.SetFloat("_InstanceDensity", currentLod == 0 ? 1f : currentLod == 1 ? 0.42f : 0.04f);
+                indirectCullingShader.SetFloat("_DensityNearDistance", fadeStart);
                 indirectCullingShader.SetFloat("_InstanceRadius", Mathf.Max(1f, bladeHeight + clusterRadius));
                 indirectCullingShader.Dispatch(indirectKernel, Mathf.CeilToInt(instanceMatrices.Length / 64f), 1, 1);
                 ComputeBuffer.CopyCount(indirectVisibleBuffer, indirectArgsBuffer, sizeof(uint));
@@ -390,6 +418,9 @@ namespace Voyage.TerrainSystem
 
         IEnumerator BuildMeshAsync(Bounds worldBounds, Collider terrainCollider, int groundMask)
         {
+            // Let the normal physics step register the new static collider;
+            // streaming must not resync every interpolated vehicle transform.
+            yield return new WaitForFixedUpdate();
             float halfX = worldBounds.extents.x;
             float halfZ = worldBounds.extents.z;
             int countX = Mathf.Max(1, Mathf.FloorToInt(worldBounds.size.x / clusterSpacing));
@@ -415,8 +446,6 @@ namespace Voyage.TerrainSystem
                                                   prototype.clusterMesh != null &&
                                                   prototype.clusterMesh.vertexCount < bladesPerCluster * 4 * 8;
             int meshSeed = seed ^ unchecked((int)0x5F3759DF);
-            if (runtimeDistantClusterMesh == null)
-                runtimeDistantClusterMesh = BuildClusterMesh(new System.Random(meshSeed), 2);
             if (prototype == null || prototype.clusterMesh == null || prototypeNeedsExpandedGeometry)
             {
                 runtimeClusterMesh = BuildClusterMesh(new System.Random(meshSeed), 4);
@@ -448,12 +477,27 @@ namespace Voyage.TerrainSystem
                     int xOffset = xOrder == 0 ? 0 : xOrder % 2 == 1 ? -(xOrder + 1) / 2 : xOrder / 2;
                     int x = viewerX + xOffset * candidateStep;
                     if (x < 0 || x >= countX) continue;
-                processedClusters++;
-                if (processedClusters >= clustersPerFrame)
+                while (terrainCollider != null && (!terrainCollider.enabled || !terrainCollider.gameObject.activeInHierarchy))
+                    yield return new WaitForFixedUpdate();
+                if (samplingFrame != Time.frameCount)
+                {
+                    samplingFrame = Time.frameCount;
+                    samplesThisFrame = 0;
+                }
+                while (processedClusters >= clustersPerFrame || samplesThisFrame >= MaxSamplesPerFrame)
                 {
                     processedClusters = 0;
                     yield return null;
+                    while (terrainCollider != null && (!terrainCollider.enabled || !terrainCollider.gameObject.activeInHierarchy))
+                        yield return new WaitForFixedUpdate();
+                    if (samplingFrame != Time.frameCount)
+                    {
+                        samplingFrame = Time.frameCount;
+                        samplesThisFrame = 0;
+                    }
                 }
+                processedClusters++;
+                samplesThisFrame++;
                 float px = Mathf.Lerp(-halfX, halfX, (x + 0.5f) / countX) + (float)(random.NextDouble() - 0.5) * clusterSpacing;
                 float pz = Mathf.Lerp(-halfZ, halfZ, (z + 0.5f) / countZ) + (float)(random.NextDouble() - 0.5) * clusterSpacing;
                 Vector3 clusterLocal = new Vector3(px, 0f, pz);
@@ -468,22 +512,9 @@ namespace Voyage.TerrainSystem
                 if (random.NextDouble() > density * densityNoise) continue;
                 Ray ray = new Ray(new Vector3(world.x, rayTop, world.z), Vector3.down);
                 RaycastHit groundHit;
-                bool foundHit = Physics.Raycast(ray, out groundHit, rayDistance, groundMask, QueryTriggerInteraction.Ignore);
-                if (foundHit && terrainCollider != null && groundHit.collider != terrainCollider)
-                {
-                    RaycastHit[] hits = Physics.RaycastAll(ray, rayDistance, groundMask, QueryTriggerInteraction.Ignore);
-                    foundHit = false;
-                    for (int hitIndex = 0; hitIndex < hits.Length; hitIndex++)
-                    {
-                        RaycastHit candidate = hits[hitIndex];
-                        if (candidate.collider == terrainCollider)
-                        {
-                            groundHit = candidate;
-                            foundHit = true;
-                            break;
-                        }
-                    }
-                }
+                bool foundHit = terrainCollider != null
+                    ? terrainCollider.Raycast(ray, out groundHit, rayDistance)
+                    : Physics.Raycast(ray, out groundHit, rayDistance, groundMask, QueryTriggerInteraction.Ignore);
                 // A missing hit is not a valid grass base. The generated
                 // terrain normally has a collision mesh; if it does not,
                 // avoid silently creating floating blades at local Y = 0.
@@ -628,7 +659,7 @@ namespace Voyage.TerrainSystem
         public void SetLod(int lod)
         {
             int nextLod = Mathf.Clamp(lod, 0, 3);
-            if (currentLod != nextLod) tileFade = 0f;
+            if (currentLod == nextLod) return;
             currentLod = nextLod;
             if (grassObject != null) grassObject.SetActive(currentLod < 3);
             ApplyMaterialState();
@@ -651,15 +682,14 @@ namespace Voyage.TerrainSystem
                 // grass inside the active field, which made visible grass
                 // ignore tire stamps entirely. LOD3 has no grass draw anyway.
                 runtimeMaterial.SetFloat("_InteractionEnabled", currentLod < 3 ? 1f : 0f);
-                runtimeMaterial.SetFloat("_ImmediateInteractionEnabled", currentLod == 0 ? 1f : 0f);
-                runtimeMaterial.SetFloat("_FieldInteractionEnabled", currentLod <= 1 ? 1f : 0f);
-                // Far cards use ordered clipping to avoid blending every
-                // overlapping transparent fragment. Close and middle grass
-                // retain the smooth authored fade.
-                runtimeMaterial.SetFloat("_DistantAlphaClip", currentLod >= 2 ? 1f : 0f);
-                runtimeMaterial.SetFloat("_WindStrength", currentLod == 0 ? 0.48f : currentLod == 1 ? 0.28f : 0.12f);
-                runtimeMaterial.SetFloat("_WindSpeed", currentLod == 0 ? 1.15f : currentLod == 1 ? 0.9f : 0.68f);
-                runtimeMaterial.SetFloat("_BendStrength", currentLod == 0 ? 1.55f : currentLod == 1 ? 1.25f : 0.9f);
+                runtimeMaterial.SetFloat("_ImmediateInteractionEnabled", 1f);
+                runtimeMaterial.SetFloat("_FieldInteractionEnabled", 1f);
+                // Appearance no longer changes at tile LOD boundaries. The
+                // shader's distance blend handles density and far animation.
+                runtimeMaterial.SetFloat("_DistantAlphaClip", 0f);
+                runtimeMaterial.SetFloat("_WindStrength", 0.48f);
+                runtimeMaterial.SetFloat("_WindSpeed", 1.15f);
+                runtimeMaterial.SetFloat("_BendStrength", 1.55f);
                 // Density is resolved by placement and LOD instance count.
                 // Clipping individual blades makes dense clumps look sparse.
                 runtimeMaterial.SetFloat("_Density", 1f);
@@ -708,7 +738,6 @@ namespace Voyage.TerrainSystem
             }
             if (mesh != null && mesh != bakedMesh) Destroy(mesh);
             if (runtimeClusterMesh != null && !runtimeClusterMeshShared) Destroy(runtimeClusterMesh);
-            if (runtimeDistantClusterMesh != null) Destroy(runtimeDistantClusterMesh);
             if (runtimeMaterial != null) Destroy(runtimeMaterial);
             ReleaseIndirectBuffers();
             if (grassObject != null) Destroy(grassObject);

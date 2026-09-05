@@ -17,6 +17,12 @@ namespace Voyage.TerrainSystem
         private TerrainChunkSettings settings;
         private bool collisionStateKnown;
         private bool collisionState;
+        private InteractiveGrassTile configuredGrass;
+        private MeshRenderer[][] lodRenderers;
+        private MaterialPropertyBlock lodProperties;
+        private int outgoingLod = -1;
+        private float lodTransition = 1f;
+        private const float LodTransitionSeconds = 0.4f;
 
         public Vector2Int Coordinate => coordinate;
         public Bounds Bounds => bounds;
@@ -54,6 +60,10 @@ namespace Voyage.TerrainSystem
             // material slots, which otherwise render the first visible frame
             // as a black terrain tile.
             ConfigureLighting();
+            lodRenderers = new MeshRenderer[lodRoots.Length][];
+            for (int i = 0; i < lodRoots.Length; i++)
+                lodRenderers[i] = lodRoots[i] == null ? new MeshRenderer[0] : lodRoots[i].GetComponentsInChildren<MeshRenderer>(true);
+            lodProperties = new MaterialPropertyBlock();
             if (colliders == null) colliders = GetComponentsInChildren<Collider>(true);
             // Generated prefabs may have all LOD roots active in serialized
             // legacy data. Normalize immediately so there is never a frame of
@@ -76,13 +86,9 @@ namespace Voyage.TerrainSystem
             // Existing baked prefabs may contain legacy skirts with duplicate
             // windings. Keep the terrain surface authoritative until those
             // prefabs are rebaked with the corrected skirt builder.
-            DisableGeneratedSkirts();
-            EnsureCollisionCollider();
-            ConfigureLighting();
-            colliders = GetComponentsInChildren<Collider>(true);
-            SetCollisionEnabled(!useHlod);
+            if (useHlod) SetCollisionEnabled(false);
             int initialLod = useHlod ? 3 : CalculateLod(viewerPosition);
-            SetLod(initialLod);
+            SetLod(initialLod, true);
             EnsureGrassForCurrentLod(record.bounds);
             UpdateGrassInteractionProximity();
         }
@@ -97,9 +103,15 @@ namespace Voyage.TerrainSystem
                 return;
             }
 
+            int lod = CalculateLod(cameraPosition);
             float distance = Vector3.Distance(bounds.ClosestPoint(cameraPosition), cameraPosition);
-            int lod = distance < settings.lod0Distance ? 0 : distance < settings.lod1Distance ? 1 : distance < settings.lod2Distance ? 2 : 3;
+            // A small dead band prevents back-and-forth switches at a threshold.
+            if (currentLod >= 0 && lod > currentLod &&
+                distance < settings.GetLodDistance(currentLod) + 10f) lod = currentLod;
+            else if (currentLod > 0 && lod < currentLod &&
+                distance > settings.GetLodDistance(currentLod - 1) - 10f) lod = currentLod;
             SetLod(lod);
+            UpdateLodTransition();
             EnsureGrassForCurrentLod(bounds);
             UpdateGrassInteractionProximity();
         }
@@ -108,15 +120,23 @@ namespace Voyage.TerrainSystem
         {
             if (settings == null) return 0;
             float distance = Vector3.Distance(bounds.ClosestPoint(viewerPosition), viewerPosition);
-            return distance < settings.lod1Distance ? 0 : distance < settings.lod2Distance ? 1 : distance < settings.lod3Distance ? 2 : 3;
+            return distance < settings.lod0Distance ? 0 : distance < settings.lod1Distance ? 1 : distance < settings.lod2Distance ? 2 : 3;
         }
 
         private void EnsureGrassForCurrentLod(Bounds grassBounds)
         {
             InteractiveGrassTile grass = GetComponent<InteractiveGrassTile>();
+            // Only runtime sampling needs physics; authored grass remains
+            // drawable even when a tile's collision is disabled.
+            if (!CollisionEnabled && (grass == null || (grass.bakedClusters == null && grass.bakedMesh == null))) return;
             if (grass == null && currentLod < 3)
                 grass = gameObject.AddComponent<InteractiveGrassTile>();
             if (grass == null) return;
+            if (configuredGrass == grass)
+            {
+                grass.SetLod(currentLod);
+                return;
+            }
             if (settings != null)
             {
                 Shader.SetGlobalVector("_VoyageGrassWind", new Vector4(
@@ -152,11 +172,12 @@ namespace Voyage.TerrainSystem
                 // budget authored in settings while still protecting against
                 // an accidental unbounded value.
                 grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 24000);
-                grass.clustersPerFrame = Mathf.Max(grass.clustersPerFrame, 768);
+                grass.clustersPerFrame = Mathf.Clamp(grass.clustersPerFrame, 32, 96);
                 grass.fullDensityBelowSlope = settings.grassFullDensityBelowSlope;
                 grass.noGrassAboveSlope = settings.grassNoGrassAboveSlope;
             }
             grass.Initialize(grassBounds);
+            configuredGrass = grass;
             grass.SetLod(currentLod);
         }
 
@@ -281,7 +302,7 @@ namespace Voyage.TerrainSystem
             }
         }
 
-        private void SetLod(int lod)
+        private void SetLod(int lod, bool immediate = false)
         {
             lod = Mathf.Clamp(lod, 0, 3);
             // UpdateLod is evaluated every frame for every loaded tile. Do
@@ -289,12 +310,43 @@ namespace Voyage.TerrainSystem
             // lighting to every renderer unless the selected LOD actually
             // changed; that creates periodic render-thread spikes while the
             // vehicle is moving and makes its wheels appear to step.
-            if (currentLod == lod) return;
+            if (currentLod == lod && !immediate) return;
+            bool fade = !immediate && Application.isPlaying && settings != null && settings.useCrossFade && currentLod >= 0;
+            // Finish the previous pair before starting a new transition.
+            outgoingLod = fade ? currentLod : -1;
+            lodTransition = fade ? 0f : 1f;
             currentLod = lod;
             for (int i = 0; i < lodRoots.Length; i++)
-                if (lodRoots[i] != null) lodRoots[i].SetActive(i == lod);
+                if (lodRoots[i] != null) lodRoots[i].SetActive(i == lod || i == outgoingLod);
+            ApplyLodFade();
             InteractiveGrassTile grass = GetComponent<InteractiveGrassTile>();
             if (grass != null) grass.SetLod(lod);
+        }
+
+        private void UpdateLodTransition()
+        {
+            if (outgoingLod < 0) return;
+            lodTransition = Mathf.MoveTowards(lodTransition, 1f, Time.deltaTime / LodTransitionSeconds);
+            ApplyLodFade();
+            if (lodTransition < 1f) return;
+            if (lodRoots[outgoingLod] != null) lodRoots[outgoingLod].SetActive(false);
+            outgoingLod = -1;
+        }
+
+        private void ApplyLodFade()
+        {
+            if (lodRenderers == null) return;
+            for (int i = 0; i < lodRenderers.Length; i++)
+            {
+                if (i != currentLod && i != outgoingLod) continue;
+                foreach (MeshRenderer renderer in lodRenderers[i])
+                {
+                    renderer.GetPropertyBlock(lodProperties);
+                    lodProperties.SetFloat("_TerrainLodProgress", lodTransition);
+                    lodProperties.SetFloat("_TerrainLodOutgoing", i == outgoingLod ? 1f : 0f);
+                    renderer.SetPropertyBlock(lodProperties);
+                }
+            }
         }
     }
 }

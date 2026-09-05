@@ -91,6 +91,20 @@ namespace Voyage.TerrainSystem
         [Min(0f)] public float visualDistanceOverride = 0f;
         [Min(0f)] public float visualTileMargin = 256f;
 
+        public float GetVisualDistance()
+        {
+            return visualDistanceOverride > 0f ? visualDistanceOverride :
+                Mathf.Max(tileSize * Mathf.Max(1, loadedRadius), grassFadeEnd + 40f);
+        }
+
+        public int GetPreloadRadius()
+        {
+            // Keep the complete visual circle plus an IO safety margin
+            // inside the loaded square, including at either edge of a cell.
+            return Mathf.Max(Mathf.Max(loadedRadius, preloadRadius),
+                Mathf.CeilToInt((GetVisualDistance() + visualTileMargin) / Mathf.Max(1f, tileSize)));
+        }
+
         public Vector2Int WorldToTile(Vector3 worldPosition)
         {
             Vector3 local = worldPosition - worldOrigin;

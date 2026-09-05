@@ -52,6 +52,7 @@ Shader "Voyage/Grass/InteractiveLit"
             #pragma target 3.5
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            #include "GrassDistance.hlsl"
 
             TEXTURE2D(_VoyageGrassInteraction); SAMPLER(sampler_VoyageGrassInteraction);
             TEXTURE2D(_VoyageGrassPermanentInteraction); SAMPLER(sampler_VoyageGrassPermanentInteraction);
@@ -137,6 +138,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 float directBendAmount : TEXCOORD6;
                 float4 shadowCoord : TEXCOORD7;
                 half fogFactor : TEXCOORD8;
+                float densityFade : TEXCOORD9;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -221,6 +223,16 @@ Shader "Voyage/Grass/InteractiveLit"
                 UNITY_SETUP_INSTANCE_ID(input);
                 Varyings output;
                 float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
+                float3 clusterPosition = TransformObjectToWorld(float3(0, 0, 0));
+                // A baked mesh has no per-cluster transform; use blade position
+                // in that legacy path instead of fading the entire tile at once.
+                #if !defined(UNITY_INSTANCING_ENABLED) && !defined(UNITY_PROCEDURAL_INSTANCING_ENABLED)
+                    clusterPosition = positionWS;
+                #endif
+                float clusterDistance = distance(clusterPosition, GetCameraPositionWS());
+                float density = VoyageGrassDensity(clusterDistance, _FadeStart, _FadeEnd);
+                float selection = VoyageGrassSelection(clusterPosition);
+                output.densityFade = 1.0 - smoothstep(density, density + 0.08, selection);
                 // Every generated grass blade is authored around a local
                 // ground plane at y=0; terrain height is carried only by the
                 // per-instance matrix translation. Do not reconstruct the
@@ -361,7 +373,8 @@ Shader "Voyage/Grass/InteractiveLit"
                 float bladeWidth = lerp(1.0, 0.16, saturate(input.uv.y));
                 clip(centerMask - max(1.0 - bladeWidth, _AlphaClip));
                 float cameraDistance = distance(input.positionWS, GetCameraPositionWS());
-                float fade = (1.0 - smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance)) * _TileFade;
+                float fade = (1.0 - smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance)) * _TileFade * input.densityFade;
+                clip(fade - 0.001);
                 float distanceGroundBlend = smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance);
                 if (_DistantAlphaClip > 0.5 && cameraDistance > _FadeStart)
                 {

@@ -8,6 +8,8 @@ Shader "Voyage/Terrain/Stylized"
         _MacroScale ("Macro Scale", Float) = 0.009
         _MacroStrength ("Macro Strength", Range(0,1)) = 0.35
         _HeightTint ("Height Tint", Range(0,1)) = 0.18
+        [HideInInspector] _TerrainLodProgress ("LOD progress", Float) = 1
+        [HideInInspector] _TerrainLodOutgoing ("Outgoing LOD", Float) = 0
     }
     SubShader
     {
@@ -31,7 +33,10 @@ Shader "Voyage/Terrain/Stylized"
                 float _MacroScale;
                 float _MacroStrength;
                 float _HeightTint;
+                float _TerrainLodProgress;
+                float _TerrainLodOutgoing;
             CBUFFER_END
+            float4 _VoyageTerrainView;
 
             struct Attributes { float4 positionOS : POSITION; float3 normalOS : NORMAL; };
             struct Varyings
@@ -55,6 +60,15 @@ Shader "Voyage/Terrain/Stylized"
 
             half4 frag(Varyings input) : SV_Target
             {
+                float threshold = frac(52.9829189 * frac(dot(floor(input.positionCS.xy), float2(0.06711056, 0.00583715))));
+                // Complementary masks keep exactly one surface during LOD changes.
+                clip(_TerrainLodOutgoing > 0.5 ? threshold - _TerrainLodProgress - 0.00001 : _TerrainLodProgress - threshold);
+                if (_VoyageTerrainView.w > 0.0)
+                {
+                    float viewDistance = distance(input.positionWS.xz, _VoyageTerrainView.xy);
+                    float coverage = 1.0 - smoothstep(_VoyageTerrainView.z, _VoyageTerrainView.w, viewDistance);
+                    clip(coverage - threshold - 0.00001);
+                }
                 half3 normalWS = normalize(input.normalWS);
                 half slope = saturate(normalWS.y);
                 float macro = frac(sin(dot(floor(input.positionWS.xz * max(_MacroScale, 0.001)), float2(12.9898, 78.233))) * 43758.5453);

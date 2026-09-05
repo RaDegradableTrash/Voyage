@@ -33,6 +33,7 @@ public sealed class DrivingCore : MonoBehaviour
     readonly Dictionary<Vector2Int, GameObject> loadedTerrainTiles = new Dictionary<Vector2Int, GameObject>();
     readonly Queue<TerrainTileRecord> pendingTerrainLoads = new Queue<TerrainTileRecord>();
     readonly HashSet<Vector2Int> pendingTerrainCoordinates = new HashSet<Vector2Int>();
+    readonly Queue<GameObject> pendingTerrainUnloads = new Queue<GameObject>();
     Coroutine terrainLoadRoutine;
     Vector2Int streamedCenter;
     bool hasStreamedCenter;
@@ -121,6 +122,7 @@ public sealed class DrivingCore : MonoBehaviour
             yield break;
         }
         Vector3 spawnPoint = new Vector3(-24f, 0f, -24f);
+        terrainIndex.RebuildLookup();
         StreamTerrain(spawnPoint, true);
         // Do not spawn a controllable vehicle into an empty streaming bubble.
         // The visible radius must be ready before the player can outrun it.
@@ -158,6 +160,9 @@ public sealed class DrivingCore : MonoBehaviour
     {
         if (terrainIndex == null || terrainIndex.settings == null) return;
         Vector3 position = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
+        float visualDistance = terrainIndex.settings.GetVisualDistance();
+        Shader.SetGlobalVector("_VoyageTerrainView", new Vector4(position.x, position.z,
+            Mathf.Max(0f, visualDistance - terrainIndex.settings.tileSize), visualDistance));
         StreamTerrain(position, false);
     }
 
@@ -177,18 +182,14 @@ public sealed class DrivingCore : MonoBehaviour
         streamedCenter = center;
         hasStreamedCenter = true;
 
-        int loadRadius = Mathf.Max(settings.loadedRadius, settings.preloadRadius);
+        int loadRadius = settings.GetPreloadRadius();
         int unloadRadius = Mathf.Max(loadRadius + 1, settings.unloadRadius);
-        HashSet<Vector2Int> wanted = new HashSet<Vector2Int>();
+        List<TerrainTileRecord> candidates = new List<TerrainTileRecord>();
         for (int y = center.y - loadRadius; y <= center.y + loadRadius; y++)
         for (int x = center.x - loadRadius; x <= center.x + loadRadius; x++)
-            wanted.Add(new Vector2Int(x, y));
-
-        List<TerrainTileRecord> candidates = new List<TerrainTileRecord>();
-        for (int i = 0; i < terrainIndex.tiles.Count; i++)
         {
-            TerrainTileRecord record = terrainIndex.tiles[i];
-            if (record == null || !wanted.Contains(record.coordinate) ||
+            TerrainTileRecord record;
+            if (!terrainIndex.TryGet(new Vector2Int(x, y), out record) || record == null ||
                 loadedTerrainTiles.ContainsKey(record.coordinate) ||
                 pendingTerrainCoordinates.Contains(record.coordinate)) continue;
             candidates.Add(record);
@@ -204,9 +205,6 @@ public sealed class DrivingCore : MonoBehaviour
             pendingTerrainLoads.Enqueue(candidates[i]);
             pendingTerrainCoordinates.Add(candidates[i].coordinate);
         }
-        if (terrainLoadRoutine == null && pendingTerrainLoads.Count > 0)
-            terrainLoadRoutine = StartCoroutine(ProcessTerrainLoads(settings));
-
         UpdateLoadedTerrainLods(position, settings, center);
 
         List<Vector2Int> stale = new List<Vector2Int>();
@@ -218,45 +216,66 @@ public sealed class DrivingCore : MonoBehaviour
         for (int i = 0; i < stale.Count; i++)
         {
             GameObject tile = loadedTerrainTiles[stale[i]];
-            if (tile != null) Destroy(tile);
+            if (tile != null) pendingTerrainUnloads.Enqueue(tile);
             loadedTerrainTiles.Remove(stale[i]);
         }
+        if (terrainLoadRoutine == null && (pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0))
+            terrainLoadRoutine = StartCoroutine(ProcessTerrainLoads(settings));
     }
 
     IEnumerator ProcessTerrainLoads(TerrainChunkSettings settings)
     {
-        const int tilesPerFrame = 4;
-        while (pendingTerrainLoads.Count > 0)
+        // Spread IO, initialization and destruction across frames instead
+        // of blocking the camera's frame when crossing a streaming cell.
+        yield return null;
+        while (pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0)
         {
-            for (int batch = 0; batch < tilesPerFrame && pendingTerrainLoads.Count > 0; batch++)
+            if (pendingTerrainUnloads.Count > 0)
             {
-                TerrainTileRecord record = pendingTerrainLoads.Dequeue();
-                pendingTerrainCoordinates.Remove(record.coordinate);
-                Vector2Int currentCenter = settings.WorldToTile(Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f));
-                int distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
-                int loadRadius = Mathf.Max(settings.loadedRadius, settings.preloadRadius);
-                if (distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
+                Destroy(pendingTerrainUnloads.Dequeue());
+                yield return null;
+            }
+            if (pendingTerrainLoads.Count == 0) continue;
+            TerrainTileRecord record = pendingTerrainLoads.Dequeue();
+            Vector3 viewer = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
+            Vector2Int currentCenter = settings.WorldToTile(viewer);
+            int loadRadius = settings.GetPreloadRadius();
+            int distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
+            if (distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
+            {
+                ResourceRequest request = Resources.LoadAsync<GameObject>(record.resourcePath);
+                yield return request;
+                // Recheck after IO: the player may already be in another cell.
+                viewer = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
+                currentCenter = settings.WorldToTile(viewer);
+                distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
+                GameObject prefab = request.asset as GameObject;
+                if (prefab != null && distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
                 {
-                    GameObject prefab = Resources.Load<GameObject>(record.resourcePath);
-                    if (prefab != null)
+                    GameObject tileObject = Instantiate(prefab, record.bounds.center, Quaternion.identity);
+                    tileObject.name = "FBX TERRAIN BLOCK " + record.coordinate;
+                    TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
+                    if (tile != null)
                     {
-                        GameObject tileObject = Instantiate(prefab, record.bounds.center, Quaternion.identity);
-                        tileObject.name = "FBX TERRAIN BLOCK " + record.coordinate;
-                        TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
-                        if (tile != null)
-                        {
-                            Vector3 viewer = Player != null ? Player.transform.position : record.bounds.center;
-                            tile.Initialize(record, settings, false, viewer);
-                            tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
-                        }
-                        loadedTerrainTiles.Add(record.coordinate, tileObject);
+                        tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
+                        tile.Initialize(record, settings, false, viewer);
                     }
+                    loadedTerrainTiles.Add(record.coordinate, tileObject);
                 }
             }
-            Physics.SyncTransforms();
+            pendingTerrainCoordinates.Remove(record.coordinate);
             yield return null;
         }
         terrainLoadRoutine = null;
+    }
+
+    void OnDestroy()
+    {
+        Shader.SetGlobalVector("_VoyageTerrainView", Vector4.zero);
+        foreach (GameObject tile in loadedTerrainTiles.Values)
+            if (tile != null) Destroy(tile);
+        while (pendingTerrainUnloads.Count > 0) Destroy(pendingTerrainUnloads.Dequeue());
+        if (Instance == this) Instance = null;
     }
 
     void UpdateLoadedTerrainLods(Vector3 position, TerrainChunkSettings settings, Vector2Int center)
