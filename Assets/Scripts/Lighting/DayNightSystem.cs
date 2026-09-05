@@ -23,7 +23,7 @@ namespace Voyage.Lighting
         [Header("Clock")]
         [Range(0f, 24f)] public float currentTime = 12f;
         public bool advanceTime = true;
-        [Min(60f)] public float dayDuration = 900f;
+        [Min(1f)] public float dayDuration = 60f;
         public float timeScale = 1f;
         [Range(0f, 24f)] public float sunriseTime = 6f;
         [Range(0f, 24f)] public float sunsetTime = 18f;
@@ -56,6 +56,8 @@ namespace Voyage.Lighting
         private Material runtimeSkybox;
         private Material previousSkybox;
         private readonly System.Collections.Generic.List<Light> disabledDirectionalLights = new System.Collections.Generic.List<Light>();
+        static readonly int GrassEnvironmentColorId = Shader.PropertyToID("_VoyageGrassEnvironmentColor");
+        static readonly int GrassEnvironmentLightId = Shader.PropertyToID("_VoyageGrassEnvironmentLight");
 
         void OnEnable()
         {
@@ -157,7 +159,18 @@ namespace Voyage.Lighting
             RenderSettings.ambientIntensity = ambient;
             RenderSettings.reflectionIntensity = reflection;
             ApplySky(day, horizonGlow);
+            PublishGrassEnvironment(day);
             Changed?.Invoke(Snapshot);
+        }
+
+        void PublishGrassEnvironment(float day)
+        {
+            // Grass never receives or casts realtime shadows. Its appearance
+            // follows the independent day/night environment smoothly instead.
+            Color nightGrass = new Color(.46f, .54f, .72f, 1f);
+            Color dayGrass = new Color(1f, .94f, .80f, 1f);
+            Shader.SetGlobalColor(GrassEnvironmentColorId, Color.Lerp(nightGrass, dayGrass, day));
+            Shader.SetGlobalFloat(GrassEnvironmentLightId, Mathf.Lerp(.48f, 1f, day));
         }
 
         void EnsureSkybox()
