@@ -208,8 +208,22 @@ namespace Voyage.Lighting
 
         static void ConfigureCameras()
         {
-            foreach (Camera camera in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            Camera[] cameras = FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            Camera primary = null;
+            for (int i = 0; i < cameras.Length; i++)
+                if (cameras[i] != null && cameras[i].enabled &&
+                    (cameras[i].name.IndexOf("Main Camera", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     cameras[i].name.IndexOf("Voyage Runtime Camera", StringComparison.OrdinalIgnoreCase) >= 0))
+                { primary = cameras[i]; break; }
+            if (primary == null) primary = Camera.main;
+            if (primary == null)
+                for (int i = 0; i < cameras.Length; i++)
+                    if (cameras[i] != null && cameras[i].enabled) { primary = cameras[i]; break; }
+            for (int i = 0; i < cameras.Length; i++)
             {
+                Camera camera = cameras[i];
+                if (camera == null) continue;
+                if (primary != null && camera != primary) camera.enabled = false;
                 // A solid fallback keeps the environment visible on URP/DX12
                 // paths where DrawSkybox is skipped for a target texture.
                 camera.clearFlags = CameraClearFlags.SolidColor;
