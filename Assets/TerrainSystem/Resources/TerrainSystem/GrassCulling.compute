@@ -1,0 +1,28 @@
+#pragma kernel CSMain
+#include "../../../Shaders/GrassDistance.hlsl"
+
+StructuredBuffer<float4x4> _SourceMatrices;
+AppendStructuredBuffer<float4x4> _VisibleMatrices;
+float3 _CameraPosition;
+float4 _FrustumPlanes[6];
+float _MaxDistance;
+float _DensityNearDistance;
+float _InstanceRadius;
+uint _SourceCount;
+
+[numthreads(64, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x;
+    if (index >= _SourceCount) return;
+    float4x4 transformMatrix = _SourceMatrices[index];
+    float3 position = float3(transformMatrix[0][3], transformMatrix[1][3], transformMatrix[2][3]);
+    float viewDistance = distance(position, _CameraPosition);
+    if (viewDistance > _MaxDistance + _InstanceRadius) return;
+    for (int planeIndex = 0; planeIndex < 6; planeIndex++)
+        if (dot(_FrustumPlanes[planeIndex].xyz, position) + _FrustumPlanes[planeIndex].w < -_InstanceRadius) return;
+    float density = VoyageGrassDensity(viewDistance, _DensityNearDistance, _MaxDistance);
+    // Preserve the entire soft visibility band; the material fades it.
+    if (VoyageGrassSelection(position) > density + 0.08) return;
+    _VisibleMatrices.Append(transformMatrix);
+}

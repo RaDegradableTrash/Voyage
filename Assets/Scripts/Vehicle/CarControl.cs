@@ -50,7 +50,6 @@ public class CarControl : MonoBehaviour
     public float motorTorque = 35000;
     public float brakeTorque = 400000;
     public float eBrakeTorque = 10000000f;
-    public float maxSpeed = 20;
     public float steeringRange = 30;
     public float steeringRangeAtMaxSpeed = 10;
     public float centreOfGravityOffset = -1f;
@@ -168,6 +167,28 @@ public class CarControl : MonoBehaviour
     // 动能回收相关
     private float lastFrameVelocity = 0f;
     private Vector3 lastFramePosition;
+    // The reference RV's nose is local -Z; normalized physics wheels roll
+    // along local +Z, hence the negative drive torque below.
+    public Vector3 DriveForward => -transform.forward;
+
+    float GetRoadSpeedLimitKmh()
+    {
+        switch (currentGear)
+        {
+            case GearMode.Reverse: return Mathf.Max(1f, reverseMaxSpeedKmh);
+            case GearMode.H6: return Mathf.Max(1f, h6MaxSpeedKmh);
+            case GearMode.L6: return Mathf.Max(1f, l6MaxSpeedKmh);
+            default: return Mathf.Max(1f, driveMaxSpeedKmh);
+        }
+    }
+
+    float GetWheelRadius()
+    {
+        if (wheels != null)
+            foreach (WheelControl wheel in wheels)
+                if (wheel != null && wheel.WheelCollider != null) return Mathf.Max(0.01f, wheel.WorldRadius);
+        return 0.35f;
+    }
 
     public void SetGear(GearMode gear)
     {
@@ -287,11 +308,7 @@ public class CarControl : MonoBehaviour
 
     private float GetStableWheelRpm(float forwardSpeed)
     {
-        float radius = 0.35f;
-        if (wheels != null && wheels.Length > 0 && wheels[0] != null && wheels[0].WheelCollider != null)
-        {
-            radius = wheels[0].WheelCollider.radius;
-        }
+        float radius = GetWheelRadius();
         return (Mathf.Abs(forwardSpeed) * 60f) / (2f * Mathf.PI * radius);
     }
 
@@ -385,13 +402,16 @@ public class CarControl : MonoBehaviour
                     - (Keyboard.current.aKey.isPressed || Keyboard.current.leftArrowKey.isPressed ? 1f : 0f);
             }
         }
-        float forwardSpeed = Vector3.Dot(transform.forward, rigidBody.linearVelocity);
+        float forwardSpeed = Vector3.Dot(DriveForward, rigidBody.linearVelocity);
 
         float displaySpeed = Mathf.Abs(forwardSpeed) * 3.6f * speedMultiplier;
         currentSpeedKmh = displaySpeed;
         UpdateSpeedDisplay(displaySpeed);
 
-        float speedFactorMotor = Mathf.InverseLerp(0, maxSpeed, forwardSpeed);
+        // Taper only near the selected gear's road-speed limit. The old
+        // 20 m/s taper removed most torque at ordinary cruising speeds.
+        float roadLimit = GetRoadSpeedLimitKmh() / 3.6f;
+        float speedFactorMotor = Mathf.InverseLerp(roadLimit * 0.85f, roadLimit, Mathf.Abs(forwardSpeed));
 
         float requestedMotorTorque = motorTorque;
         if (currentGear == GearMode.Sport)
@@ -496,7 +516,7 @@ public class CarControl : MonoBehaviour
                 break;
         }
 
-        if (speedLimitKmh > 0f && displaySpeed > speedLimitKmh)
+        if (speedLimitKmh > 0f && Mathf.Abs(forwardSpeed) * 3.6f > speedLimitKmh)
         {
             appliedThrottleInput = 0f;
             if (currentGear == GearMode.L6)
@@ -522,11 +542,7 @@ public class CarControl : MonoBehaviour
         // ========== 用转速限制车速 ==========
         float maxEngineRpm = 2800f;
 
-        float wheelRadius = 0.35f;
-        if (wheels != null && wheels.Length > 0 && wheels[0] != null && wheels[0].WheelCollider != null)
-        {
-            wheelRadius = wheels[0].WheelCollider.radius;
-        }
+        float wheelRadius = GetWheelRadius();
 
         if (currentGear == GearMode.Drive || currentGear == GearMode.Sport || IsSixLockGear(currentGear))
         {
@@ -537,10 +553,7 @@ public class CarControl : MonoBehaviour
             if (absForwardSpeed > maxForwardSpeedForCurrentGear)
             {
                 float limitedSpeed = Mathf.Sign(forwardSpeed) * maxForwardSpeedForCurrentGear;
-                Vector3 currentVel = rigidBody.linearVelocity;
-                float currentSideways = Vector3.Dot(transform.right, currentVel);
-                float currentUp = Vector3.Dot(transform.up, currentVel);
-                rigidBody.linearVelocity = transform.forward * limitedSpeed + transform.right * currentSideways + transform.up * currentUp;
+                rigidBody.linearVelocity += DriveForward * (limitedSpeed - forwardSpeed);
                 forwardSpeed = limitedSpeed;
             }
         }

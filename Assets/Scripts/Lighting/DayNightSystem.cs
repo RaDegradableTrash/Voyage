@@ -1,0 +1,203 @@
+using System;
+using UnityEngine;
+using UnityEngine.Rendering;
+
+namespace Voyage.Lighting
+{
+    [Serializable]
+    public struct LightingSnapshot
+    {
+        public float time;
+        public float sunHeight;
+        public float sunIntensity;
+        public float moonIntensity;
+        public float ambientIntensity;
+    }
+
+    /// <summary>Single owner for the scene's sun, moon, ambient light and sky.</summary>
+    [DisallowMultipleComponent]
+    public sealed class DayNightSystem : MonoBehaviour
+    {
+        public static DayNightSystem Instance { get; private set; }
+
+        [Header("Clock")]
+        [Range(0f, 24f)] public float currentTime = 12f;
+        public bool advanceTime = true;
+        [Min(60f)] public float dayDuration = 900f;
+        public float timeScale = 1f;
+        [Range(0f, 24f)] public float sunriseTime = 6f;
+        [Range(0f, 24f)] public float sunsetTime = 18f;
+
+        [Header("Managed lights")]
+        public Light sun;
+        public Light moon;
+        [Range(0f, 2f)] public float daySunIntensity = .95f;
+        [Range(0f, .2f)] public float nightSunIntensity = .035f;
+        [Range(0f, .2f)] public float moonIntensity = .10f;
+        public Color daySunColor = new Color(1f, .91f, .78f);
+        public Color sunsetSunColor = new Color(.95f, .5f, .3f);
+        public Color moonColor = new Color(.42f, .5f, .72f);
+        [Range(0f, 1f)] public float sunShadowStrength = .72f;
+        [Range(0f, 1f)] public float moonShadowStrength = .3f;
+
+        [Header("Environment")]
+        [Range(0f, 1f)] public float dayAmbientIntensity = .34f;
+        [Range(0f, 1f)] public float nightAmbientIntensity = .10f;
+        [Range(0f, 1f)] public float dayReflectionIntensity = .28f;
+        [Range(0f, 1f)] public float nightReflectionIntensity = .015f;
+        public Color daySkyColor = new Color(.42f, .52f, .62f);
+        public Color horizonSkyColor = new Color(.82f, .34f, .22f);
+        public Color nightSkyColor = new Color(.018f, .028f, .06f);
+        public bool manageOtherDirectionalLights = true;
+
+        public LightingSnapshot Snapshot { get; private set; }
+        public bool IsNight => Snapshot.sunHeight <= 0f;
+        public event Action<LightingSnapshot> Changed;
+        private Material runtimeSkybox;
+        private Material previousSkybox;
+        private readonly System.Collections.Generic.List<Light> disabledDirectionalLights = new System.Collections.Generic.List<Light>();
+
+        void OnEnable()
+        {
+            Instance = this;
+            EnsureLights();
+            EnsureSkybox();
+            Apply();
+        }
+
+        void OnDisable()
+        {
+            if (Instance == this) Instance = null;
+            if (RenderSettings.skybox == runtimeSkybox) RenderSettings.skybox = previousSkybox;
+            if (runtimeSkybox != null)
+            {
+                if (Application.isPlaying) Destroy(runtimeSkybox);
+                else DestroyImmediate(runtimeSkybox);
+            }
+            runtimeSkybox = null;
+            previousSkybox = null;
+            for (int i = 0; i < disabledDirectionalLights.Count; i++)
+                if (disabledDirectionalLights[i] != null) disabledDirectionalLights[i].enabled = true;
+            disabledDirectionalLights.Clear();
+        }
+
+        void Update()
+        {
+            if (Application.isPlaying && advanceTime)
+                currentTime = Mathf.Repeat(currentTime + Time.deltaTime * timeScale * 24f / dayDuration, 24f);
+            Apply();
+        }
+
+        public void SetTime(float value) { currentTime = Mathf.Repeat(value, 24f); Apply(); }
+
+        void EnsureLights()
+        {
+            if (sun == null)
+            {
+                Light[] found = FindObjectsByType<Light>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+                for (int i = 0; i < found.Length; i++)
+                    if (found[i].type == LightType.Directional && found[i].name.IndexOf("Sun", StringComparison.OrdinalIgnoreCase) >= 0) { sun = found[i]; break; }
+                if (sun == null) for (int i = 0; i < found.Length; i++) if (found[i].type == LightType.Directional) { sun = found[i]; break; }
+            }
+            if (sun == null) sun = CreateLight("Voyage Sun", Color.white);
+            if (moon == null) moon = CreateLight("Voyage Moon", moonColor);
+            Configure(sun, sunShadowStrength);
+            Configure(moon, moonShadowStrength);
+            if (manageOtherDirectionalLights)
+                foreach (Light light in FindObjectsByType<Light>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    if (light.type == LightType.Directional && light != sun && light != moon && light.enabled) { light.enabled = false; if (!disabledDirectionalLights.Contains(light)) disabledDirectionalLights.Add(light); }
+        }
+
+        static Light CreateLight(string name, Color color)
+        {
+            GameObject go = new GameObject(name);
+            go.transform.SetParent(Instance != null ? Instance.transform : null);
+            Light light = go.AddComponent<Light>();
+            light.type = LightType.Directional;
+            light.color = color;
+            return light;
+        }
+
+        static void Configure(Light light, float strength)
+        {
+            if (light == null) return;
+            light.type = LightType.Directional;
+            light.shadows = LightShadows.Soft;
+            light.shadowStrength = strength;
+            light.shadowBias = .035f;
+            light.shadowNormalBias = .3f;
+            light.cullingMask = ~0;
+            light.renderMode = LightRenderMode.Auto;
+        }
+
+        void Apply()
+        {
+            Vector3 sunDirection = CalculateSunDirection(currentTime);
+            float height = sunDirection.y;
+            float day = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0f, .18f, height));
+            float sunset = Mathf.Clamp01(1f - ClockDistance(currentTime, sunsetTime) / 1.8f);
+            float sunrise = Mathf.Clamp01(1f - ClockDistance(currentTime, sunriseTime) / 1.5f);
+            float horizonGlow = Mathf.Max(sunrise, sunset);
+            Vector3 moonDirection = -sunDirection;
+            float sunValue = height <= 0f ? 0f : Mathf.Lerp(nightSunIntensity, daySunIntensity, day);
+            float moonValue = Mathf.Lerp(moonIntensity, .006f, day);
+            float ambient = Mathf.Lerp(nightAmbientIntensity, dayAmbientIntensity, day);
+            float reflection = Mathf.Lerp(nightReflectionIntensity, dayReflectionIntensity, day);
+            if (sun != null) { sun.transform.rotation = Quaternion.LookRotation(-sunDirection, Vector3.up); sun.intensity = sunValue; sun.color = Color.Lerp(daySunColor, sunsetSunColor, horizonGlow); sun.enabled = sunValue > .001f; RenderSettings.sun = sun; }
+            if (moon != null) { moon.transform.rotation = Quaternion.LookRotation(-moonDirection, Vector3.up); moon.intensity = moonValue; moon.color = moonColor; moon.enabled = moonValue > .001f; }
+            Snapshot = new LightingSnapshot { time = currentTime, sunHeight = height, sunIntensity = sunValue, moonIntensity = moonValue, ambientIntensity = ambient };
+            RenderSettings.ambientMode = AmbientMode.Trilight;
+            RenderSettings.ambientSkyColor = Color.Lerp(nightSkyColor, daySkyColor, day);
+            RenderSettings.ambientEquatorColor = Color.Lerp(RenderSettings.ambientSkyColor, Color.gray, .45f);
+            // Never use a pure-black environment ground. URP Lit surfaces
+            // can otherwise become silhouettes whenever the realtime key
+            // light is shadowed, even though the material itself is valid.
+            RenderSettings.ambientGroundColor = Color.Lerp(
+                new Color(.075f, .055f, .025f), new Color(.28f, .27f, .25f), day);
+            RenderSettings.ambientIntensity = ambient;
+            RenderSettings.reflectionIntensity = reflection;
+            ApplySky(day, horizonGlow);
+            Changed?.Invoke(Snapshot);
+        }
+
+        void EnsureSkybox()
+        {
+            if (runtimeSkybox != null) return;
+            previousSkybox = RenderSettings.skybox;
+            Shader shader = Shader.Find("Skybox/Procedural");
+            if (shader == null) return;
+            runtimeSkybox = previousSkybox != null && previousSkybox.shader == shader
+                ? new Material(previousSkybox)
+                : new Material(shader);
+            runtimeSkybox.name = "Voyage Runtime Skybox";
+        }
+
+        void ApplySky(float day, float sunset)
+        {
+            if (runtimeSkybox == null) return;
+            Color skyColor = Color.Lerp(nightSkyColor, daySkyColor, day);
+            skyColor = Color.Lerp(skyColor, horizonSkyColor, sunset * .58f);
+            Color groundColor = Color.Lerp(new Color(.075f, .055f, .025f), new Color(.32f, .34f, .35f), day);
+            groundColor = Color.Lerp(groundColor, new Color(.48f, .22f, .13f), sunset * .35f);
+            if (runtimeSkybox.HasProperty("_SkyTint")) runtimeSkybox.SetColor("_SkyTint", skyColor);
+            if (runtimeSkybox.HasProperty("_GroundColor")) runtimeSkybox.SetColor("_GroundColor", groundColor);
+            if (runtimeSkybox.HasProperty("_Exposure")) runtimeSkybox.SetFloat("_Exposure", Mathf.Lerp(.08f, .78f, day) + sunset * .08f);
+            RenderSettings.skybox = runtimeSkybox;
+        }
+
+        Vector3 CalculateSunDirection(float time)
+        {
+            float dayDuration = Mathf.Repeat(sunsetTime - sunriseTime, 24f);
+            if (dayDuration < .01f) dayDuration = 12f;
+            float nightDuration = Mathf.Max(.01f, 24f - dayDuration);
+            float sinceSunrise = Mathf.Repeat(time - sunriseTime, 24f);
+            float angle = sinceSunrise <= dayDuration
+                ? sinceSunrise / dayDuration * Mathf.PI
+                : Mathf.PI + (sinceSunrise - dayDuration) / nightDuration * Mathf.PI;
+            return new Vector3(Mathf.Cos(angle), Mathf.Sin(angle), .18f).normalized;
+        }
+
+        static float ClockDistance(float a, float b) =>
+            Mathf.Abs(Mathf.DeltaAngle(a * 15f, b * 15f)) / 15f;
+    }
+}

@@ -1,0 +1,244 @@
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace Voyage.TerrainSystem.Editor
+{
+    internal static class GrassMeshBaker
+    {
+        public static GrassPrototypeAsset BuildPrototype(TerrainChunkSettings settings, string assetName)
+        {
+            if (settings == null || settings.grassDensity <= 0f) return null;
+            System.Random random = new System.Random(73856093 ^ settings.grassBladesPerCluster * 19349663);
+            List<Vector3> vertices = new List<Vector3>(settings.grassBladesPerCluster * 6);
+            List<Vector3> normals = new List<Vector3>(vertices.Capacity);
+            List<Vector2> uvs = new List<Vector2>(vertices.Capacity);
+            List<Vector2> randoms = new List<Vector2>(vertices.Capacity);
+            List<Vector2> bladeData = new List<Vector2>(vertices.Capacity);
+            List<int> indices = new List<int>(settings.grassBladesPerCluster * 6);
+            for (int blade = 0; blade < settings.grassBladesPerCluster; blade++)
+            {
+                float angle = (float)random.NextDouble() * Mathf.PI * 2f;
+                float distance = Mathf.Sqrt((float)random.NextDouble()) * Mathf.Max(0.05f, settings.grassClusterRadius);
+                Vector3 local = new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
+                float height = settings.grassBladeHeight * (0.72f + (float)random.NextDouble() * 0.56f);
+                float width = height * (0.20f + (float)random.NextDouble() * 0.10f);
+                float yaw = (float)random.NextDouble() * Mathf.PI;
+                float variation = (float)random.NextDouble();
+                AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw, variation);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.25f, variation * 0.37f + 0.47f);
+            }
+            Mesh clusterMesh = new Mesh { name = assetName + " Cluster Mesh" };
+            clusterMesh.SetVertices(vertices);
+            clusterMesh.SetNormals(normals);
+            clusterMesh.SetUVs(0, uvs);
+            clusterMesh.SetUVs(1, randoms);
+            clusterMesh.SetUVs(2, bladeData);
+            clusterMesh.SetTriangles(indices, 0, true);
+            clusterMesh.RecalculateBounds();
+            GrassPrototypeAsset asset = ScriptableObject.CreateInstance<GrassPrototypeAsset>();
+            asset.name = assetName;
+            asset.clusterMesh = clusterMesh;
+            asset.bladesPerCluster = settings.grassBladesPerCluster;
+            asset.clusterRadius = settings.grassClusterRadius;
+            asset.bladeHeight = settings.grassBladeHeight;
+            return asset;
+        }
+
+        public static GrassChunkAsset BuildAsset(List<TerrainMeshBaker.TriangleSource> triangles, Vector3 origin, Vector2Int coordinate, TerrainChunkSettings settings, string assetName)
+        {
+            if (triangles == null || triangles.Count == 0 || settings.grassDensity <= 0f) return null;
+            float spacing = Mathf.Max(1f, settings.grassClusterSpacing);
+            int sideCount = Mathf.Max(1, Mathf.CeilToInt(settings.tileSize / spacing));
+            int clusterCount = Mathf.Min(settings.grassClusterBudget, Mathf.CeilToInt(sideCount * sideCount * settings.grassDensity));
+            if (clusterCount <= 0) return null;
+
+            float[] cumulativeAreas = new float[triangles.Count];
+            float totalArea = 0f;
+            for (int i = 0; i < triangles.Count; i++)
+            {
+                TerrainMeshBaker.TriangleSource t = triangles[i];
+                totalArea += Vector3.Cross(t.b - t.a, t.c - t.a).magnitude * 0.5f;
+                cumulativeAreas[i] = totalArea;
+            }
+            if (totalArea <= 0.0001f) return null;
+
+            List<Vector3> positions = new List<Vector3>(clusterCount);
+            List<Vector4> parameters = new List<Vector4>(clusterCount);
+            List<float> scales = new List<float>(clusterCount);
+            System.Random random = new System.Random(unchecked(coordinate.x * 73856093 ^ coordinate.y * 19349663));
+            int attempts = 0;
+            int maxAttempts = Mathf.Max(clusterCount * 8, 64);
+            while (positions.Count < clusterCount && attempts++ < maxAttempts)
+            {
+                float pick = (float)random.NextDouble() * totalArea;
+                int triangleIndex = Array.BinarySearch(cumulativeAreas, pick);
+                if (triangleIndex < 0) triangleIndex = ~triangleIndex;
+                triangleIndex = Mathf.Clamp(triangleIndex, 0, triangles.Count - 1);
+                TerrainMeshBaker.TriangleSource t = triangles[triangleIndex];
+                float r1 = Mathf.Sqrt((float)random.NextDouble());
+                float r2 = (float)random.NextDouble();
+                Vector3 position = t.a * (1f - r1) + t.b * (r1 * (1f - r2)) + t.c * (r1 * r2);
+                float densityNoise = Mathf.Lerp(0.55f, 1.15f, Mathf.PerlinNoise(position.x * 0.035f, position.z * 0.035f));
+                if (random.NextDouble() > settings.grassDensity * densityNoise) continue;
+                Vector3 normal = (t.na * (1f - r1) + t.nb * (r1 * (1f - r2)) + t.nc * (r1 * r2)).normalized;
+                float slope = Vector3.Angle(normal, Vector3.up);
+                float slopeDensity = 1f - Mathf.InverseLerp(settings.grassFullDensityBelowSlope, settings.grassNoGrassAboveSlope, slope);
+                if (slopeDensity <= 0f || random.NextDouble() > slopeDensity) continue;
+                positions.Add(position - origin);
+                Quaternion groundRotation = Quaternion.FromToRotation(Vector3.up, normal);
+                Quaternion yawRotation = Quaternion.AngleAxis((float)random.NextDouble() * 360f, normal);
+                Quaternion rotation = yawRotation * groundRotation;
+                parameters.Add(new Vector4(rotation.x, rotation.y, rotation.z, rotation.w));
+                scales.Add(0.82f + (float)random.NextDouble() * 0.36f);
+            }
+            if (positions.Count == 0) return null;
+
+            List<Vector3> vertices = new List<Vector3>(settings.grassBladesPerCluster * 8);
+            List<Vector3> normals = new List<Vector3>(vertices.Capacity);
+            List<Vector2> uvs = new List<Vector2>(vertices.Capacity);
+            List<Vector2> randoms = new List<Vector2>(vertices.Capacity);
+            List<Vector2> bladeData = new List<Vector2>(vertices.Capacity);
+            List<int> indices = new List<int>(settings.grassBladesPerCluster * 6);
+            for (int blade = 0; blade < settings.grassBladesPerCluster; blade++)
+            {
+                float angle = (float)random.NextDouble() * Mathf.PI * 2f;
+                float distance = Mathf.Sqrt((float)random.NextDouble()) * Mathf.Max(0.05f, settings.grassClusterRadius);
+                Vector3 local = new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
+                float height = settings.grassBladeHeight * (0.72f + (float)random.NextDouble() * 0.56f);
+                float width = height * (0.20f + (float)random.NextDouble() * 0.10f);
+                float yaw = (float)random.NextDouble() * Mathf.PI;
+                float variation = (float)random.NextDouble();
+                AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw, variation);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
+                AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.25f, variation * 0.37f + 0.47f);
+            }
+            Mesh clusterMesh = new Mesh { name = assetName + " Cluster Mesh" };
+            clusterMesh.indexFormat = vertices.Count > 65535 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16;
+            clusterMesh.SetVertices(vertices); clusterMesh.SetNormals(normals); clusterMesh.SetUVs(0, uvs); clusterMesh.SetUVs(1, randoms); clusterMesh.SetUVs(2, bladeData); clusterMesh.SetTriangles(indices, 0, true); clusterMesh.RecalculateBounds();
+            GrassChunkAsset asset = ScriptableObject.CreateInstance<GrassChunkAsset>();
+            asset.name = assetName;
+            asset.clusterMesh = clusterMesh;
+            asset.positions = positions.ToArray();
+            asset.parameters = parameters.ToArray();
+            asset.scales = scales.ToArray();
+            return asset;
+        }
+
+        public static Mesh Build(List<TerrainMeshBaker.TriangleSource> triangles, Vector3 origin, Vector2Int coordinate, TerrainChunkSettings settings, string meshName)
+        {
+            if (triangles == null || triangles.Count == 0 || settings.grassDensity <= 0f) return null;
+
+            float spacing = Mathf.Max(1f, settings.grassClusterSpacing);
+            int sideCount = Mathf.Max(1, Mathf.CeilToInt(settings.tileSize / spacing));
+            int desiredClusters = Mathf.CeilToInt(sideCount * sideCount * settings.grassDensity);
+            int clusterCount = Mathf.Min(settings.grassClusterBudget, desiredClusters);
+            if (clusterCount <= 0) return null;
+
+            float[] cumulativeAreas = new float[triangles.Count];
+            float totalArea = 0f;
+            for (int i = 0; i < triangles.Count; i++)
+            {
+                TerrainMeshBaker.TriangleSource t = triangles[i];
+                totalArea += Vector3.Cross(t.b - t.a, t.c - t.a).magnitude * 0.5f;
+                cumulativeAreas[i] = totalArea;
+            }
+            if (totalArea <= 0.0001f) return null;
+
+            var vertices = new List<Vector3>(clusterCount * settings.grassBladesPerCluster * 8);
+            var normals = new List<Vector3>(vertices.Capacity);
+            var uvs = new List<Vector2>(vertices.Capacity);
+            var randoms = new List<Vector2>(vertices.Capacity);
+            var bladeData = new List<Vector2>(vertices.Capacity);
+            var indices = new List<int>(clusterCount * settings.grassBladesPerCluster * 6);
+            System.Random random = new System.Random(unchecked(coordinate.x * 73856093 ^ coordinate.y * 19349663));
+            int accepted = 0;
+            int attempts = 0;
+            int maxAttempts = Mathf.Max(clusterCount * 8, 64);
+            while (accepted < clusterCount && attempts++ < maxAttempts)
+            {
+                float pick = (float)random.NextDouble() * totalArea;
+                int triangleIndex = Array.BinarySearch(cumulativeAreas, pick);
+                if (triangleIndex < 0) triangleIndex = ~triangleIndex;
+                triangleIndex = Mathf.Clamp(triangleIndex, 0, triangles.Count - 1);
+                TerrainMeshBaker.TriangleSource triangle = triangles[triangleIndex];
+                float r1 = Mathf.Sqrt((float)random.NextDouble());
+                float r2 = (float)random.NextDouble();
+                Vector3 position = triangle.a * (1f - r1) + triangle.b * (r1 * (1f - r2)) + triangle.c * (r1 * r2);
+                Vector3 normal = (triangle.na * (1f - r1) + triangle.nb * (r1 * (1f - r2)) + triangle.nc * (r1 * r2)).normalized;
+                float slope = Vector3.Angle(normal, Vector3.up);
+                float slopeDensity = 1f - Mathf.InverseLerp(settings.grassFullDensityBelowSlope, settings.grassNoGrassAboveSlope, slope);
+                if (slopeDensity <= 0f || random.NextDouble() > slopeDensity) continue;
+
+                accepted++;
+                float radius = Mathf.Max(0.05f, settings.grassClusterRadius);
+                for (int blade = 0; blade < settings.grassBladesPerCluster; blade++)
+                {
+                    float angle = (float)random.NextDouble() * Mathf.PI * 2f;
+                    float distance = Mathf.Sqrt((float)random.NextDouble()) * radius;
+                    // The cluster's ground position is already stored in the
+                    // GrassChunkAsset instance matrix. Keep the shared mesh
+                    // around a local root, otherwise terrain height is added
+                    // once by the vertex and a second time by the matrix.
+                    Vector3 local = new Vector3(Mathf.Cos(angle) * distance, 0f, Mathf.Sin(angle) * distance);
+                    float height = settings.grassBladeHeight * (0.72f + (float)random.NextDouble() * 0.56f);
+                    float width = height * (0.20f + (float)random.NextDouble() * 0.10f);
+                    float yaw = (float)random.NextDouble() * Mathf.PI;
+                    float variation = (float)random.NextDouble();
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw, variation);
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.5f, variation * 0.73f + 0.11f);
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI / 3f, variation * 0.51f + 0.23f);
+                    AddBlade(vertices, normals, uvs, randoms, bladeData, indices, local, height, width, yaw + Mathf.PI * 0.25f, variation * 0.37f + 0.47f);
+                }
+            }
+
+            if (vertices.Count == 0) return null;
+            Mesh mesh = new Mesh { name = meshName };
+            mesh.indexFormat = vertices.Count > 65535 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16;
+            mesh.SetVertices(vertices);
+            mesh.SetNormals(normals);
+            mesh.SetUVs(0, uvs);
+            mesh.SetUVs(1, randoms);
+            mesh.SetUVs(2, bladeData);
+            mesh.SetTriangles(indices, 0, true);
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        static void AddBlade(List<Vector3> vertices, List<Vector3> normals, List<Vector2> uvs, List<Vector2> randoms, List<Vector2> bladeData, List<int> indices, Vector3 position, float height, float width, float yaw, float variation)
+        {
+            Vector3 side = new Vector3(Mathf.Cos(yaw), 0f, Mathf.Sin(yaw)) * width;
+            Vector3 faceNormal = Vector3.Cross(side, Vector3.up).normalized;
+            Vector2 random = new Vector2(Mathf.Repeat(variation, 1f), Mathf.Repeat(variation * 2.17f + 0.37f, 1f));
+            int first = vertices.Count;
+            // Four rows produce three bendable segments. UV.y is the normalized
+            // joint position consumed by InteractiveGrass.shader.
+            for (int joint = 0; joint <= 3; joint++)
+            {
+                float normalized = joint / 3f;
+                float rowWidth = Mathf.Lerp(width, width * 0.12f, normalized);
+                Vector3 center = position + Vector3.up * (height * normalized);
+                if (joint == 3) center += faceNormal * (width * 0.45f);
+                vertices.Add(center - side.normalized * rowWidth);
+                vertices.Add(center + side.normalized * rowWidth);
+                normals.Add(faceNormal); normals.Add(faceNormal);
+                uvs.Add(new Vector2(0f, normalized)); uvs.Add(new Vector2(1f, normalized));
+                randoms.Add(random); randoms.Add(random);
+                Vector2 authoredBladeData = new Vector2(height, joint);
+                bladeData.Add(authoredBladeData); bladeData.Add(authoredBladeData);
+            }
+            for (int segment = 0; segment < 3; segment++)
+            {
+                int a = first + segment * 2;
+                int b = a + 1;
+                int c = a + 2;
+                int d = a + 3;
+                indices.Add(a); indices.Add(b); indices.Add(c);
+                indices.Add(b); indices.Add(d); indices.Add(c);
+            }
+        }
+    }
+}

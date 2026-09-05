@@ -9,7 +9,7 @@ namespace Voyage.TerrainSystem.Editor
 {
     internal static class TerrainMeshBaker
     {
-        private sealed class TriangleSource
+        internal sealed class TriangleSource
         {
             public Vector3 a, b, c;
             public Vector3 na, nb, nc;
@@ -25,15 +25,15 @@ namespace Voyage.TerrainSystem.Editor
             public ClipVertex(Vector3 position, Vector3 normal, Vector2 uv) { this.position = position; this.normal = normal; this.uv = uv; }
         }
 
-        private sealed class TileData
+        internal sealed class TileData
         {
             public readonly List<TriangleSource> triangles = new List<TriangleSource>();
         }
 
-        public static TerrainSourceAsset Analyze(GameObject source, TerrainSourceAsset descriptor)
+        public static TerrainSourceAsset Analyze(GameObject source, TerrainSourceAsset descriptor, TerrainChunkSettings settings = null)
         {
             if (source == null) throw new InvalidOperationException("请先拖入 FBX 模型或 FBX Prefab。");
-            GameObject copy = InstantiateSource(source);
+            GameObject copy = InstantiateSource(source, settings);
             try
             {
                 MeshFilter[] filters = copy.GetComponentsInChildren<MeshFilter>(true);
@@ -42,7 +42,7 @@ namespace Voyage.TerrainSystem.Editor
                 int materials = 0;
                 for (int i = 0; i < filters.Length; i++)
                 {
-                    if (filters[i].sharedMesh == null) continue;
+                    if (filters[i].sharedMesh == null || IsAuxiliaryGroundPlane(filters[i].sharedMesh, null)) continue;
                     Matrix4x4 matrix = filters[i].transform.localToWorldMatrix;
                     Vector3[] vertices = filters[i].sharedMesh.vertices;
                     for (int v = 0; v < vertices.Length; v++) bounds.Encapsulate(matrix.MultiplyPoint3x4(vertices[v]));
@@ -59,7 +59,7 @@ namespace Voyage.TerrainSystem.Editor
                 descriptor.meshCount = filters.Length;
                 descriptor.rendererCount = renderers.Length;
                 descriptor.materialCount = materials;
-                descriptor.importSettingsSnapshot = "Source asset is read through shared Mesh data. Original FBX is never modified.";
+                descriptor.importSettingsSnapshot = "Source asset is read through shared Mesh data without changing the original FBX scale.";
                 EditorUtility.SetDirty(descriptor);
                 AssetDatabase.SaveAssets();
                 return descriptor;
@@ -67,46 +67,72 @@ namespace Voyage.TerrainSystem.Editor
             finally { UnityEngine.Object.DestroyImmediate(copy); }
         }
 
-        public static TerrainTileIndex Generate(GameObject source, TerrainChunkSettings settings, TerrainSourceAsset descriptor, TerrainTileIndex index, Vector2Int? onlyCoordinate = null)
+        public static TerrainTileIndex Generate(GameObject source, TerrainChunkSettings settings, TerrainSourceAsset descriptor, TerrainTileIndex index, Vector2Int? onlyCoordinate = null, bool cleanGeneratedAssets = false)
         {
-            Analyze(source, descriptor);
-            GameObject copy = InstantiateSource(source);
+            Analyze(source, descriptor, settings);
+            GameObject copy = InstantiateSource(source, settings);
             try
             {
                 Dictionary<Vector2Int, TileData> tiles = CollectTriangles(copy, settings);
-                if (!onlyCoordinate.HasValue)
+                Dictionary<Vector2Int, TileData> generationTiles = FilterGenerationTiles(tiles, settings, onlyCoordinate);
+                if (generationTiles.Count == 0)
+                    throw new InvalidOperationException("没有位于生成范围内的地形 tile。请检查 generationMinTile / generationMaxTile。 ");
+                if (!onlyCoordinate.HasValue && cleanGeneratedAssets)
                 {
                     AssetDatabase.DeleteAsset("Assets/TerrainSystem/GeneratedLOD");
                     AssetDatabase.DeleteAsset("Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles");
+                    // Unity's asset database can retain stale folder state for
+                    // one editor tick after deleting a generated tree. Flush
+                    // that state before creating the first rebuilt tile.
+                    AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
                 }
                 EnsureDirectories();
+                GrassPrototypeAsset grassPrototype = settings.bakeGrass ? BuildSharedGrassPrototype(settings) : null;
                 index.source = descriptor;
                 index.settings = settings;
                 if (onlyCoordinate == null) index.tiles.Clear();
+                Debug.Log("FBX TERRAIN // generating " + generationTiles.Count + " tile(s)." );
                 int tileNumber = 0;
-                foreach (KeyValuePair<Vector2Int, TileData> pair in tiles)
+                AssetDatabase.StartAssetEditing();
+                try
                 {
-                    if (onlyCoordinate.HasValue && pair.Key != onlyCoordinate.Value) continue;
-                    tileNumber++;
-                    if (EditorUtility.DisplayCancelableProgressBar("Terrain Tile Baker", "Generating " + pair.Key, (float)tileNumber / Mathf.Max(1, tiles.Count)))
-                        throw new OperationCanceledException("Terrain tile generation cancelled. Existing derived assets are preserved; source FBX was not modified.");
+                    foreach (KeyValuePair<Vector2Int, TileData> pair in generationTiles)
+                    {
+                        if (onlyCoordinate.HasValue && pair.Key != onlyCoordinate.Value) continue;
+                        tileNumber++;
+                        if (EditorUtility.DisplayCancelableProgressBar("Terrain Tile Baker", "Generating " + pair.Key, (float)tileNumber / Mathf.Max(1, generationTiles.Count)))
+                            throw new OperationCanceledException("Terrain tile generation cancelled. Existing derived assets are preserved; source FBX was not modified.");
 /*
                     if (EditorUtility.DisplayCancelableProgressBar("Terrain Tile Baker", "Generating " + pair.Key, (float)tileNumber / Mathf.Max(1, tiles.Count)))
                         throw new OperationCanceledException("地块生成已取消，已生成的派生资源保留，源 FBX 未被修改。");
                     // disabled duplicate progress block
 */
-                    TerrainTileRecord record = BuildTile(pair.Key, pair.Value, settings);
-                    ReplaceRecord(index, record);
+                        TerrainTileRecord record = BuildTile(pair.Key, pair.Value, settings, grassPrototype);
+                        ReplaceRecord(index, record);
+                    }
+                }
+                finally
+                {
+                    AssetDatabase.StopAssetEditing();
                 }
                 EditorUtility.ClearProgressBar();
                 index.RebuildLookup();
-                Debug.Log(TerrainTileValidation.Validate(index));
                 EditorUtility.SetDirty(index);
                 AssetDatabase.SaveAssets();
-                AssetDatabase.Refresh();
                 return index;
             }
             finally { EditorUtility.ClearProgressBar(); UnityEngine.Object.DestroyImmediate(copy); }
+        }
+
+        private static Dictionary<Vector2Int, TileData> FilterGenerationTiles(Dictionary<Vector2Int, TileData> source, TerrainChunkSettings settings, Vector2Int? onlyCoordinate)
+        {
+            Dictionary<Vector2Int, TileData> result = new Dictionary<Vector2Int, TileData>();
+            foreach (KeyValuePair<Vector2Int, TileData> pair in source)
+            {
+                if (onlyCoordinate.HasValue && pair.Key != onlyCoordinate.Value) continue;
+                result.Add(pair.Key, pair.Value);
+            }
+            return result;
         }
 
         private static Dictionary<Vector2Int, TileData> CollectTriangles(GameObject root, TerrainChunkSettings settings)
@@ -117,6 +143,11 @@ namespace Voyage.TerrainSystem.Editor
             {
                 Mesh mesh = filters[f].sharedMesh;
                 if (mesh == null) continue;
+                if (IsAuxiliaryGroundPlane(mesh, settings))
+                {
+                    Debug.Log("FBX TERRAIN // skipped auxiliary ground plane mesh: " + mesh.name);
+                    continue;
+                }
                 MeshRenderer renderer = filters[f].GetComponent<MeshRenderer>();
                 Material[] materials = renderer != null ? renderer.sharedMaterials : Array.Empty<Material>();
                 Matrix4x4 matrix = filters[f].transform.localToWorldMatrix;
@@ -133,6 +164,7 @@ namespace Voyage.TerrainSystem.Editor
                         Vector3 a = matrix.MultiplyPoint3x4(v[tris[t]]);
                         Vector3 b = matrix.MultiplyPoint3x4(v[tris[t + 1]]);
                         Vector3 c = matrix.MultiplyPoint3x4(v[tris[t + 2]]);
+                        if (!IntersectsGenerationScope(a, b, c, settings)) continue;
                         Vector3 centroid = (a + b + c) / 3f;
                         Vector2Int tile = settings.WorldToTile(centroid);
                         if (settings.triangleBoundaryPolicy == TerrainTriangleBoundaryPolicy.ClipDerivedMesh)
@@ -158,6 +190,33 @@ namespace Voyage.TerrainSystem.Editor
                 }
             }
             return result;
+        }
+
+        private static bool IntersectsGenerationScope(Vector3 a, Vector3 b, Vector3 c, TerrainChunkSettings settings)
+        {
+            return true;
+        }
+
+        private static bool IsAuxiliaryGroundPlane(Mesh mesh, TerrainChunkSettings settings)
+        {
+            if (mesh == null) return false;
+
+            // The source FBX contains a second, enormous zero-thickness floor
+            // underneath the modeled terrain. Baking it by triangle centroid
+            // creates thousands of otherwise valid-looking terrain tiles. A
+            // real terrain surface has meaningful vertical relief, so filter
+            // only meshes that are both broad and effectively flat.
+            Bounds bounds = mesh.bounds;
+            bool usesXz = settings == null || settings.horizontalAxes == TerrainHorizontalAxes.XZ;
+            float horizontalSize = usesXz
+                ? Mathf.Max(bounds.size.x, bounds.size.z)
+                : Mathf.Max(bounds.size.x, bounds.size.y);
+            float verticalSize = usesXz
+                ? bounds.size.y
+                : bounds.size.z;
+            float tileSize = settings != null ? settings.tileSize : 256f;
+            return horizontalSize >= tileSize * 4f &&
+                   verticalSize <= Mathf.Max(0.25f, horizontalSize * 0.001f);
         }
 
         private static void GetHorizontalTileRange(Bounds bounds, TerrainChunkSettings settings, out int minX, out int maxX, out int minZ, out int maxZ)
@@ -236,7 +295,7 @@ namespace Voyage.TerrainSystem.Editor
             data.triangles.Add(triangle);
         }
 
-        private static TerrainTileRecord BuildTile(Vector2Int coordinate, TileData data, TerrainChunkSettings settings)
+        private static TerrainTileRecord BuildTile(Vector2Int coordinate, TileData data, TerrainChunkSettings settings, GrassPrototypeAsset grassPrototype)
         {
             string tileName = string.Format(settings.tileNameFormat, coordinate.x, coordinate.y);
             Vector3 tileOrigin = settings.GetTileBounds(coordinate).center;
@@ -252,18 +311,54 @@ namespace Voyage.TerrainSystem.Editor
                 TerrainSkirtBuilder.Build(lod3, coordinate, settings, settings.skirtDepth, tileName + "_Skirt3")
             } : new Mesh[4];
             string lodFolder = "Assets/TerrainSystem/GeneratedLOD/" + tileName + "/";
-            AssetDatabase.DeleteAsset(lodFolder);
+            // Keep the tile folder itself. Deleting a folder and recreating
+            // assets in it in the same import pass can leave Unity's folder
+            // cache stale and make CreateAsset fail intermittently.
+            DeleteGeneratedAsset(lodFolder + tileName + "_LOD0.asset");
+            DeleteGeneratedAsset(lodFolder + tileName + "_LOD1.asset");
+            DeleteGeneratedAsset(lodFolder + tileName + "_LOD2.asset");
+            DeleteGeneratedAsset(lodFolder + tileName + "_LOD3.asset");
+            DeleteGeneratedAsset(lodFolder + tileName + "_Skirt0.asset");
+            DeleteGeneratedAsset(lodFolder + tileName + "_Skirt1.asset");
+            DeleteGeneratedAsset(lodFolder + tileName + "_Skirt2.asset");
+            DeleteGeneratedAsset(lodFolder + tileName + "_Skirt3.asset");
+            DeleteGeneratedAsset(lodFolder + tileName + "_BakedGrass.asset");
             AssetDatabase.DeleteAsset("Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles/" + tileName + ".prefab");
             EnsureAssetFolder(lodFolder);
+            // DeleteAsset can leave Unity's folder cache one refresh behind.
+            // Ensure the physical directory exists and synchronise the asset
+            // database before CreateAsset receives the first LOD mesh.
+            System.IO.Directory.CreateDirectory(lodFolder);
             AssetDatabase.CreateAsset(lod0, lodFolder + tileName + "_LOD0.asset");
             AssetDatabase.CreateAsset(lod1, lodFolder + tileName + "_LOD1.asset");
             AssetDatabase.CreateAsset(lod2, lodFolder + tileName + "_LOD2.asset");
             AssetDatabase.CreateAsset(lod3, lodFolder + tileName + "_LOD3.asset");
             for (int i = 0; i < skirts.Length; i++) if (skirts[i] != null) AssetDatabase.CreateAsset(skirts[i], lodFolder + skirts[i].name + ".asset");
-            AssetDatabase.SaveAssets();
-
+            GrassChunkAsset bakedGrass = settings.bakeGrass
+                ? GrassMeshBaker.BuildAsset(data.triangles, tileOrigin, coordinate, settings, tileName + "_Grass")
+                : null;
+            if (bakedGrass != null)
+            {
+                // Keep the baked runtime asset distinct from the removable
+                // legacy *_Grass.asset cache handled by the editor window.
+                AssetDatabase.CreateAsset(bakedGrass, lodFolder + tileName + "_BakedGrass.asset");
+                if (bakedGrass.clusterMesh != null)
+                    AssetDatabase.AddObjectToAsset(bakedGrass.clusterMesh, bakedGrass);
+            }
             GameObject prefabRoot = new GameObject(tileName);
             TerrainTileRuntime runtime = prefabRoot.AddComponent<TerrainTileRuntime>();
+            InteractiveGrassTile grassRuntime = prefabRoot.AddComponent<InteractiveGrassTile>();
+            grassRuntime.prototype = grassPrototype;
+            grassRuntime.bakedClusters = bakedGrass;
+            grassRuntime.tileCoordinate = coordinate;
+            grassRuntime.clusterSpacing = settings.grassClusterSpacing;
+            grassRuntime.bladesPerCluster = settings.grassBladesPerCluster;
+            grassRuntime.clusterRadius = settings.grassClusterRadius;
+            grassRuntime.bladeHeight = settings.grassBladeHeight;
+            grassRuntime.density = settings.grassDensity;
+            grassRuntime.runtimeClusterBudget = settings.grassClusterBudget;
+            grassRuntime.fullDensityBelowSlope = settings.grassFullDensityBelowSlope;
+            grassRuntime.noGrassAboveSlope = settings.grassNoGrassAboveSlope;
             List<GameObject> roots = new List<GameObject>();
             Material[] materials = CollectMaterials(data.triangles);
             Mesh[] lods = { lod0, lod1, lod2, lod3 };
@@ -299,10 +394,14 @@ namespace Voyage.TerrainSystem.Editor
             string prefabPath = "Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles/" + tileName + ".prefab";
             PrefabUtility.SaveAsPrefabAsset(prefabRoot, prefabPath);
             UnityEngine.Object.DestroyImmediate(prefabRoot);
-            AssetDatabase.SaveAssets();
-
             Bounds bounds = settings.GetTileBounds(coordinate);
             return new TerrainTileRecord { coordinate = coordinate, bounds = bounds, resourcePath = "TerrainSystem/GeneratedTiles/" + tileName, vertexCount = lod0.vertexCount, triangleCount = (int)lod0.GetIndexCount(0) / 3, materialCount = materials.Length, estimatedBytes = lod0.vertexCount * 32L + lod0.triangles.Length * 4L, hasHlod = settings.generateHlod };
+        }
+
+        private static void DeleteGeneratedAsset(string path)
+        {
+            if (AssetDatabase.LoadMainAssetAtPath(path) != null)
+                AssetDatabase.DeleteAsset(path);
         }
 
         private static void ConfigureRendererLighting(MeshRenderer renderer)
@@ -374,11 +473,47 @@ namespace Voyage.TerrainSystem.Editor
         private static Material[] CollectMaterials(List<TriangleSource> triangles)
         {
             List<Material> result = new List<Material>();
-            for (int i = 0; i < triangles.Count; i++) if (!result.Contains(triangles[i].material)) result.Add(triangles[i].material);
+            Material fallback = GetFallbackTerrainMaterial();
+            for (int i = 0; i < triangles.Count; i++)
+            {
+                // This baker produces grassland terrain tiles, not a material
+                // archive for the source FBX. Use one shared Lit material for
+                // every surface so embedded/importer-generated gray materials
+                // cannot reintroduce the white bare patches at runtime.
+                triangles[i].material = fallback;
+                if (triangles[i].material != null && !result.Contains(triangles[i].material)) result.Add(triangles[i].material);
+            }
             return result.ToArray();
         }
 
-        private static GameObject InstantiateSource(GameObject source)
+        private static bool IsDiagnosticTerrainMaterial(Material material)
+        {
+            if (material == null) return false;
+            if (string.Equals(material.name, "TerrainDiagnosticGray", StringComparison.OrdinalIgnoreCase)) return true;
+            // The imported source FBX uses TerrainColor for the same neutral
+            // placeholder. Treat it as diagnostic too, otherwise white terrain
+            // islands survive the bake and fight the grass palette.
+            if (string.Equals(material.name, "TerrainColor", StringComparison.OrdinalIgnoreCase)) return true;
+            return material.shader != null && string.Equals(material.shader.name, "Hidden/Voyage/LightingDiagnosticWhite", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static Material GetFallbackTerrainMaterial()
+        {
+            const string path = "Assets/TerrainSystem/Source/TerrainFallbackMaterial.mat";
+            Material material = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (material != null) return material;
+            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null) shader = Shader.Find("Standard");
+            if (shader == null) return null;
+            material = new Material(shader) { name = "Terrain Fallback Material", color = new Color(0.25f, 0.30f, 0.16f, 1f) };
+            if (material.HasProperty("_Metallic")) material.SetFloat("_Metallic", 0f);
+            if (material.HasProperty("_Smoothness")) material.SetFloat("_Smoothness", 0.15f);
+            AssetDatabase.CreateAsset(material, path);
+            AssetDatabase.SaveAssets();
+            return material;
+        }
+
+        private static GameObject InstantiateSource(GameObject source, TerrainChunkSettings settings = null)
         {
             GameObject copy = UnityEngine.Object.Instantiate(source);
             copy.name = "__TerrainSourceAnalysisCopy"; copy.hideFlags = HideFlags.HideAndDontSave;
@@ -395,6 +530,83 @@ namespace Voyage.TerrainSystem.Editor
         {
             EnsureAssetFolder("Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles/");
             EnsureAssetFolder("Assets/TerrainSystem/GeneratedLOD/");
+        }
+
+        private static GrassPrototypeAsset BuildSharedGrassPrototype(TerrainChunkSettings settings)
+        {
+            const string path = "Assets/TerrainSystem/Source/GrassPrototype.asset";
+            GrassPrototypeAsset previous = AssetDatabase.LoadAssetAtPath<GrassPrototypeAsset>(path);
+            if (previous != null) AssetDatabase.DeleteAsset(path);
+            GrassPrototypeAsset prototype = GrassMeshBaker.BuildPrototype(settings, "GrassPrototype");
+            if (prototype == null) return null;
+            prototype.material = GetGrassMaterial();
+            AssetDatabase.CreateAsset(prototype, path);
+            if (prototype.clusterMesh != null) AssetDatabase.AddObjectToAsset(prototype.clusterMesh, prototype);
+            AssetDatabase.SaveAssets();
+            return AssetDatabase.LoadAssetAtPath<GrassPrototypeAsset>(path);
+        }
+
+        public static void RebuildGrassPrototypeOnly(TerrainChunkSettings settings)
+        {
+            const string path = "Assets/TerrainSystem/Source/GrassPrototype.asset";
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            GrassPrototypeAsset generated = GrassMeshBaker.BuildPrototype(settings, "GrassPrototype");
+            if (generated == null) throw new InvalidOperationException("Grass prototype could not be generated from the current settings.");
+            generated.material = GetGrassMaterial();
+
+            GrassPrototypeAsset existing = AssetDatabase.LoadAssetAtPath<GrassPrototypeAsset>(path);
+            if (existing == null)
+            {
+                AssetDatabase.CreateAsset(generated, path);
+                if (generated.clusterMesh != null) AssetDatabase.AddObjectToAsset(generated.clusterMesh, generated);
+            }
+            else
+            {
+                // Update the existing main asset in place so every generated
+                // prefab keeps its serialized reference/GUID.
+                Mesh oldMesh = existing.clusterMesh;
+                if (oldMesh != null)
+                {
+                    AssetDatabase.RemoveObjectFromAsset(oldMesh);
+                    UnityEngine.Object.DestroyImmediate(oldMesh, true);
+                }
+                existing.clusterMesh = generated.clusterMesh;
+                existing.material = generated.material;
+                existing.bladesPerCluster = generated.bladesPerCluster;
+                existing.clusterRadius = generated.clusterRadius;
+                existing.bladeHeight = generated.bladeHeight;
+                if (existing.clusterMesh != null) AssetDatabase.AddObjectToAsset(existing.clusterMesh, existing);
+                EditorUtility.SetDirty(existing);
+                generated.clusterMesh = null;
+                UnityEngine.Object.DestroyImmediate(generated);
+            }
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+        }
+
+        private static Material GetGrassMaterial()
+        {
+            const string path = "Assets/TerrainSystem/Source/GrassMaterial.mat";
+            Material material = AssetDatabase.LoadAssetAtPath<Material>(path);
+            Shader shader = Shader.Find("Voyage/Grass/InteractiveLit");
+            if (shader == null) shader = Shader.Find("Voyage/Grass/InteractiveUnlit");
+            if (material == null && shader != null)
+            {
+                material = new Material(shader) { name = "Grass Material" };
+                AssetDatabase.CreateAsset(material, path);
+            }
+            if (material != null)
+            {
+                if (material.HasProperty("_Color")) material.SetColor("_Color", new Color(0.20f, 0.28f, 0.105f, 1f));
+                if (material.HasProperty("_WindStrength")) material.SetFloat("_WindStrength", 0.32f);
+                if (material.HasProperty("_WindSpeed")) material.SetFloat("_WindSpeed", 1.15f);
+                if (material.HasProperty("_BendStrength")) material.SetFloat("_BendStrength", 1.15f);
+                if (material.HasProperty("_RecoverySpeed")) material.SetFloat("_RecoverySpeed", 1.2f);
+                if (material.HasProperty("_AmbientStrength")) material.SetFloat("_AmbientStrength", 0.75f);
+                if (material.HasProperty("_DirectLightStrength")) material.SetFloat("_DirectLightStrength", 1f);
+                EditorUtility.SetDirty(material);
+            }
+            return material;
         }
 
         private static void EnsureAssetFolder(string path)
