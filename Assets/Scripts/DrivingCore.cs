@@ -2,6 +2,8 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using Unity.Jobs;
+using Unity.Profiling;
 using Voyage.TerrainSystem;
 
 /// <summary>Only the vehicle, terrain, camera and pause loop.</summary>
@@ -37,6 +39,25 @@ public sealed class DrivingCore : MonoBehaviour
     Coroutine terrainLoadRoutine;
     Vector2Int streamedCenter;
     bool hasStreamedCenter;
+    int terrainWorkFrame = -1;
+    JobHandle collisionBakeJob;
+    bool collisionBakePending;
+    static readonly ProfilerMarker InstantiateTileMarker = new ProfilerMarker("Voyage.Terrain.Instantiate");
+    static readonly ProfilerMarker ActivateCollisionMarker = new ProfilerMarker("Voyage.Terrain.ActivateCollision");
+    static readonly ProfilerMarker InitializeGrassMarker = new ProfilerMarker("Voyage.Terrain.InitializeGrass");
+
+    struct CollisionBakeJob : IJob
+    {
+        public EntityId meshId;
+        public void Execute() => Physics.BakeMesh(meshId, false, TerrainTileRuntime.CollisionCookingOptions);
+    }
+
+    bool TryBeginTerrainWork()
+    {
+        if (terrainWorkFrame == Time.frameCount) return false;
+        terrainWorkFrame = Time.frameCount;
+        return true;
+    }
 
     void Awake()
     {
@@ -232,6 +253,7 @@ public sealed class DrivingCore : MonoBehaviour
         {
             if (pendingTerrainUnloads.Count > 0)
             {
+                while (!TryBeginTerrainWork()) yield return null;
                 Destroy(pendingTerrainUnloads.Dequeue());
                 yield return null;
             }
@@ -245,22 +267,60 @@ public sealed class DrivingCore : MonoBehaviour
             {
                 ResourceRequest request = Resources.LoadAsync<GameObject>(record.resourcePath);
                 yield return request;
+                GameObject prefab = request.asset as GameObject;
+                if (prefab != null)
+                {
+                    Transform lod0 = prefab.transform.Find("LOD0");
+                    MeshFilter filter = lod0 == null ? null : lod0.GetComponent<MeshFilter>();
+                    Mesh mesh = filter == null ? null : filter.sharedMesh;
+                    // Readable generated meshes can be cooked on a worker.
+                    // Hold the prefab reference and finish the job before instantiation.
+                    if (mesh != null && mesh.isReadable)
+                    {
+                        collisionBakeJob = new CollisionBakeJob { meshId = mesh.GetEntityId() }.Schedule();
+                        collisionBakePending = true;
+                        JobHandle.ScheduleBatchedJobs();
+                        while (!collisionBakeJob.IsCompleted) yield return null;
+                        collisionBakeJob.Complete();
+                        collisionBakePending = false;
+                    }
+                }
                 // Recheck after IO: the player may already be in another cell.
                 viewer = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
                 currentCenter = settings.WorldToTile(viewer);
                 distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
-                GameObject prefab = request.asset as GameObject;
                 if (prefab != null && distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
                 {
-                    GameObject tileObject = Instantiate(prefab, record.bounds.center, Quaternion.identity);
-                    tileObject.name = "FBX TERRAIN BLOCK " + record.coordinate;
-                    TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
-                    if (tile != null)
+                    // Unity's synchronous Instantiate still performs prefab
+                    // deserialization, hierarchy creation and Awake on the
+                    // streaming frame. InstantiateAsync moves the expensive
+                    // serialization work off the main thread; only the
+                    // completed object integration remains in the budgeted
+                    // section below.
+                    AsyncInstantiateOperation<GameObject> instantiate =
+                        Object.InstantiateAsync(prefab, record.bounds.center, Quaternion.identity);
+                    // Awake and hierarchy integration can still touch the
+                    // main thread. Keep that work below a small per-frame
+                    // budget so crossing a cell cannot consume a whole
+                    // render frame.
+                    AsyncInstantiateOperation.SetIntegrationTimeMS(1.5f);
+                    yield return instantiate;
+                    while (!TryBeginTerrainWork()) yield return null;
+                    if (instantiate.isDone && instantiate.Result != null && instantiate.Result.Length > 0)
                     {
-                        tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
-                        tile.Initialize(record, settings, false, viewer);
+                        using (InstantiateTileMarker.Auto())
+                        {
+                            GameObject tileObject = instantiate.Result[0];
+                            tileObject.name = "FBX TERRAIN BLOCK " + record.coordinate;
+                            TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
+                            if (tile != null)
+                            {
+                                tile.SetCollisionEnabled(false);
+                                tile.Initialize(record, settings, false, viewer);
+                            }
+                            loadedTerrainTiles.Add(record.coordinate, tileObject);
+                        }
                     }
-                    loadedTerrainTiles.Add(record.coordinate, tileObject);
                 }
             }
             pendingTerrainCoordinates.Remove(record.coordinate);
@@ -271,6 +331,7 @@ public sealed class DrivingCore : MonoBehaviour
 
     void OnDestroy()
     {
+        if (collisionBakePending) collisionBakeJob.Complete();
         Shader.SetGlobalVector("_VoyageTerrainView", Vector4.zero);
         foreach (GameObject tile in loadedTerrainTiles.Values)
             if (tile != null) Destroy(tile);
@@ -280,14 +341,43 @@ public sealed class DrivingCore : MonoBehaviour
 
     void UpdateLoadedTerrainLods(Vector3 position, TerrainChunkSettings settings, Vector2Int center)
     {
+        TerrainTileRuntime nextActivation = null;
+        TerrainTileRuntime nextGrass = null;
+        TerrainTileRuntime nextDeactivation = null;
+        float activationDistance = float.MaxValue;
+        float grassDistance = float.MaxValue;
         foreach (KeyValuePair<Vector2Int, GameObject> pair in loadedTerrainTiles)
         {
             TerrainTileRuntime tile = pair.Value == null ? null : pair.Value.GetComponent<TerrainTileRuntime>();
             if (tile == null) continue;
-            int distance = Mathf.Max(Mathf.Abs(pair.Key.x - center.x), Mathf.Abs(pair.Key.y - center.y));
-            tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
-            tile.UpdateLod(position);
+            tile.UpdateVisualLod(position);
+            float distance = tile.Bounds.SqrDistance(position);
+            bool collisionWanted = tile.WantsCollision(position, settings);
+            if (collisionWanted && !tile.CollisionEnabled && distance < activationDistance)
+            {
+                nextActivation = tile;
+                activationDistance = distance;
+            }
+            else if (!collisionWanted && tile.CollisionEnabled) nextDeactivation = tile;
+            if (collisionWanted && tile.NeedsGrassInitialization && distance < grassDistance)
+            {
+                nextGrass = tile;
+                grassDistance = distance;
+            }
         }
+        // One expensive action across the loader and activation loop per frame.
+        // Near collision/grass takes priority over distant activation and cleanup.
+        if (nextActivation != null && activationDistance <= grassDistance)
+        {
+            if (TryBeginTerrainWork())
+                using (ActivateCollisionMarker.Auto()) nextActivation.SetCollisionEnabled(true);
+        }
+        else if (nextGrass != null)
+        {
+            if (TryBeginTerrainWork())
+                using (InitializeGrassMarker.Auto()) nextGrass.InitializeGrass();
+        }
+        else if (nextDeactivation != null && TryBeginTerrainWork()) nextDeactivation.SetCollisionEnabled(false);
     }
 
     bool ReadKeyDown(KeyCode key)

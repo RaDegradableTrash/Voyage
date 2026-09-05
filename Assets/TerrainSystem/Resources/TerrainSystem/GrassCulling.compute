@@ -8,12 +8,13 @@ float4 _FrustumPlanes[6];
 float _MaxDistance;
 float _DensityNearDistance;
 float _InstanceRadius;
+uint _SourceCount;
 
 [numthreads(64, 1, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
     uint index = id.x;
-    if (index >= _SourceMatrices.Length) return;
+    if (index >= _SourceCount) return;
     float4x4 transformMatrix = _SourceMatrices[index];
     float3 position = float3(transformMatrix[0][3], transformMatrix[1][3], transformMatrix[2][3]);
     float viewDistance = distance(position, _CameraPosition);

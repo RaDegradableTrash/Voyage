@@ -12,6 +12,7 @@ namespace Voyage.TerrainSystem
         static int samplingFrame = -1;
         static int samplesThisFrame;
         const int MaxSamplesPerFrame = 768;
+        static int bufferCreationFrame = -1;
 
         [Min(0.25f)] public float clusterSpacing = 0.38f;
         [Min(1)] public int bladesPerCluster = 18;
@@ -63,6 +64,7 @@ namespace Voyage.TerrainSystem
         float tileFade;
         public bool BuildFinished { get; private set; }
         Matrix4x4[] instanceMatrices;
+        int instanceCount;
         Matrix4x4[] instanceBatch;
         MaterialPropertyBlock instanceProperties;
         Mesh runtimeClusterMesh;
@@ -76,6 +78,7 @@ namespace Voyage.TerrainSystem
         ComputeBuffer indirectVisibleBuffer;
         ComputeBuffer indirectArgsBuffer;
         Mesh indirectMesh;
+        int indirectUploadedCount;
         int lastIndirectCullFrame = -100;
         int lastIndirectCullLod = -1;
         Vector3 lastIndirectCullCameraPosition;
@@ -84,6 +87,8 @@ namespace Voyage.TerrainSystem
         Bounds indirectBounds;
         RenderTexture boundInteractionField;
         RenderTexture boundPermanentInteractionField;
+        RenderTexture boundFarInteractionField;
+        Vector4 boundFarInteractionWorld;
         Vector4 boundInteractionWorld;
         bool hasBoundInteractionWorld;
         static readonly Plane[] sharedFrustumPlanes = new Plane[6];
@@ -146,6 +151,7 @@ namespace Voyage.TerrainSystem
                 runtimeClusterMesh = GetSharedClusterMesh(4);
                 runtimeClusterMeshShared = true;
                 instanceMatrices = new Matrix4x4[bakedClusters.Count];
+                instanceCount = bakedClusters.Count;
                 for (int i = 0; i < instanceMatrices.Length; i++)
                 {
                     Vector3 position = bakedClusters.positions[i];
@@ -261,7 +267,7 @@ namespace Voyage.TerrainSystem
         {
             Camera viewer = targetCamera != null ? targetCamera : Camera.main;
             int count = 0;
-            for (int i = 0; i < instanceMatrices.Length; i++)
+            for (int i = 0; i < instanceCount; i++)
             {
                 Vector3 position = instanceMatrices[i].GetColumn(3);
                 if (viewer != null)
@@ -306,23 +312,26 @@ namespace Voyage.TerrainSystem
 
         bool TryDrawIndirect(Mesh drawMesh)
         {
-            if (!SystemInfo.supportsComputeShaders || instanceMatrices.Length == 0) return false;
+            if (!SystemInfo.supportsComputeShaders || instanceCount == 0) return false;
             if (indirectCullingShader == null)
             {
                 indirectCullingShader = Resources.Load<ComputeShader>("TerrainSystem/GrassCulling");
                 if (indirectCullingShader == null) return false;
                 indirectKernel = indirectCullingShader.FindKernel("CSMain");
             }
-            if (indirectSourceBuffer == null || indirectSourceBuffer.count != instanceMatrices.Length || indirectMesh != drawMesh)
+            if (indirectSourceBuffer == null || indirectSourceBuffer.count < instanceCount)
             {
+                // Several samplers can publish after the same physics tick.
+                // Queue their first GPU allocations rather than allocating all
+                // tiles at once (or falling back to an expensive direct draw).
+                if (bufferCreationFrame == Time.frameCount) return true;
+                bufferCreationFrame = Time.frameCount;
                 ReleaseIndirectBuffers();
                 const int stride = sizeof(float) * 16;
-                indirectSourceBuffer = new ComputeBuffer(instanceMatrices.Length, stride, ComputeBufferType.Structured);
-                indirectVisibleBuffer = new ComputeBuffer(instanceMatrices.Length, stride, ComputeBufferType.Append);
+                int capacity = Mathf.NextPowerOfTwo(Mathf.Max(instanceMatrices.Length, runtimeClusterBudget));
+                indirectSourceBuffer = new ComputeBuffer(capacity, stride, ComputeBufferType.Structured);
+                indirectVisibleBuffer = new ComputeBuffer(capacity, stride, ComputeBufferType.Append);
                 indirectArgsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
-                indirectSourceBuffer.SetData(instanceMatrices);
-                indirectArgsBuffer.SetData(new uint[] { drawMesh.GetIndexCount(0), 0, drawMesh.GetIndexStart(0), drawMesh.GetBaseVertex(0), 0 });
-                indirectMesh = drawMesh;
                 // Keep the vertical extent conservative because terrain
                 // bounds use a tall Y sentinel, but use the actual tile XZ
                 // footprint so Unity can reject off-screen indirect draws
@@ -333,6 +342,20 @@ namespace Voyage.TerrainSystem
                 boundsSize.z = Mathf.Max(1f, boundsSize.z + (bladeHeight + clusterRadius) * 2f);
                 boundsSize.y = Mathf.Max(1000f, Mathf.Min(boundsSize.y, 100000f));
                 indirectBounds = new Bounds(boundsCenter, boundsSize);
+            }
+            if (indirectMesh != drawMesh)
+            {
+                indirectArgsBuffer.SetData(new uint[] { drawMesh.GetIndexCount(0), 0, drawMesh.GetIndexStart(0), drawMesh.GetBaseVertex(0), 0 });
+                indirectMesh = drawMesh;
+            }
+            bool sourceUpdated = indirectUploadedCount != instanceCount;
+            if (sourceUpdated)
+            {
+                // Placement is append-only. Preserve buffers still in use by
+                // the GPU and upload only the new instances, not every prefix.
+                indirectSourceBuffer.SetData(instanceMatrices, indirectUploadedCount, indirectUploadedCount,
+                    instanceCount - indirectUploadedCount);
+                indirectUploadedCount = instanceCount;
             }
             Camera camera = Camera.main;
             if (camera == null) return false;
@@ -350,7 +373,7 @@ namespace Voyage.TerrainSystem
                 sharedFrustumCamera = camera;
                 sharedFrustumFrame = Time.frameCount;
             }
-            bool recull = currentLod != lastIndirectCullLod ||
+            bool recull = sourceUpdated || currentLod != lastIndirectCullLod ||
                           Time.frameCount - lastIndirectCullFrame >= 3 ||
                           (camera.transform.position - lastIndirectCullCameraPosition).sqrMagnitude > 4f;
             if (recull)
@@ -358,12 +381,13 @@ namespace Voyage.TerrainSystem
                 indirectVisibleBuffer.SetCounterValue(0);
                 indirectCullingShader.SetBuffer(indirectKernel, "_SourceMatrices", indirectSourceBuffer);
                 indirectCullingShader.SetBuffer(indirectKernel, "_VisibleMatrices", indirectVisibleBuffer);
+                indirectCullingShader.SetInt("_SourceCount", indirectUploadedCount);
                 indirectCullingShader.SetVector("_CameraPosition", camera.transform.position);
                 indirectCullingShader.SetVectorArray("_FrustumPlanes", sharedFrustumVectors);
                 indirectCullingShader.SetFloat("_MaxDistance", Mathf.Max(fadeEnd, 1f));
                 indirectCullingShader.SetFloat("_DensityNearDistance", fadeStart);
                 indirectCullingShader.SetFloat("_InstanceRadius", Mathf.Max(1f, bladeHeight + clusterRadius));
-                indirectCullingShader.Dispatch(indirectKernel, Mathf.CeilToInt(instanceMatrices.Length / 64f), 1, 1);
+                indirectCullingShader.Dispatch(indirectKernel, Mathf.CeilToInt(instanceCount / 64f), 1, 1);
                 ComputeBuffer.CopyCount(indirectVisibleBuffer, indirectArgsBuffer, sizeof(uint));
                 lastIndirectCullFrame = Time.frameCount;
                 lastIndirectCullLod = currentLod;
@@ -401,6 +425,17 @@ namespace Voyage.TerrainSystem
                 boundInteractionWorld = world;
                 hasBoundInteractionWorld = true;
             }
+            if (boundFarInteractionField != interaction.FarField)
+            {
+                runtimeMaterial.SetTexture("_VoyageGrassFarInteraction", interaction.FarField);
+                boundFarInteractionField = interaction.FarField;
+            }
+            if (boundFarInteractionWorld != interaction.FarWorldToUv)
+            {
+                runtimeMaterial.SetVector("_VoyageGrassFarWorld", interaction.FarWorldToUv);
+                boundFarInteractionWorld = interaction.FarWorldToUv;
+            }
+            runtimeMaterial.SetFloat("_VoyageGrassFarRecovery", interaction.FarRecovery);
         }
 
         void ReleaseIndirectBuffers()
@@ -412,6 +447,7 @@ namespace Voyage.TerrainSystem
             indirectVisibleBuffer = null;
             indirectArgsBuffer = null;
             indirectMesh = null;
+            indirectUploadedCount = 0;
             lastIndirectCullFrame = -100;
             lastIndirectCullLod = -1;
         }
@@ -445,10 +481,10 @@ namespace Voyage.TerrainSystem
             bool prototypeNeedsExpandedGeometry = prototype != null &&
                                                   prototype.clusterMesh != null &&
                                                   prototype.clusterMesh.vertexCount < bladesPerCluster * 4 * 8;
-            int meshSeed = seed ^ unchecked((int)0x5F3759DF);
             if (prototype == null || prototype.clusterMesh == null || prototypeNeedsExpandedGeometry)
             {
-                runtimeClusterMesh = BuildClusterMesh(new System.Random(meshSeed), 4);
+                runtimeClusterMesh = GetSharedClusterMesh(4);
+                runtimeClusterMeshShared = true;
             }
             // Publish one early batch for responsive streaming, then use
             // larger batches to avoid repeatedly allocating/copying the full
@@ -564,11 +600,15 @@ namespace Voyage.TerrainSystem
         void PublishRuntimeInstances(List<Vector3> positions, List<Quaternion> rotations, List<float> scales)
         {
             if (positions == null || positions.Count == 0) return;
-            instanceMatrices = new Matrix4x4[positions.Count];
-            for (int i = 0; i < instanceMatrices.Length; i++)
+            // Reserve once; repeated full-prefix allocation/rebuilds generated
+            // tens of MB of garbage per tile while its grass was still growing.
+            if (instanceMatrices == null || instanceMatrices.Length < positions.Count)
+                System.Array.Resize(ref instanceMatrices, Mathf.Max(runtimeClusterBudget, positions.Count));
+            for (int i = instanceCount; i < positions.Count; i++)
                 instanceMatrices[i] = transform.localToWorldMatrix * Matrix4x4.TRS(positions[i], rotations[i], Vector3.one * scales[i]);
-            instanceBatch = new Matrix4x4[1023];
-            instanceProperties = new MaterialPropertyBlock();
+            instanceCount = positions.Count;
+            if (instanceBatch == null) instanceBatch = new Matrix4x4[1023];
+            if (instanceProperties == null) instanceProperties = new MaterialPropertyBlock();
             ApplyMaterialState();
         }
 
@@ -682,14 +722,14 @@ namespace Voyage.TerrainSystem
                 // grass inside the active field, which made visible grass
                 // ignore tire stamps entirely. LOD3 has no grass draw anyway.
                 runtimeMaterial.SetFloat("_InteractionEnabled", currentLod < 3 ? 1f : 0f);
-                runtimeMaterial.SetFloat("_ImmediateInteractionEnabled", 1f);
+                runtimeMaterial.SetFloat("_ImmediateInteractionEnabled", 0f);
                 runtimeMaterial.SetFloat("_FieldInteractionEnabled", 1f);
                 // Appearance no longer changes at tile LOD boundaries. The
                 // shader's distance blend handles density and far animation.
                 runtimeMaterial.SetFloat("_DistantAlphaClip", 0f);
                 runtimeMaterial.SetFloat("_WindStrength", 0.48f);
                 runtimeMaterial.SetFloat("_WindSpeed", 1.15f);
-                runtimeMaterial.SetFloat("_BendStrength", 1.55f);
+                runtimeMaterial.SetFloat("_BendStrength", 1f);
                 // Density is resolved by placement and LOD instance count.
                 // Clipping individual blades makes dense clumps look sparse.
                 runtimeMaterial.SetFloat("_Density", 1f);

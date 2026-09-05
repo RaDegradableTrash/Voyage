@@ -5,7 +5,7 @@ namespace Voyage.TerrainSystem
 {
     /// <summary>
     /// Camera-independent world-space field for temporary grass deformation.
-    /// RG stores bend direction, B stores intensity. Permanent tracks use a
+    /// RG stores the signed, pressure-weighted bend, B stores intensity. Permanent tracks use a
     /// second field so temporary recovery never erases persistent data.
     /// </summary>
     [DefaultExecutionOrder(-200)]
@@ -33,22 +33,22 @@ namespace Voyage.TerrainSystem
         [Header("World-space field")]
         [Min(16)] public int resolution = 512;
         [Min(16f)] public float worldSize = 160f;
-        [Tooltip("Exponential recovery speed; 0.3 leaves about 5% of the press after 10 seconds, with per-blade variation in the shader.")]
-        [Min(0.01f)] public float decayPerSecond = 0.3f;
+        [Tooltip("Exponential recovery speed. At 0.06, impressions retain 55% after 10 seconds and 5% after 50 seconds. Recovery depends only on elapsed time.")]
+        [Min(0.01f)] public float decayPerSecond = 0.06f;
         [Min(0.01f)] public float maxStampDistance = 12f;
         [Min(1f)] public float maxTeleportDistance = 80f;
         [Min(0.1f)] public float speedForFullBend = 12f;
         [Tooltip("Rigidbody mass at which a tire applies maximum grass pressure.")]
         [Min(1f)] public float massForFullPressure = 2500f;
-        [Tooltip("Minimum horizontal vehicle speed required to refresh wheel impressions. Prevents parked suspension jitter from resetting recovery.")]
+        [Tooltip("Minimum horizontal vehicle speed used for rolling pressure. Stationary ground contacts are refreshed at a reduced rate.")]
         [Min(0f)] public float minimumVehicleSpeed = 0.08f;
         [Tooltip("Minimum horizontal wheel/contact movement used to create a tire segment.")]
         [Min(0f)] public float minimumWheelTravel = 0.02f;
         [Min(1)] public int liveStampsPerFrame = 96;
         [Min(64)] public int maxPendingStamps = 2048;
         [Min(1)] public int permanentRebuildStampsPerFrame = 96;
-        // Vehicle impressions are temporary gameplay feedback. Keeping this
-        // off ensures every tire track recovers instead of remaining bent.
+        // Optional permanent damage is separate from the time-based recovery
+        // history, which always survives movement of the GPU window.
         public bool recordPermanentTracks = false;
         public Transform followTarget;
 
@@ -56,19 +56,34 @@ namespace Voyage.TerrainSystem
         readonly List<WheelState> wheelStates = new List<WheelState>();
         readonly List<EmitterState> emitters = new List<EmitterState>();
         readonly Queue<PendingStamp> pendingStamps = new Queue<PendingStamp>();
-        const int MaxShaderWheels = 8;
-        readonly Vector4[] shaderWheelPositions = new Vector4[MaxShaderWheels];
-        readonly Vector4[] shaderWheelDirections = new Vector4[MaxShaderWheels];
-        Vector4 shaderVehicleData;
-        Vector4 shaderVehicleParams;
-        Vector3 previousFollowTargetPosition;
-        bool hasPreviousFollowTargetPosition;
         RenderTexture field;
         RenderTexture scratch;
+        const int FarResolution = 1024;
+        const float FarWorldSize = 1200f;
+        RenderTexture farField, farScratch;
+        Vector3 farCenter;
+        bool hasFarCenter;
+        float farDecayTime;
+        readonly Queue<ContactHistory> farReplay = new Queue<ContactHistory>();
         RenderTexture permanentField;
         RenderTexture permanentScratch;
         Material decayMaterial;
         Material stampMaterial;
+        ComputeShader contactCompute;
+        readonly int[] stampPixelMin = new int[2], stampPixelMax = new int[2];
+        static readonly Unity.Profiling.ProfilerMarker ContactUpdate = new Unity.Profiling.ProfilerMarker("Voyage.Grass.ContactUpdate");
+        // Bounded world-space event history survives movement of the GPU
+        // window. Entries expire when their bend is below visible precision.
+        const int HistoryCapacity = 65536;
+        readonly ContactHistory[] contactHistory = new ContactHistory[HistoryCapacity];
+        int historyStart, historyCount;
+        readonly Queue<ContactHistory> historyReplay = new Queue<ContactHistory>();
+        struct ContactHistory
+        {
+            public Vector3 from, to;
+            public Vector2 direction;
+            public float radius, strength, time;
+        }
         Material scrollMaterial;
         GrassPermanentTrackStore permanentTrackStore;
         Vector3 fieldCenter;
@@ -92,8 +107,8 @@ namespace Voyage.TerrainSystem
             public bool valid;
             public GrassDebugState debugState;
             public float lastPressedTime = -1000f;
-            public Vector3 shaderMotionVelocity;
             public bool pressingThisFrame;
+            public float lastContactStamp = -1000f;
         }
 
         sealed class EmitterState
@@ -132,6 +147,9 @@ namespace Voyage.TerrainSystem
 
         public RenderTexture Field => field;
         public RenderTexture PermanentField => permanentField;
+        public RenderTexture FarField => farField;
+        public Vector4 FarWorldToUv => new Vector4(farCenter.x, farCenter.z, FarWorldSize, FarResolution);
+        public float FarRecovery => Mathf.Exp(-decayPerSecond * (Time.time - farDecayTime));
         public bool IsReady => initialized;
         public int RegisteredWheelCount => wheelStates.Count;
         public int PendingStampCount => pendingStamps.Count;
@@ -142,13 +160,10 @@ namespace Voyage.TerrainSystem
             if (target == null || !initialized) return;
             target.SetTexture("_VoyageGrassInteraction", field);
             target.SetTexture("_VoyageGrassPermanentInteraction", permanentField);
+            target.SetTexture("_VoyageGrassFarInteraction", farField);
+            target.SetVector("_VoyageGrassFarWorld", FarWorldToUv);
+            target.SetFloat("_VoyageGrassFarRecovery", FarRecovery);
             target.SetVector("_VoyageGrassInteractionWorld", WorldToUv);
-            target.SetVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
-            target.SetVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
-            SetIndividualWheelProperties(target);
-            target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
-            target.SetVector("_VoyageGrassVehicleData", shaderVehicleData);
-            target.SetVector("_VoyageGrassVehicleParams", shaderVehicleParams);
             target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
         }
 
@@ -157,46 +172,11 @@ namespace Voyage.TerrainSystem
             if (target == null || !initialized) return;
             target.SetTexture("_VoyageGrassInteraction", field);
             target.SetTexture("_VoyageGrassPermanentInteraction", permanentField);
+            target.SetTexture("_VoyageGrassFarInteraction", farField);
+            target.SetVector("_VoyageGrassFarWorld", FarWorldToUv);
+            target.SetFloat("_VoyageGrassFarRecovery", FarRecovery);
             target.SetVector("_VoyageGrassInteractionWorld", WorldToUv);
-            target.SetVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
-            target.SetVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
-            SetIndividualWheelProperties(target);
-            target.SetFloat("_VoyageGrassWheelCount", Mathf.Min(MaxShaderWheels, wheelStates.Count));
-            target.SetVector("_VoyageGrassVehicleData", shaderVehicleData);
-            target.SetVector("_VoyageGrassVehicleParams", shaderVehicleParams);
             target.SetFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
-        }
-
-        void SetIndividualWheelProperties(Material target)
-        {
-            target.SetVector("_VoyageGrassWheel0", shaderWheelPositions[0]);
-            target.SetVector("_VoyageGrassWheel1", shaderWheelPositions[1]);
-            target.SetVector("_VoyageGrassWheel2", shaderWheelPositions[2]);
-            target.SetVector("_VoyageGrassWheel3", shaderWheelPositions[3]);
-            target.SetVector("_VoyageGrassWheel4", shaderWheelPositions[4]);
-            target.SetVector("_VoyageGrassWheel5", shaderWheelPositions[5]);
-            target.SetVector("_VoyageGrassWheelDirection0", shaderWheelDirections[0]);
-            target.SetVector("_VoyageGrassWheelDirection1", shaderWheelDirections[1]);
-            target.SetVector("_VoyageGrassWheelDirection2", shaderWheelDirections[2]);
-            target.SetVector("_VoyageGrassWheelDirection3", shaderWheelDirections[3]);
-            target.SetVector("_VoyageGrassWheelDirection4", shaderWheelDirections[4]);
-            target.SetVector("_VoyageGrassWheelDirection5", shaderWheelDirections[5]);
-        }
-
-        void SetIndividualWheelProperties(MaterialPropertyBlock target)
-        {
-            target.SetVector("_VoyageGrassWheel0", shaderWheelPositions[0]);
-            target.SetVector("_VoyageGrassWheel1", shaderWheelPositions[1]);
-            target.SetVector("_VoyageGrassWheel2", shaderWheelPositions[2]);
-            target.SetVector("_VoyageGrassWheel3", shaderWheelPositions[3]);
-            target.SetVector("_VoyageGrassWheel4", shaderWheelPositions[4]);
-            target.SetVector("_VoyageGrassWheel5", shaderWheelPositions[5]);
-            target.SetVector("_VoyageGrassWheelDirection0", shaderWheelDirections[0]);
-            target.SetVector("_VoyageGrassWheelDirection1", shaderWheelDirections[1]);
-            target.SetVector("_VoyageGrassWheelDirection2", shaderWheelDirections[2]);
-            target.SetVector("_VoyageGrassWheelDirection3", shaderWheelDirections[3]);
-            target.SetVector("_VoyageGrassWheelDirection4", shaderWheelDirections[4]);
-            target.SetVector("_VoyageGrassWheelDirection5", shaderWheelDirections[5]);
         }
 
         public GrassDebugState GetDebugState(Vector3 position)
@@ -256,8 +236,12 @@ namespace Voyage.TerrainSystem
         {
             if (initialized) return;
             OnValidate();
+            if (SystemInfo.supportsComputeShaders) contactCompute = Resources.Load<ComputeShader>("TerrainSystem/GrassContact");
             field = CreateField("Grass Interaction Field");
             scratch = CreateField("Grass Interaction Scratch");
+            farField = CreateField("Grass Distant History", FarResolution);
+            farScratch = CreateField("Grass Distant Scratch", FarResolution);
+            farDecayTime = Time.time;
             permanentField = CreateField("Grass Permanent Track Field");
             permanentScratch = CreateField("Grass Permanent Track Scratch");
             decayMaterial = CreateMaterial("Hidden/Voyage/GrassInteractionDecay");
@@ -293,8 +277,6 @@ namespace Voyage.TerrainSystem
         {
             if (followTarget == target) return;
             followTarget = target;
-            previousFollowTargetPosition = target != null ? target.position : Vector3.zero;
-            hasPreviousFollowTargetPosition = target != null;
             // A new target means the old wheel contact baselines are not
             // spatially continuous. Force a fresh world-space anchor and let
             // the next valid WheelCollider hit establish new baselines.
@@ -319,7 +301,7 @@ namespace Voyage.TerrainSystem
                     wheel = wheel,
                     body = body,
                     terrainFollower = terrainFollower,
-                    radius = Mathf.Max(0.35f, colliders[i].radius)
+                    radius = Mathf.Max(0.2f, colliders[i].radius * Mathf.Abs(colliders[i].transform.lossyScale.y) * 0.45f)
                 });
             }
 
@@ -396,6 +378,7 @@ namespace Voyage.TerrainSystem
 
         void LateUpdate()
         {
+            using var contactScope = ContactUpdate.Auto();
             if (!initialized) return;
 
             // The vehicle is spawned asynchronously and may be recreated
@@ -443,6 +426,7 @@ namespace Voyage.TerrainSystem
                     {
                         Clear();
                     }
+                    QueueHistoryReplay();
                     BeginPermanentFieldRebuild(previousFieldCenter, wasInitialized && previousRebuildComplete);
                     for (int i = 0; i < wheelStates.Count; i++) wheelStates[i].valid = false;
                     hasFieldCenter = true;
@@ -452,6 +436,8 @@ namespace Voyage.TerrainSystem
             decayMaterial.SetFloat("_Decay", Mathf.Exp(-decayPerSecond * Time.deltaTime));
             Graphics.Blit(field, scratch, decayMaterial);
             Swap();
+            UpdateFarField();
+            ProcessHistoryReplay();
             ProcessPermanentFieldRebuild();
 
             EnsureRuntimeVehicleWheels();
@@ -484,8 +470,16 @@ namespace Voyage.TerrainSystem
                 // report no hit) while the chassis is being driven over a
                 // streamed mesh. The pivot follows every axle, so all wheels
                 // produce a continuous world-space tire path.
+                // Airborne wheels cannot press grass. A new contact begins a
+                // new path rather than drawing a segment across the jump.
+                if (collider != null && !collider.GetGroundHit(out _))
+                {
+                    state.valid = false;
+                    state.pressingThisFrame = false;
+                    continue;
+                }
                 Vector3 current = GetWheelAnchor(state);
-                if (!state.valid) { state.previous = current; state.valid = true; continue; }
+                if (!state.valid) { state.previous = current; state.valid = true; }
                 state.pressingThisFrame = false;
                 bool currentOutside = IsOutsideField(current, state.radius);
                 bool previousOutside = IsOutsideField(state.previous, state.radius);
@@ -504,10 +498,12 @@ namespace Voyage.TerrainSystem
                 if (distance > maxTeleportDistance) state.previous = current;
                 else if (IsVehicleMoving(state, distance, out Vector3 motionVelocity))
                 {
+                    // Do not restamp the same physics pose on every render
+                    // frame. Accumulate small movements until a useful span.
+                    if (distance < minimumWheelTravel && Time.time - state.lastContactStamp < 0.12f) continue;
                     if (motionVelocity.sqrMagnitude < 0.0001f && distance > 0.0001f)
                         motionVelocity = (current - state.previous) / Mathf.Max(Time.deltaTime, 0.0001f);
                     motionVelocity.y = 0f;
-                    state.shaderMotionVelocity = motionVelocity;
                     state.pressingThisFrame = true;
                     state.debugState = GrassDebugState.Pressing;
                     state.lastPressedTime = Time.time;
@@ -522,6 +518,14 @@ namespace Voyage.TerrainSystem
                     if (distance <= minimumWheelTravel)
                         from = current - motionVelocity * Time.deltaTime;
                     QueueSegment(from, current, state.radius, wheelSource);
+                    state.lastContactStamp = Time.time;
+                }
+                else if (Time.time - state.lastContactStamp >= 0.25f)
+                {
+                    // Weight still presses grass while parked. Only the
+                    // actual contact remains held; the trail recovers freely.
+                    QueueSegment(current, current, state.radius, state.wheel);
+                    state.lastContactStamp = Time.time;
                 }
                 else if (Time.time - state.lastPressedTime < 10f)
                 {
@@ -529,7 +533,6 @@ namespace Voyage.TerrainSystem
                 }
                 else
                 {
-                    state.shaderMotionVelocity = Vector3.zero;
                     state.debugState = GrassDebugState.NearbyIdle;
                 }
                 state.previous = current;
@@ -622,7 +625,13 @@ namespace Voyage.TerrainSystem
                 if (collider != null && collider.GetGroundHit(out WheelHit groundHit))
                     return groundHit.point;
             }
-            return state != null && state.wheel != null ? state.wheel.position : Vector3.zero;
+            if (state != null && state.wheel != null)
+            {
+                WheelCollider collider = state.wheel.GetComponent<WheelCollider>();
+                if (collider != null && collider.GetGroundHit(out WheelHit hit)) return hit.point;
+                return state.wheel.position;
+            }
+            return Vector3.zero;
         }
 
         bool IsVehicleMoving(WheelState state, float observedDistance, out Vector3 motionVelocity)
@@ -710,14 +719,15 @@ namespace Voyage.TerrainSystem
             // orientation as the temporary pressed-grass field.
             // Grass falls in the vehicle's travel direction, matching the
             // wake behind each tire rather than bending away from the tire.
-            Vector2 dir = (b - a).sqrMagnitude > 0.000001f ? (b - a).normalized : Vector2.up;
-            float speedPressure = Mathf.Lerp(0.24f, 0.82f, Mathf.Clamp01(speed / speedForFullBend));
+            Vector2 fallbackDirection = source != null ? new Vector2(-source.forward.x, -source.forward.z).normalized : Vector2.up;
+            Vector2 dir = (b - a).sqrMagnitude > 1e-12f ? (b - a).normalized : fallbackDirection;
+            float speedPressure = Mathf.Lerp(0.8f, 0.95f, Mathf.Clamp01(speed / speedForFullBend));
             Rigidbody body = source != null ? source.GetComponentInParent<Rigidbody>() : null;
             float massPressure = body != null ? Mathf.InverseLerp(250f, massForFullPressure, body.mass) : 0.55f;
             // A heavy vehicle leaves a stronger stored impression than a light
             // prop at the same speed. The resulting B channel also drives the
             // pressure-dependent decay in GrassInteractionField.shader.
-            float strength = Mathf.Clamp01(speedPressure * Mathf.Lerp(0.72f, 1.42f, massPressure));
+            float strength = Mathf.Clamp01(speedPressure * Mathf.Lerp(0.5f, 1f, massPressure));
             if (recordPermanentTracks && permanentTrackStore != null)
                 permanentTrackStore.RecordSegment(from, to, radius, strength, source);
             float margin = Mathf.Max(radius * 1.25f, worldSize / resolution);
@@ -728,8 +738,9 @@ namespace Voyage.TerrainSystem
             float halfWorld = worldSize * 0.5f;
             if (maxX < fieldCenter.x - halfWorld || minX > fieldCenter.x + halfWorld ||
                 maxZ < fieldCenter.z - halfWorld || minZ > fieldCenter.z + halfWorld) return;
-            StampInto(field, scratch, a, b, dir, radius, strength);
-            Swap();
+            ApplyContact(field, scratch, a, b, dir, radius, strength, false);
+            RememberContact(from, to, dir, radius, strength);
+            StampFar(from, to, dir, radius, strength);
             if (recordPermanentTracks && permanentTrackStore != null)
             {
                 StampInto(permanentField, permanentScratch, a, b, dir, radius, strength);
@@ -737,7 +748,149 @@ namespace Voyage.TerrainSystem
             }
         }
 
-        void StampInto(RenderTexture source, RenderTexture destination, Vector2 a, Vector2 b, Vector2 dir, float radius, float strength)
+        void UpdateFarField()
+        {
+            Vector3 target = followTarget != null ? followTarget.position : fieldCenter;
+            float texel = FarWorldSize / FarResolution;
+            target = new Vector3(Mathf.Round(target.x / texel) * texel, 0, Mathf.Round(target.z / texel) * texel);
+            const float recenterDistance = FarWorldSize * 0.5f - 550f;
+            if (!hasFarCenter || (target - farCenter).sqrMagnitude > recenterDistance * recenterDistance)
+            {
+                Vector3 previousCenter = farCenter;
+                bool preserved = hasFarCenter && farReplay.Count == 0;
+                if (hasFarCenter)
+                {
+                    ScrollField(farField, farScratch, new Vector2(target.x - farCenter.x, target.z - farCenter.z) / FarWorldSize);
+                    SwapFar();
+                }
+                farCenter = target;
+                hasFarCenter = true;
+                farReplay.Clear();
+                for (int i = 0; i < historyCount; i++)
+                {
+                    ContactHistory entry = contactHistory[(historyStart + i) % HistoryCapacity];
+                    if (Time.time - entry.time > 6.22f / decayPerSecond) continue;
+                    Vector3 midpoint = (entry.from + entry.to) * 0.5f;
+                    float margin = FarWorldSize * 0.5f + entry.radius + maxStampDistance;
+                    if (Mathf.Abs(midpoint.x - farCenter.x) <= margin && Mathf.Abs(midpoint.z - farCenter.z) <= margin)
+                    {
+                        float radius = Mathf.Max(entry.radius, texel);
+                        float safeHalf = FarWorldSize * 0.5f - radius;
+                        if (preserved &&
+                            Mathf.Abs(entry.from.x - previousCenter.x) < safeHalf && Mathf.Abs(entry.to.x - previousCenter.x) < safeHalf &&
+                            Mathf.Abs(entry.from.z - previousCenter.z) < safeHalf && Mathf.Abs(entry.to.z - previousCenter.z) < safeHalf) continue;
+                        farReplay.Enqueue(entry);
+                    }
+                }
+            }
+            // The distant field covers every visible grass LOD. Decay its
+            // pixels at 10 Hz; the shader interpolates elapsed recovery so
+            // neither animation nor render cost scales with wheel count.
+            if (Time.time - farDecayTime >= 0.1f)
+            {
+                decayMaterial.SetFloat("_Decay", FarRecovery);
+                Graphics.Blit(farField, farScratch, decayMaterial);
+                SwapFar();
+                farDecayTime = Time.time;
+            }
+            int budget = Mathf.Max(1, permanentRebuildStampsPerFrame);
+            while (budget-- > 0 && farReplay.Count > 0)
+            {
+                ContactHistory entry = farReplay.Dequeue();
+                float strength = entry.strength * Mathf.Exp(-decayPerSecond * (Time.time - entry.time));
+                if (strength >= 0.002f) StampFar(entry.from, entry.to, entry.direction, entry.radius, strength);
+            }
+        }
+
+        void StampFar(Vector3 from, Vector3 to, Vector2 direction, float radius, float strength)
+        {
+            Vector2 origin = new Vector2(farCenter.x, farCenter.z) - Vector2.one * FarWorldSize * 0.5f;
+            Vector2 a = (new Vector2(from.x, from.z) - origin) / FarWorldSize;
+            Vector2 b = (new Vector2(to.x, to.z) - origin) / FarWorldSize;
+            ApplyContact(farField, farScratch, a, b, direction, radius, strength / Mathf.Max(FarRecovery, 0.001f), false, true);
+        }
+
+        void RememberContact(Vector3 from, Vector3 to, Vector2 direction, float radius, float strength)
+        {
+            while (historyCount > 0 && Time.time - contactHistory[historyStart].time > 6.22f / decayPerSecond)
+            {
+                historyStart = (historyStart + 1) % HistoryCapacity;
+                historyCount--;
+            }
+            if (historyCount == HistoryCapacity)
+            {
+                historyStart = (historyStart + 1) % HistoryCapacity;
+                historyCount--;
+            }
+            contactHistory[(historyStart + historyCount++) % HistoryCapacity] = new ContactHistory
+            { from = from, to = to, direction = direction, radius = radius, strength = strength, time = Time.time };
+        }
+
+        void QueueHistoryReplay()
+        {
+            historyReplay.Clear();
+            float half = worldSize * 0.5f;
+            for (int i = 0; i < historyCount; i++)
+            {
+                ContactHistory entry = contactHistory[(historyStart + i) % HistoryCapacity];
+                if (Time.time - entry.time > 6.22f / decayPerSecond) continue;
+                if (Mathf.Max(entry.from.x, entry.to.x) + entry.radius < fieldCenter.x - half ||
+                    Mathf.Min(entry.from.x, entry.to.x) - entry.radius > fieldCenter.x + half ||
+                    Mathf.Max(entry.from.z, entry.to.z) + entry.radius < fieldCenter.z - half ||
+                    Mathf.Min(entry.from.z, entry.to.z) - entry.radius > fieldCenter.z + half) continue;
+                historyReplay.Enqueue(entry);
+            }
+        }
+
+        void ProcessHistoryReplay()
+        {
+            Vector2 origin = new Vector2(fieldCenter.x, fieldCenter.z) - Vector2.one * worldSize * 0.5f;
+            int budget = Mathf.Max(1, permanentRebuildStampsPerFrame);
+            while (budget-- > 0 && historyReplay.Count > 0)
+            {
+                ContactHistory entry = historyReplay.Dequeue();
+                float strength = entry.strength * Mathf.Exp(-decayPerSecond * (Time.time - entry.time));
+                if (strength < 0.002f) continue;
+                Vector2 a = (new Vector2(entry.from.x, entry.from.z) - origin) / worldSize;
+                Vector2 b = (new Vector2(entry.to.x, entry.to.z) - origin) / worldSize;
+                ApplyContact(field, scratch, a, b, entry.direction, entry.radius, strength, false);
+            }
+        }
+
+        void ApplyContact(RenderTexture source, RenderTexture destination, Vector2 a, Vector2 b,
+            Vector2 direction, float radius, float strength, bool permanent, bool far = false)
+        {
+            int resolution = source.width;
+            float size = far ? FarWorldSize : worldSize;
+            float uvRadius = Mathf.Max(radius / size, 1f / resolution);
+            if (contactCompute != null)
+            {
+                int minX = Mathf.Clamp(Mathf.FloorToInt((Mathf.Min(a.x, b.x) - uvRadius) * resolution), 0, resolution);
+                int minY = Mathf.Clamp(Mathf.FloorToInt((Mathf.Min(a.y, b.y) - uvRadius) * resolution), 0, resolution);
+                int maxX = Mathf.Clamp(Mathf.CeilToInt((Mathf.Max(a.x, b.x) + uvRadius) * resolution), 0, resolution);
+                int maxY = Mathf.Clamp(Mathf.CeilToInt((Mathf.Max(a.y, b.y) + uvRadius) * resolution), 0, resolution);
+                if (maxX <= minX || maxY <= minY) return;
+                contactCompute.SetTexture(0, "_Field", source);
+                contactCompute.SetVector("_StampA", new Vector4(a.x, a.y, 0, 0));
+                contactCompute.SetVector("_StampB", new Vector4(b.x, b.y, 0, 0));
+                contactCompute.SetVector("_StampDirection", new Vector4(direction.x, direction.y, 0, 0));
+                contactCompute.SetFloat("_StampRadius", uvRadius);
+                contactCompute.SetFloat("_StampStrength", strength);
+                contactCompute.SetInt("_Resolution", resolution);
+                stampPixelMin[0] = minX; stampPixelMin[1] = minY;
+                contactCompute.SetInts("_PixelMin", stampPixelMin);
+                stampPixelMax[0] = maxX; stampPixelMax[1] = maxY;
+                contactCompute.SetInts("_PixelMax", stampPixelMax);
+                contactCompute.Dispatch(0, (maxX-minX+7)/8, (maxY-minY+7)/8, 1);
+            }
+            else
+            {
+                StampInto(source, destination, a, b, direction, radius, strength, size);
+                if (far) SwapFar(); else if (permanent) SwapPermanent(); else Swap();
+            }
+        }
+
+        void StampInto(RenderTexture source, RenderTexture destination, Vector2 a, Vector2 b, Vector2 dir, float radius, float strength, float size = 0f)
         {
             stampMaterial.SetVector("_StampA", new Vector4(a.x, a.y, 0f, 0f));
             stampMaterial.SetVector("_StampB", new Vector4(b.x, b.y, 0f, 0f));
@@ -745,7 +898,7 @@ namespace Voyage.TerrainSystem
             // A wheel contact is smaller than the visible crushed-grass band.
             // Use a wider stamp so the entire tire footprint reads as bent
             // grass instead of a nearly invisible one-pixel line.
-            stampMaterial.SetFloat("_StampRadius", Mathf.Max(radius * 2.0f / worldSize, 2f / resolution));
+            stampMaterial.SetFloat("_StampRadius", Mathf.Max(radius / (size > 0 ? size : worldSize), 1f / source.width));
             stampMaterial.SetFloat("_StampStrength", strength);
             Graphics.Blit(source, destination, stampMaterial);
         }
@@ -761,96 +914,10 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalTexture("_VoyageGrassInteraction", field);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", WorldToUv);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", permanentField);
+            Shader.SetGlobalTexture("_VoyageGrassFarInteraction", farField);
+            Shader.SetGlobalVector("_VoyageGrassFarWorld", FarWorldToUv);
+            Shader.SetGlobalFloat("_VoyageGrassFarRecovery", FarRecovery);
 
-            int count = Mathf.Min(MaxShaderWheels, wheelStates.Count);
-            for (int i = 0; i < MaxShaderWheels; i++)
-            {
-                if (i < count && wheelStates[i].valid && wheelStates[i].wheel != null)
-                {
-                    WheelState wheel = wheelStates[i];
-                    Vector3 position = GetWheelAnchor(wheel);
-                    Vector3 velocity = wheel.pressingThisFrame ? wheel.shaderMotionVelocity : Vector3.zero;
-                    velocity.y = 0f;
-                    Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized : Vector3.forward;
-                    shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);
-                    float radius = Mathf.Max(1.8f, wheel.radius * 5.5f);
-                    float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
-                    // Keep all wheel parameters in a Vector4. This avoids
-                    // platform-specific float-array material binding issues.
-                    shaderWheelPositions[i] = new Vector4(position.x, position.z, radius, strength);
-                }
-                else
-                {
-                    shaderWheelPositions[i] = Vector4.zero;
-                    shaderWheelDirections[i] = new Vector4(0f, 0f, 0f, 1f);
-                }
-            }
-            if (count == 0 && followTarget != null)
-            {
-                VehicleTerrainFollower follower = followTarget.GetComponent<VehicleTerrainFollower>();
-                if (follower != null)
-                {
-                    Vector3 velocity = follower.CurrentVelocity;
-                    velocity.y = 0f;
-                    Vector3 rootDeltaVelocity = hasPreviousFollowTargetPosition
-                        ? (followTarget.position - previousFollowTargetPosition) / Mathf.Max(Time.deltaTime, 0.0001f)
-                        : Vector3.zero;
-                    if (velocity.sqrMagnitude < 0.01f) velocity = rootDeltaVelocity;
-                    Vector3 direction = velocity.sqrMagnitude > 0.01f ? velocity.normalized : follower.ForwardDirection.normalized;
-                    count = Mathf.Min(MaxShaderWheels, follower.GrassInteractionWheelCount);
-                    for (int i = 0; i < count; i++)
-                    {
-                        Vector3 position = follower.GetGrassInteractionWheelPosition(i);
-                        float radius = Mathf.Max(1.8f, follower.tireRadius * 5.5f);
-                        float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
-                        shaderWheelPositions[i] = new Vector4(position.x, position.z, radius, strength);
-                        shaderWheelDirections[i] = new Vector4(direction.x, direction.z, 0f, 0f);
-                    }
-                }
-            }
-            Shader.SetGlobalVectorArray("_VoyageGrassWheelPositions", shaderWheelPositions);
-            Shader.SetGlobalVectorArray("_VoyageGrassWheelDirections", shaderWheelDirections);
-            // Publish scalar slots as well as arrays. Some DX12 instanced
-            // variants do not preserve a Vector4 array or MPB override, while
-            // scalar material uniforms remain available to every draw.
-            Shader.SetGlobalVector("_VoyageGrassWheel0", shaderWheelPositions[0]);
-            Shader.SetGlobalVector("_VoyageGrassWheel1", shaderWheelPositions[1]);
-            Shader.SetGlobalVector("_VoyageGrassWheel2", shaderWheelPositions[2]);
-            Shader.SetGlobalVector("_VoyageGrassWheel3", shaderWheelPositions[3]);
-            Shader.SetGlobalVector("_VoyageGrassWheel4", shaderWheelPositions[4]);
-            Shader.SetGlobalVector("_VoyageGrassWheel5", shaderWheelPositions[5]);
-            Shader.SetGlobalVector("_VoyageGrassWheelDirection0", shaderWheelDirections[0]);
-            Shader.SetGlobalVector("_VoyageGrassWheelDirection1", shaderWheelDirections[1]);
-            Shader.SetGlobalVector("_VoyageGrassWheelDirection2", shaderWheelDirections[2]);
-            Shader.SetGlobalVector("_VoyageGrassWheelDirection3", shaderWheelDirections[3]);
-            Shader.SetGlobalVector("_VoyageGrassWheelDirection4", shaderWheelDirections[4]);
-            Shader.SetGlobalVector("_VoyageGrassWheelDirection5", shaderWheelDirections[5]);
-            Shader.SetGlobalFloat("_VoyageGrassWheelCount", count);
-            shaderVehicleData = Vector4.zero;
-            shaderVehicleParams = Vector4.zero;
-            if (followTarget != null)
-            {
-                VehicleTerrainFollower follower = followTarget.GetComponent<VehicleTerrainFollower>();
-                Vector3 forward = follower != null ? follower.ForwardDirection : followTarget.right;
-                forward.y = 0f;
-                if (forward.sqrMagnitude < 0.001f) forward = Vector3.forward;
-                forward.Normalize();
-                Vector3 velocity = follower != null ? follower.CurrentVelocity : Vector3.zero;
-                Vector3 rootDeltaVelocity = hasPreviousFollowTargetPosition
-                    ? (followTarget.position - previousFollowTargetPosition) / Mathf.Max(Time.deltaTime, 0.0001f)
-                    : Vector3.zero;
-                if (velocity.sqrMagnitude < 0.01f) velocity = rootDeltaVelocity;
-                velocity.y = 0f;
-                float strength = velocity.sqrMagnitude >= minimumVehicleSpeed * minimumVehicleSpeed ? 1f : 0f;
-                shaderVehicleData = new Vector4(followTarget.position.x, followTarget.position.z, forward.x, forward.z);
-                // PlayerCar's runtime vehicle uses local X as its forward
-                // axis and local Z as its axle width.
-                shaderVehicleParams = new Vector4(1.35f, 1.02f, 0.95f, strength);
-                previousFollowTargetPosition = followTarget.position;
-                hasPreviousFollowTargetPosition = true;
-            }
-            Shader.SetGlobalVector("_VoyageGrassVehicleData", shaderVehicleData);
-            Shader.SetGlobalVector("_VoyageGrassVehicleParams", shaderVehicleParams);
             Shader.SetGlobalFloat("_VoyageGrassDebugStateMachine", debugGrassStateMachine ? 1f : 0f);
         }
 
@@ -881,6 +948,7 @@ namespace Voyage.TerrainSystem
             permanentRebuildSamples.Clear();
             permanentRebuildCursor = 0;
             permanentRebuildPending = false;
+            if (!recordPermanentTracks) { ClearPermanentFields(); return; }
             if (permanentTrackStore == null) return;
             // If the previous rebuild was interrupted, the scrolled field can
             // contain samples from an older coordinate window. A full replay
@@ -944,6 +1012,8 @@ namespace Voyage.TerrainSystem
             RenderTexture temp = permanentField; permanentField = permanentScratch; permanentScratch = temp;
         }
 
+        void SwapFar() { RenderTexture temp = farField; farField = farScratch; farScratch = temp; }
+
         void Clear()
         {
             RenderTexture previous = RenderTexture.active;
@@ -951,13 +1021,16 @@ namespace Voyage.TerrainSystem
             RenderTexture.active = scratch; GL.Clear(false, true, Color.clear);
             RenderTexture.active = permanentField; GL.Clear(false, true, Color.clear);
             RenderTexture.active = permanentScratch; GL.Clear(false, true, Color.clear);
+            if (farField != null) { RenderTexture.active = farField; GL.Clear(false, true, Color.clear); }
+            if (farScratch != null) { RenderTexture.active = farScratch; GL.Clear(false, true, Color.clear); }
             RenderTexture.active = previous;
         }
 
-        RenderTexture CreateField(string name)
+        RenderTexture CreateField(string name, int size = 0)
         {
-            var result = new RenderTexture(resolution, resolution, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear)
-            { name = name, filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp, useMipMap = false, autoGenerateMips = false };
+            if (size <= 0) size = resolution;
+            var result = new RenderTexture(size, size, 0, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear)
+            { name = name, filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp, useMipMap = false, autoGenerateMips = false, enableRandomWrite = contactCompute != null };
             result.Create();
             return result;
         }
@@ -972,6 +1045,8 @@ namespace Voyage.TerrainSystem
         {
             if (Instance != this) return;
             pendingStamps.Clear();
+            historyReplay.Clear();
+            farReplay.Clear();
             permanentRebuildSamples.Clear();
             permanentRebuildCursor = 0;
             permanentRebuildPending = false;
@@ -979,6 +1054,7 @@ namespace Voyage.TerrainSystem
             for (int i = 0; i < emitters.Count; i++) emitters[i].valid = false;
             Shader.SetGlobalTexture("_VoyageGrassInteraction", null);
             Shader.SetGlobalTexture("_VoyageGrassPermanentInteraction", null);
+            Shader.SetGlobalTexture("_VoyageGrassFarInteraction", null);
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", Vector4.zero);
         }
 
@@ -990,10 +1066,14 @@ namespace Voyage.TerrainSystem
             Shader.SetGlobalVector("_VoyageGrassInteractionWorld", Vector4.zero);
             if (field != null) field.Release();
             if (scratch != null) scratch.Release();
+            if (farField != null) farField.Release();
+            if (farScratch != null) farScratch.Release();
             if (permanentField != null) permanentField.Release();
             if (permanentScratch != null) permanentScratch.Release();
             if (field != null) Destroy(field);
             if (scratch != null) Destroy(scratch);
+            if (farField != null) Destroy(farField);
+            if (farScratch != null) Destroy(farScratch);
             if (permanentField != null) Destroy(permanentField);
             if (permanentScratch != null) Destroy(permanentScratch);
             if (decayMaterial != null) Destroy(decayMaterial);

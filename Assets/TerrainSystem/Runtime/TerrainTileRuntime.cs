@@ -23,6 +23,9 @@ namespace Voyage.TerrainSystem
         private int outgoingLod = -1;
         private float lodTransition = 1f;
         private const float LodTransitionSeconds = 0.4f;
+        public const MeshColliderCookingOptions CollisionCookingOptions =
+            MeshColliderCookingOptions.EnableMeshCleaning | MeshColliderCookingOptions.WeldColocatedVertices |
+            MeshColliderCookingOptions.CookForFasterSimulation;
 
         public Vector2Int Coordinate => coordinate;
         public Bounds Bounds => bounds;
@@ -69,7 +72,8 @@ namespace Voyage.TerrainSystem
             // legacy data. Normalize immediately so there is never a frame of
             // overlapping LOD meshes before the streaming system initializes.
             SetLod(0);
-            SetCollisionEnabled(!IsHlod);
+            // Streaming activates collision separately, within its frame budget.
+            SetCollisionEnabled(false);
         }
 
         public void Initialize(TerrainTileRecord record, TerrainChunkSettings chunkSettings, bool useHlod)
@@ -89,16 +93,21 @@ namespace Voyage.TerrainSystem
             if (useHlod) SetCollisionEnabled(false);
             int initialLod = useHlod ? 3 : CalculateLod(viewerPosition);
             SetLod(initialLod, true);
-            EnsureGrassForCurrentLod(record.bounds);
+            // Grass preparation is scheduled separately from prefab creation.
             UpdateGrassInteractionProximity();
         }
 
         public void UpdateLod(Vector3 cameraPosition)
         {
+            UpdateVisualLod(cameraPosition);
+            InitializeGrass();
+        }
+
+        public void UpdateVisualLod(Vector3 cameraPosition)
+        {
             if (settings == null)
             {
                 SetLod(0);
-                EnsureGrassForCurrentLod(bounds);
                 UpdateGrassInteractionProximity();
                 return;
             }
@@ -112,8 +121,25 @@ namespace Voyage.TerrainSystem
                 distance > settings.GetLodDistance(currentLod - 1) - 10f) lod = currentLod;
             SetLod(lod);
             UpdateLodTransition();
-            EnsureGrassForCurrentLod(bounds);
             UpdateGrassInteractionProximity();
+        }
+
+        public bool WantsCollision(Vector3 viewerPosition, TerrainChunkSettings chunkSettings)
+        {
+            if (!chunkSettings.enableCollisionWhenLoaded) return false;
+            float radius = Mathf.Max(chunkSettings.tileSize * chunkSettings.collisionRadius,
+                                     chunkSettings.grassFadeEnd + 40f);
+            // Evaluate distance continuously, and keep a retreat margin. A cell
+            // boundary no longer toggles an entire row of static colliders.
+            if (CollisionEnabled) radius += chunkSettings.tileSize * 0.5f;
+            return bounds.SqrDistance(viewerPosition) <= radius * radius;
+        }
+
+        public bool NeedsGrassInitialization => currentLod < 3 && configuredGrass == null && CollisionEnabled;
+
+        public void InitializeGrass()
+        {
+            if (NeedsGrassInitialization) EnsureGrassForCurrentLod(bounds);
         }
 
         private int CalculateLod(Vector3 viewerPosition)
@@ -220,10 +246,9 @@ namespace Voyage.TerrainSystem
             }
             meshCollider.convex = false;
             meshCollider.isTrigger = false;
-            meshCollider.cookingOptions = MeshColliderCookingOptions.EnableMeshCleaning |
-                                           MeshColliderCookingOptions.WeldColocatedVertices |
-                                           MeshColliderCookingOptions.CookForFasterSimulation;
-            meshCollider.enabled = true;
+            if (meshCollider.cookingOptions != CollisionCookingOptions)
+                meshCollider.cookingOptions = CollisionCookingOptions;
+            meshCollider.enabled = false;
         }
 
         private void ConfigureLighting()

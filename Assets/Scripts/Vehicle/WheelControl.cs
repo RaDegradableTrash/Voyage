@@ -18,11 +18,24 @@ public class WheelControl : MonoBehaviour
     private Vector3 _lastPosition;
     private Quaternion _lastRotation = Quaternion.identity;
     private bool _hasLastPose;
+    private Quaternion _modelRotationOffset = Quaternion.identity;
+
+    public float WorldRadius => WheelCollider == null ? 0.35f : WheelCollider.radius *
+        Mathf.Max(Mathf.Abs(WheelCollider.transform.lossyScale.y), Mathf.Abs(WheelCollider.transform.lossyScale.z));
+
+    public void BindCollider(WheelCollider collider)
+    {
+        WheelCollider = collider;
+        _wheelModelTransform = wheelModel;
+        if (_wheelModelTransform != null)
+            _modelRotationOffset = Quaternion.Inverse(collider.transform.rotation) * _wheelModelTransform.rotation;
+        _hasLastPose = false;
+    }
 
     // Start is called before the first frame update
     private void Start()
     {
-        WheelCollider = GetComponent<WheelCollider>();
+        if (WheelCollider == null) WheelCollider = GetComponent<WheelCollider>();
         _wheelModelTransform = wheelModel != null ? wheelModel.transform : null;
 
         if (WheelCollider == null || _wheelModelTransform == null)
@@ -37,6 +50,7 @@ public class WheelControl : MonoBehaviour
         // Get the Wheel collider's world pose values and
         // use them to set the wheel model's position and rotation
         WheelCollider.GetWorldPose(out Vector3 position, out Quaternion rotation);
+        rotation *= _modelRotationOffset;
 
         if (_hasLastPose &&
             (position - _lastPosition).sqrMagnitude < 0.000001f &&
@@ -51,5 +65,4 @@ public class WheelControl : MonoBehaviour
         _hasLastPose = true;
     }
 }
-
 

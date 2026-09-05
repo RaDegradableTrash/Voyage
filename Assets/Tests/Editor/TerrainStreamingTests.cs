@@ -150,6 +150,7 @@ namespace Voyage.Tests.Editor
             MeshCollider collider = collision.AddComponent<MeshCollider>();
             collider.sharedMesh = mesh;
             Component tile = root.AddComponent(GameType("Voyage.TerrainSystem.TerrainTileRuntime"));
+            Call(tile, "SetCollisionEnabled", true);
             Physics.SyncTransforms();
             foreach (int lod in new[] { 0, 1, 2, 3, 2, 0 })
             {
@@ -179,7 +180,8 @@ namespace Voyage.Tests.Editor
                 float value = (float)density.Invoke(null, new object[] { position.magnitude, 105f, 495f });
                 if (position.magnitude <= 498f && (float)selection.Invoke(null, new object[] { position }) <= value + 0.08f) expected++;
             }
-            using (ComputeBuffer source = new ComputeBuffer(matrices.Length, 64))
+            // Capacity deliberately exceeds the populated prefix, as in streaming.
+            using (ComputeBuffer source = new ComputeBuffer(matrices.Length * 2, 64))
             using (ComputeBuffer visible = new ComputeBuffer(matrices.Length, 64, ComputeBufferType.Append))
             using (ComputeBuffer count = new ComputeBuffer(1, 4, ComputeBufferType.Raw))
             {
@@ -188,6 +190,7 @@ namespace Voyage.Tests.Editor
                 int kernel = shader.FindKernel("CSMain");
                 shader.SetBuffer(kernel, "_SourceMatrices", source);
                 shader.SetBuffer(kernel, "_VisibleMatrices", visible);
+                shader.SetInt("_SourceCount", matrices.Length);
                 shader.SetVector("_CameraPosition", Vector4.zero);
                 Vector4[] planes = new Vector4[6];
                 for (int i = 0; i < planes.Length; i++) planes[i] = new Vector4(0, 0, 0, 10000);
@@ -195,11 +198,139 @@ namespace Voyage.Tests.Editor
                 shader.SetFloat("_MaxDistance", 495f);
                 shader.SetFloat("_InstanceRadius", 3f);
                 shader.SetFloat("_DensityNearDistance", 105f);
-                shader.Dispatch(kernel, matrices.Length / 64, 1, 1);
+                shader.Dispatch(kernel, matrices.Length * 2 / 64, 1, 1);
                 ComputeBuffer.CopyCount(visible, count, 0);
                 int[] actual = new int[1];
                 count.GetData(actual);
                 Assert.That(actual[0], Is.EqualTo(expected));
+            }
+        }
+
+        [Test]
+        public void BorderActivationUsesOneSharedWorkSlotPerFrame()
+        {
+            ScriptableObject settings = Settings();
+            Set(settings, "lod0Distance", 10f);
+            Set(settings, "lod1Distance", 20f);
+            Set(settings, "lod2Distance", 30f);
+            GameObject root = Keep(new GameObject("Activation budget"));
+            root.SetActive(false);
+            Component core = root.AddComponent(GameType("DrivingCore"));
+            IDictionary loaded = Get<IDictionary>(core, "loadedTerrainTiles");
+            List<Collider> colliders = new List<Collider>();
+            for (int i = 0; i < 9; i++)
+            {
+                GameObject tileObject = Keep(new GameObject("Prepared tile " + i));
+                tileObject.SetActive(false);
+                Collider collider = tileObject.AddComponent<BoxCollider>();
+                collider.enabled = false;
+                colliders.Add(collider);
+                Component tile = tileObject.AddComponent(GameType("Voyage.TerrainSystem.TerrainTileRuntime"));
+                Set(tile, "settings", settings);
+                Set(tile, "bounds", new Bounds(new Vector3(200f, 0f, i * 10f), Vector3.one));
+                loaded.Add(new Vector2Int(1, i), tileObject);
+            }
+            for (int expected = 1; expected <= colliders.Count; expected++)
+            {
+                Set(core, "terrainWorkFrame", -1);
+                Call(core, "UpdateLoadedTerrainLods", Vector3.zero, settings, Vector2Int.zero);
+                Assert.That(colliders.FindAll(c => c.enabled).Count, Is.EqualTo(expected));
+                // Simulate another pass at the new cell in the same frame.
+                Call(core, "UpdateLoadedTerrainLods", Vector3.right * 0.01f, settings, Vector2Int.right);
+                Assert.That(colliders.FindAll(c => c.enabled).Count, Is.EqualTo(expected));
+                Assert.That((bool)Call(core, "TryBeginTerrainWork"), Is.False,
+                    "The loader must not instantiate another tile after an activation in this frame.");
+            }
+            // Avoid destroying test-owned roots through DrivingCore's runtime teardown.
+            loaded.Clear();
+        }
+
+        [Test]
+        public void CollisionRetreatMarginPreventsBoundaryChatter()
+        {
+            ScriptableObject settings = Settings();
+            GameObject root = Keep(new GameObject("Collision hysteresis"));
+            root.SetActive(false);
+            Collider collider = root.AddComponent<BoxCollider>();
+            collider.enabled = false;
+            Component tile = root.AddComponent(GameType("Voyage.TerrainSystem.TerrainTileRuntime"));
+            Set(tile, "bounds", new Bounds(Vector3.zero, Vector3.zero));
+            Assert.That((bool)Call(tile, "WantsCollision", Vector3.right * 530f, settings), Is.True);
+            Call(tile, "SetCollisionEnabled", true);
+            Assert.That((bool)Call(tile, "WantsCollision", Vector3.right * 540f, settings), Is.True);
+            Assert.That((bool)Call(tile, "WantsCollision", Vector3.right * 670f, settings), Is.False);
+        }
+
+        [Test]
+        public void StreamingGrassAppendsWithoutRecreatingGpuBuffers()
+        {
+            if (!SystemInfo.supportsComputeShaders) Assert.Ignore("Compute shaders unavailable.");
+            GameObject cameraObject = Keep(new GameObject("GPU test camera"));
+            cameraObject.tag = "MainCamera";
+            cameraObject.AddComponent<Camera>();
+            GameObject root = Keep(new GameObject("Incremental grass"));
+            root.SetActive(false);
+            Component grass = root.AddComponent(GameType("Voyage.TerrainSystem.InteractiveGrassTile"));
+            Material material = Keep(new Material(Shader.Find("Voyage/Grass/InteractiveLit")));
+            material.enableInstancing = true;
+            Mesh mesh = Keep(new Mesh());
+            mesh.vertices = new[] { Vector3.zero, Vector3.up, Vector3.right };
+            mesh.triangles = new[] { 0, 1, 2 };
+            Set(grass, "runtimeMaterial", material);
+            Set(grass, "runtimeClusterBudget", 1024);
+            Set(grass, "debugWorldBounds", new Bounds(Vector3.zero, Vector3.one * 100));
+            Matrix4x4[] first = new Matrix4x4[256];
+            for (int i = 0; i < first.Length; i++) first[i] = Matrix4x4.Translate(Vector3.right * i);
+            Set(grass, "instanceMatrices", first);
+            Set(grass, "instanceCount", first.Length);
+            Set(grass, "bufferCreationFrame", -1);
+            try
+            {
+                Assert.That((bool)Call(grass, "TryDrawIndirect", mesh), Is.True);
+                ComputeBuffer source = Get<ComputeBuffer>(grass, "indirectSourceBuffer");
+                ComputeBuffer visible = Get<ComputeBuffer>(grass, "indirectVisibleBuffer");
+                Matrix4x4[] second = new Matrix4x4[512];
+                Array.Copy(first, second, first.Length);
+                for (int i = first.Length; i < second.Length; i++) second[i] = Matrix4x4.Translate(Vector3.right * i);
+                Set(grass, "instanceMatrices", second);
+                Set(grass, "instanceCount", second.Length);
+                Assert.That((bool)Call(grass, "TryDrawIndirect", mesh), Is.True);
+                Assert.That(Get<ComputeBuffer>(grass, "indirectSourceBuffer"), Is.SameAs(source));
+                Assert.That(Get<ComputeBuffer>(grass, "indirectVisibleBuffer"), Is.SameAs(visible));
+                Assert.That(Get<int>(grass, "indirectUploadedCount"), Is.EqualTo(second.Length));
+                Matrix4x4[] actual = new Matrix4x4[second.Length];
+                source.GetData(actual, 0, 0, actual.Length);
+                CollectionAssert.AreEqual(second, actual);
+            }
+            finally { Call(grass, "ReleaseIndirectBuffers"); }
+        }
+
+        [Test]
+        public void PublishingGrassReusesCpuStorageAndPreservesTheExistingPrefix()
+        {
+            GameObject root = Keep(new GameObject("Incremental placement"));
+            root.SetActive(false);
+            Component grass = root.AddComponent(GameType("Voyage.TerrainSystem.InteractiveGrassTile"));
+            Set(grass, "runtimeClusterBudget", 1024);
+            var positions = new List<Vector3>();
+            var rotations = new List<Quaternion>();
+            var scales = new List<float>();
+            Matrix4x4[] storage = null;
+            for (int batch = 0; batch < 4; batch++)
+            {
+                for (int i = 0; i < 128; i++)
+                {
+                    positions.Add(Vector3.right * positions.Count);
+                    rotations.Add(Quaternion.identity);
+                    scales.Add(1f);
+                }
+                Call(grass, "PublishRuntimeInstances", positions, rotations, scales);
+                Matrix4x4[] current = Get<Matrix4x4[]>(grass, "instanceMatrices");
+                if (storage != null) Assert.That(current, Is.SameAs(storage));
+                storage = current;
+                Assert.That(Get<int>(grass, "instanceCount"), Is.EqualTo(positions.Count));
+                for (int i = 0; i < positions.Count; i++)
+                    Assert.That((Vector3)storage[i].GetColumn(3), Is.EqualTo(positions[i]));
             }
         }
 
