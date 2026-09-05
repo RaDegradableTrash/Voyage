@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using Unity.Jobs;
 using Unity.Profiling;
+using Voyage.Lighting;
 using Voyage.TerrainSystem;
 
 /// <summary>Only the vehicle, terrain, camera and pause loop.</summary>
@@ -62,10 +63,30 @@ public sealed class DrivingCore : MonoBehaviour
     void Awake()
     {
         Instance = this;
+        EnsureLightingSystems();
         grassInteraction = GetComponent<GrassInteractionSystem>();
         if (grassInteraction == null) grassInteraction = GrassInteractionSystem.Instance;
         if (grassInteraction == null) grassInteraction = gameObject.AddComponent<GrassInteractionSystem>();
         if (GetComponent<VoyageHUD>() == null) gameObject.AddComponent<VoyageHUD>();
+    }
+
+    static void EnsureLightingSystems()
+    {
+        // The bootstrap normally installs these before the first scene, but
+        // explicitly repair the dependency here as well. This covers Player
+        // builds where runtime-initialization ordering or managed stripping
+        // can otherwise leave the scene with no sun, moon, or sky controller.
+        DayNightSystem dayNight = FindAnyObjectByType<DayNightSystem>(FindObjectsInactive.Include);
+        if (dayNight != null) return;
+        GameObject root = GameObject.Find("VOYAGE // LIGHTING SYSTEMS");
+        if (root == null)
+        {
+            root = new GameObject("VOYAGE // LIGHTING SYSTEMS");
+            DontDestroyOnLoad(root);
+        }
+        root.AddComponent<DayNightSystem>();
+        if (root.GetComponent<FogSystem>() == null) root.AddComponent<FogSystem>();
+        if (root.GetComponent<CloudLightingBridge>() == null) root.AddComponent<CloudLightingBridge>();
     }
 
     void Start()
