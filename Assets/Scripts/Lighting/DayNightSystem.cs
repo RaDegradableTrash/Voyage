@@ -178,6 +178,7 @@ namespace Voyage.Lighting
             if (runtimeSkybox != null) return;
             previousSkybox = RenderSettings.skybox;
             Shader shader = Shader.Find("Skybox/Procedural");
+            if (shader == null) shader = Shader.Find("Voyage/Sky/Gradient");
             if (shader == null) return;
             runtimeSkybox = previousSkybox != null && previousSkybox.shader == shader
                 ? new Material(previousSkybox)
