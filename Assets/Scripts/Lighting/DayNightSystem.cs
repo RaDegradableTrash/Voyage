@@ -276,13 +276,28 @@ namespace Voyage.Lighting
             if (camera == null) camera = FindFirstObjectByType<Camera>();
             if (camera == null || sunVisual == null || moonVisual == null) return;
             Vector3 origin = camera.transform.position;
-            sunVisual.transform.position = origin + sunDirection * 650f;
-            moonVisual.transform.position = origin + moonDirection * 640f;
+            // Keep the celestial bodies in the camera's sky hemisphere. The
+            // physical direction still drives their elevation and day/night
+            // visibility, but a chase camera must not lose them behind its
+            // limited horizontal view or behind the terrain.
+            sunVisual.transform.position = SkyPosition(camera, sunDirection, 650f);
+            moonVisual.transform.position = SkyPosition(camera, moonDirection, 640f);
             sunVisual.SetActive(sunIntensity > .001f);
             moonVisual.SetActive(moonIntensity > .001f);
             float sunScale = Mathf.Lerp(28f, 52f, Mathf.Clamp01(sunIntensity / daySunIntensity));
             sunVisual.transform.localScale = Vector3.one * sunScale;
             moonVisual.transform.localScale = Vector3.one * 30f;
+        }
+
+        static Vector3 SkyPosition(Camera camera, Vector3 direction, float distance)
+        {
+            float horizontal = Vector3.Dot(direction, camera.transform.right);
+            float vertical = Vector3.Dot(direction, camera.transform.up);
+            horizontal = Mathf.Clamp(horizontal, -.72f, .72f);
+            vertical = Mathf.Clamp(vertical, -.18f, .62f);
+            return camera.transform.position + camera.transform.forward * distance +
+                camera.transform.right * (horizontal * distance * .45f) +
+                camera.transform.up * (vertical * distance * .42f);
         }
 
         void ApplyCameraFallbackColor(float day, float horizonGlow)
