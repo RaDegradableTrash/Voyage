@@ -58,12 +58,15 @@ namespace Voyage.Lighting
         private readonly System.Collections.Generic.List<Light> disabledDirectionalLights = new System.Collections.Generic.List<Light>();
         static readonly int GrassEnvironmentColorId = Shader.PropertyToID("_VoyageGrassEnvironmentColor");
         static readonly int GrassEnvironmentLightId = Shader.PropertyToID("_VoyageGrassEnvironmentLight");
+        static readonly int SkySunDirectionId = Shader.PropertyToID("_SunDirection");
+        static readonly int SkyMoonDirectionId = Shader.PropertyToID("_MoonDirection");
 
         void OnEnable()
         {
             Instance = this;
             EnsureLights();
             EnsureSkybox();
+            ConfigureCameras();
             Apply();
         }
 
@@ -158,7 +161,7 @@ namespace Voyage.Lighting
                 new Color(.075f, .055f, .025f), new Color(.28f, .27f, .25f), day);
             RenderSettings.ambientIntensity = ambient;
             RenderSettings.reflectionIntensity = reflection;
-            ApplySky(day, horizonGlow);
+            ApplySky(day, horizonGlow, sunDirection);
             PublishGrassEnvironment(day);
             Changed?.Invoke(Snapshot);
         }
@@ -177,8 +180,11 @@ namespace Voyage.Lighting
         {
             if (runtimeSkybox != null) return;
             previousSkybox = RenderSettings.skybox;
-            Shader shader = Shader.Find("Skybox/Procedural");
-            if (shader == null) shader = Shader.Find("Voyage/Sky/Gradient");
+            // Use the project shader first. Built-in procedural sky can resolve
+            // by name in a player while still being stripped from the active
+            // URP renderer, which produces a black background.
+            Shader shader = Shader.Find("Voyage/Sky/Gradient");
+            if (shader == null) shader = Shader.Find("Skybox/Procedural");
             if (shader == null) return;
             runtimeSkybox = previousSkybox != null && previousSkybox.shader == shader
                 ? new Material(previousSkybox)
@@ -186,7 +192,16 @@ namespace Voyage.Lighting
             runtimeSkybox.name = "Voyage Runtime Skybox";
         }
 
-        void ApplySky(float day, float sunset)
+        static void ConfigureCameras()
+        {
+            foreach (Camera camera in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                camera.clearFlags = CameraClearFlags.Skybox;
+                camera.backgroundColor = Color.black;
+            }
+        }
+
+        void ApplySky(float day, float sunset, Vector3 sunDirection)
         {
             if (runtimeSkybox == null) return;
             Color skyColor = Color.Lerp(nightSkyColor, daySkyColor, day);
@@ -196,6 +211,8 @@ namespace Voyage.Lighting
             if (runtimeSkybox.HasProperty("_SkyTint")) runtimeSkybox.SetColor("_SkyTint", skyColor);
             if (runtimeSkybox.HasProperty("_GroundColor")) runtimeSkybox.SetColor("_GroundColor", groundColor);
             if (runtimeSkybox.HasProperty("_Exposure")) runtimeSkybox.SetFloat("_Exposure", Mathf.Lerp(.08f, .78f, day) + sunset * .08f);
+            if (runtimeSkybox.HasProperty(SkySunDirectionId)) runtimeSkybox.SetVector(SkySunDirectionId, new Vector4(sunDirection.x, sunDirection.y, sunDirection.z, 0f));
+            if (runtimeSkybox.HasProperty(SkyMoonDirectionId)) runtimeSkybox.SetVector(SkyMoonDirectionId, new Vector4((-sunDirection).x, (-sunDirection).y, (-sunDirection).z, 0f));
             RenderSettings.skybox = runtimeSkybox;
         }
 
