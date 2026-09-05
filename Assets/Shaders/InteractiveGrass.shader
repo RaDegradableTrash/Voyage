@@ -76,6 +76,8 @@ Shader "Voyage/Grass/InteractiveLit"
             float _FadeStart;
             float _FadeEnd;
             float4 _VoyageGrassWind;
+            float4 _VoyageGrassEnvironmentColor;
+            float _VoyageGrassEnvironmentLight;
             #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
             StructuredBuffer<float4x4> _VoyageGrassMatrices;
             void ConfigureProcedural()
@@ -297,17 +299,11 @@ Shader "Voyage/Grass/InteractiveLit"
                     fade = 1.0;
                 }
 
-                // Keep the authored grass color independent of sun direction
-                // and ambient light. Only the main-light shadow attenuation is
-                // applied, so external objects can shade the meadow without
-                // introducing self-lighting or card-to-card gradients.
-                // Do not sample the shadow map from this procedural card
-                // shader. On DX12 an invalid per-card shadow coordinate can
-                // become NaN and contaminate the entire fragment color.
-                // Realtime shadows remain enabled on the vehicle/URP Lit
-                // objects; the grass keeps a stable authored base tone.
-                Light mainLight = GetMainLight();
-                half shadowLight = 1.0h;
+                // Grass deliberately does not receive or cast realtime
+                // shadows. Match the surrounding day/night environment with
+                // a smooth global colour and brightness adjustment instead.
+                half3 environmentColor = max(_VoyageGrassEnvironmentColor.rgb, half3(0.35h, 0.35h, 0.35h));
+                half environmentLight = max(_VoyageGrassEnvironmentLight, 0.35h);
                 float macro = frac(sin(dot(floor(input.positionWS.xz * max(_MacroScale, 0.001)), float2(12.9898, 78.233))) * 43758.5453);
                 float macroStrength = lerp(_MacroStrength, 0.08, input.farBlend);
                 macro = lerp(1.0, lerp(0.82, 1.18, macro), macroStrength);
@@ -319,7 +315,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 half randomVariation = lerp(0.82h, 1.12h, input.instanceRandom.y);
                 randomVariation = lerp(randomVariation, 1.0h, input.farBlend * 0.82h);
                 grassColor *= macro * randomVariation;
-                half3 color = grassColor * shadowLight;
+                half3 color = grassColor * environmentColor * environmentLight;
                 if (_VoyageGrassDebugStateMachine > 0.5)
                 {
                     float4 fieldSample = SAMPLE_TEXTURE2D_LOD(_VoyageGrassInteraction,
@@ -341,7 +337,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 if (any(color != color)) color = _BaseColor.rgb;
                 // Streaming and fog transitions must never expose a black
                 // card; the ground palette remains the minimum visible tone.
-                color = max(color, _RootColor.rgb * 0.22h);
+                color = max(color, _RootColor.rgb * lerp(0.14h, 0.22h, environmentLight));
                 // Keep the near field fully opaque and let the terrain show
                 // through progressively in the transition band. This avoids
                 // the hard dither horizon produced by distance clip alone.

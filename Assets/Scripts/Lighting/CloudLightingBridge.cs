@@ -58,6 +58,7 @@ namespace Voyage.Lighting
             Shader.SetGlobalColor(SunColorId, sunColor);
             Shader.SetGlobalColor(AmbientColorId, Color.Lerp(nightAmbient, dayAmbient, daylight));
             Shader.SetGlobalFloat(LightId, Mathf.Lerp(nightLight, dayLight, daylight));
+
         }
     }
 }

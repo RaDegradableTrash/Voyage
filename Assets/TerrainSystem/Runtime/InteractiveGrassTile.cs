@@ -123,7 +123,7 @@ namespace Voyage.TerrainSystem
             meshFilter = child.AddComponent<MeshFilter>();
             meshRenderer = child.AddComponent<MeshRenderer>();
             meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            meshRenderer.receiveShadows = true;
+            meshRenderer.receiveShadows = false;
             Material sourceMaterial = material != null ? material : prototype != null ? prototype.material : null;
             runtimeMaterial = sourceMaterial != null ? new Material(sourceMaterial) : CreateDefaultMaterial();
             if (runtimeMaterial != null)
@@ -287,7 +287,7 @@ namespace Voyage.TerrainSystem
         void DrawBatch(Mesh drawMesh, Camera targetCamera, int count)
         {
             Graphics.DrawMeshInstanced(drawMesh, 0, runtimeMaterial, instanceBatch, count, instanceProperties,
-                UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, targetCamera, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
+                UnityEngine.Rendering.ShadowCastingMode.Off, false, gameObject.layer, targetCamera, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
         }
 
         // Keep these equations in sync with Shaders/GrassDistance.hlsl.
@@ -395,7 +395,7 @@ namespace Voyage.TerrainSystem
             }
             runtimeMaterial.SetBuffer("_VoyageGrassMatrices", indirectVisibleBuffer);
             Graphics.DrawMeshInstancedIndirect(drawMesh, 0, runtimeMaterial, indirectBounds, indirectArgsBuffer, 0,
-                instanceProperties, UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, camera,
+                instanceProperties, UnityEngine.Rendering.ShadowCastingMode.Off, false, gameObject.layer, camera,
                 UnityEngine.Rendering.LightProbeUsage.BlendProbes);
             return true;
         }

@@ -23,7 +23,7 @@ namespace Voyage.Lighting
         [Header("Clock")]
         [Range(0f, 24f)] public float currentTime = 12f;
         public bool advanceTime = true;
-        [Min(60f)] public float dayDuration = 900f;
+        [Min(1f)] public float dayDuration = 60f;
         public float timeScale = 1f;
         [Range(0f, 24f)] public float sunriseTime = 6f;
         [Range(0f, 24f)] public float sunsetTime = 18f;
@@ -55,13 +55,24 @@ namespace Voyage.Lighting
         public event Action<LightingSnapshot> Changed;
         private Material runtimeSkybox;
         private Material previousSkybox;
+        [NonSerialized] GameObject sunVisual;
+        [NonSerialized] GameObject moonVisual;
+        [NonSerialized] Material sunVisualMaterial;
+        [NonSerialized] Material moonVisualMaterial;
         private readonly System.Collections.Generic.List<Light> disabledDirectionalLights = new System.Collections.Generic.List<Light>();
+        static readonly int GrassEnvironmentColorId = Shader.PropertyToID("_VoyageGrassEnvironmentColor");
+        static readonly int GrassEnvironmentLightId = Shader.PropertyToID("_VoyageGrassEnvironmentLight");
+        static readonly int SkySunDirectionId = Shader.PropertyToID("_SunDirection");
+        static readonly int SkyMoonDirectionId = Shader.PropertyToID("_MoonDirection");
 
         void OnEnable()
         {
             Instance = this;
             EnsureLights();
             EnsureSkybox();
+            EnsureCamera();
+            ConfigureCameras();
+            EnsureCelestialVisuals();
             Apply();
         }
 
@@ -76,6 +87,12 @@ namespace Voyage.Lighting
             }
             runtimeSkybox = null;
             previousSkybox = null;
+            if (sunVisual != null) DestroyObject(sunVisual);
+            if (moonVisual != null) DestroyObject(moonVisual);
+            if (sunVisualMaterial != null) DestroyObject(sunVisualMaterial);
+            if (moonVisualMaterial != null) DestroyObject(moonVisualMaterial);
+            sunVisual = moonVisual = null;
+            sunVisualMaterial = moonVisualMaterial = null;
             for (int i = 0; i < disabledDirectionalLights.Count; i++)
                 if (disabledDirectionalLights[i] != null) disabledDirectionalLights[i].enabled = true;
             disabledDirectionalLights.Clear();
@@ -156,15 +173,32 @@ namespace Voyage.Lighting
                 new Color(.075f, .055f, .025f), new Color(.28f, .27f, .25f), day);
             RenderSettings.ambientIntensity = ambient;
             RenderSettings.reflectionIntensity = reflection;
-            ApplySky(day, horizonGlow);
+            ApplySky(day, horizonGlow, sunDirection);
+            UpdateCelestialVisuals(sunDirection, moonDirection, sunValue, moonValue);
+            ApplyCameraFallbackColor(day, horizonGlow);
+            PublishGrassEnvironment(day);
             Changed?.Invoke(Snapshot);
+        }
+
+        void PublishGrassEnvironment(float day)
+        {
+            // Grass never receives or casts realtime shadows. Its appearance
+            // follows the independent day/night environment smoothly instead.
+            Color nightGrass = new Color(.46f, .54f, .72f, 1f);
+            Color dayGrass = new Color(1f, .94f, .80f, 1f);
+            Shader.SetGlobalColor(GrassEnvironmentColorId, Color.Lerp(nightGrass, dayGrass, day));
+            Shader.SetGlobalFloat(GrassEnvironmentLightId, Mathf.Lerp(.48f, 1f, day));
         }
 
         void EnsureSkybox()
         {
             if (runtimeSkybox != null) return;
             previousSkybox = RenderSettings.skybox;
-            Shader shader = Shader.Find("Skybox/Procedural");
+            // Use the project shader first. Built-in procedural sky can resolve
+            // by name in a player while still being stripped from the active
+            // URP renderer, which produces a black background.
+            Shader shader = Shader.Find("Voyage/Sky/Gradient");
+            if (shader == null) shader = Shader.Find("Skybox/Procedural");
             if (shader == null) return;
             runtimeSkybox = previousSkybox != null && previousSkybox.shader == shader
                 ? new Material(previousSkybox)
@@ -172,7 +206,119 @@ namespace Voyage.Lighting
             runtimeSkybox.name = "Voyage Runtime Skybox";
         }
 
-        void ApplySky(float day, float sunset)
+        static void ConfigureCameras()
+        {
+            foreach (Camera camera in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                // A solid fallback keeps the environment visible on URP/DX12
+                // paths where DrawSkybox is skipped for a target texture.
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = Color.black;
+            }
+        }
+
+        static void EnsureCamera()
+        {
+            if (FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length > 0) return;
+            GameObject go = new GameObject("Voyage Runtime Camera");
+            go.tag = "MainCamera";
+            go.transform.SetPositionAndRotation(new Vector3(0f, 4f, -10f), Quaternion.identity);
+            Camera camera = go.AddComponent<Camera>();
+            camera.fieldOfView = 67f;
+            camera.nearClipPlane = .3f;
+            camera.farClipPlane = 1000f;
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.backgroundColor = Color.black;
+            go.AddComponent<AudioListener>();
+            // DrivingCore binds its follow target to Camera.main during startup.
+            System.Type followType = System.Type.GetType("FollowCamera, Assembly-CSharp");
+            if (followType != null && go.GetComponent(followType) == null) go.AddComponent(followType);
+        }
+
+        void EnsureCelestialVisuals()
+        {
+            if (sunVisual != null && moonVisual != null) return;
+            Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
+            if (shader == null) shader = Shader.Find("Unlit/Color");
+            if (shader == null) return;
+            sunVisualMaterial = new Material(shader) { name = "Voyage Sun Visual" };
+            moonVisualMaterial = new Material(shader) { name = "Voyage Moon Visual" };
+            SetMaterialColor(sunVisualMaterial, new Color(1f, .72f, .25f, 1f));
+            SetMaterialColor(moonVisualMaterial, new Color(.62f, .75f, 1f, 1f));
+            sunVisual = CreateCelestialVisual("Voyage Sun Disc", sunVisualMaterial, 42f);
+            moonVisual = CreateCelestialVisual("Voyage Moon Disc", moonVisualMaterial, 30f);
+        }
+
+        static GameObject CreateCelestialVisual(string name, Material material, float size)
+        {
+            GameObject body = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            body.name = name;
+            body.transform.localScale = Vector3.one * size;
+            body.layer = 0;
+            Collider collider = body.GetComponent<Collider>();
+            if (collider != null) DestroyObject(collider);
+            MeshRenderer renderer = body.GetComponent<MeshRenderer>();
+            renderer.sharedMaterial = material;
+            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            renderer.receiveShadows = false;
+            return body;
+        }
+
+        static void SetMaterialColor(Material material, Color color)
+        {
+            if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", color);
+            if (material.HasProperty("_Color")) material.SetColor("_Color", color);
+        }
+
+        void UpdateCelestialVisuals(Vector3 sunDirection, Vector3 moonDirection, float sunIntensity, float moonIntensity)
+        {
+            Camera camera = Camera.main;
+            if (camera == null) camera = FindFirstObjectByType<Camera>();
+            if (camera == null || sunVisual == null || moonVisual == null) return;
+            Vector3 origin = camera.transform.position;
+            // Keep the celestial bodies in the camera's sky hemisphere. The
+            // physical direction still drives their elevation and day/night
+            // visibility, but a chase camera must not lose them behind its
+            // limited horizontal view or behind the terrain.
+            sunVisual.transform.position = SkyPosition(camera, sunDirection, 650f);
+            moonVisual.transform.position = SkyPosition(camera, moonDirection, 640f);
+            sunVisual.SetActive(sunIntensity > .001f);
+            moonVisual.SetActive(moonIntensity > .001f);
+            float sunScale = Mathf.Lerp(28f, 52f, Mathf.Clamp01(sunIntensity / daySunIntensity));
+            sunVisual.transform.localScale = Vector3.one * sunScale;
+            moonVisual.transform.localScale = Vector3.one * 30f;
+        }
+
+        static Vector3 SkyPosition(Camera camera, Vector3 direction, float distance)
+        {
+            float horizontal = Vector3.Dot(direction, camera.transform.right);
+            float vertical = Vector3.Dot(direction, camera.transform.up);
+            horizontal = Mathf.Clamp(horizontal, -.72f, .72f);
+            vertical = Mathf.Clamp(vertical, -.18f, .62f);
+            return camera.transform.position + camera.transform.forward * distance +
+                camera.transform.right * (horizontal * distance * .45f) +
+                camera.transform.up * (vertical * distance * .42f);
+        }
+
+        void ApplyCameraFallbackColor(float day, float horizonGlow)
+        {
+            Color color = Color.Lerp(nightSkyColor, daySkyColor, day);
+            color = Color.Lerp(color, horizonSkyColor, horizonGlow * .45f);
+            foreach (Camera camera in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = color;
+            }
+        }
+
+        static void DestroyObject(UnityEngine.Object value)
+        {
+            if (value == null) return;
+            if (Application.isPlaying) UnityEngine.Object.Destroy(value);
+            else UnityEngine.Object.DestroyImmediate(value);
+        }
+
+        void ApplySky(float day, float sunset, Vector3 sunDirection)
         {
             if (runtimeSkybox == null) return;
             Color skyColor = Color.Lerp(nightSkyColor, daySkyColor, day);
@@ -182,6 +328,8 @@ namespace Voyage.Lighting
             if (runtimeSkybox.HasProperty("_SkyTint")) runtimeSkybox.SetColor("_SkyTint", skyColor);
             if (runtimeSkybox.HasProperty("_GroundColor")) runtimeSkybox.SetColor("_GroundColor", groundColor);
             if (runtimeSkybox.HasProperty("_Exposure")) runtimeSkybox.SetFloat("_Exposure", Mathf.Lerp(.08f, .78f, day) + sunset * .08f);
+            if (runtimeSkybox.HasProperty(SkySunDirectionId)) runtimeSkybox.SetVector(SkySunDirectionId, new Vector4(sunDirection.x, sunDirection.y, sunDirection.z, 0f));
+            if (runtimeSkybox.HasProperty(SkyMoonDirectionId)) runtimeSkybox.SetVector(SkyMoonDirectionId, new Vector4((-sunDirection).x, (-sunDirection).y, (-sunDirection).z, 0f));
             RenderSettings.skybox = runtimeSkybox;
         }
 
