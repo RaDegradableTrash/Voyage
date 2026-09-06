@@ -55,10 +55,6 @@ namespace Voyage.Lighting
         public event Action<LightingSnapshot> Changed;
         private Material runtimeSkybox;
         private Material previousSkybox;
-        [NonSerialized] GameObject sunVisual;
-        [NonSerialized] GameObject moonVisual;
-        [NonSerialized] Material sunVisualMaterial;
-        [NonSerialized] Material moonVisualMaterial;
         private readonly System.Collections.Generic.List<Light> disabledDirectionalLights = new System.Collections.Generic.List<Light>();
         static readonly int GrassEnvironmentColorId = Shader.PropertyToID("_VoyageGrassEnvironmentColor");
         static readonly int GrassEnvironmentLightId = Shader.PropertyToID("_VoyageGrassEnvironmentLight");
@@ -72,7 +68,7 @@ namespace Voyage.Lighting
             EnsureSkybox();
             EnsureCamera();
             ConfigureCameras();
-            EnsureCelestialVisuals();
+
             Apply();
         }
 
@@ -87,12 +83,7 @@ namespace Voyage.Lighting
             }
             runtimeSkybox = null;
             previousSkybox = null;
-            if (sunVisual != null) DestroyObject(sunVisual);
-            if (moonVisual != null) DestroyObject(moonVisual);
-            if (sunVisualMaterial != null) DestroyObject(sunVisualMaterial);
-            if (moonVisualMaterial != null) DestroyObject(moonVisualMaterial);
-            sunVisual = moonVisual = null;
-            sunVisualMaterial = moonVisualMaterial = null;
+
             for (int i = 0; i < disabledDirectionalLights.Count; i++)
                 if (disabledDirectionalLights[i] != null) disabledDirectionalLights[i].enabled = true;
             disabledDirectionalLights.Clear();
@@ -101,7 +92,7 @@ namespace Voyage.Lighting
         void Update()
         {
             if (Application.isPlaying && advanceTime)
-                currentTime = Mathf.Repeat(currentTime + Time.deltaTime * timeScale * 24f / dayDuration, 24f);
+                currentTime = Mathf.Repeat(currentTime + Time.deltaTime * timeScale * 24f / Mathf.Max(1f, dayDuration), 24f);
             Apply();
         }
 
@@ -151,13 +142,13 @@ namespace Voyage.Lighting
         {
             Vector3 sunDirection = CalculateSunDirection(currentTime);
             float height = sunDirection.y;
-            float day = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0f, .18f, height));
+            float day = EvaluateDaylight(height);
             float sunset = Mathf.Clamp01(1f - ClockDistance(currentTime, sunsetTime) / 1.8f);
             float sunrise = Mathf.Clamp01(1f - ClockDistance(currentTime, sunriseTime) / 1.5f);
             float horizonGlow = Mathf.Max(sunrise, sunset);
             Vector3 moonDirection = -sunDirection;
             float sunValue = height <= 0f ? 0f : Mathf.Lerp(nightSunIntensity, daySunIntensity, day);
-            float moonValue = Mathf.Lerp(moonIntensity, .006f, day);
+            float moonValue = moonIntensity * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0f, .18f, moonDirection.y));
             float ambient = Mathf.Lerp(nightAmbientIntensity, dayAmbientIntensity, day);
             float reflection = Mathf.Lerp(nightReflectionIntensity, dayReflectionIntensity, day);
             if (sun != null) { sun.transform.rotation = Quaternion.LookRotation(-sunDirection, Vector3.up); sun.intensity = sunValue; sun.color = Color.Lerp(daySunColor, sunsetSunColor, horizonGlow); sun.enabled = sunValue > .001f; RenderSettings.sun = sun; }
@@ -174,7 +165,7 @@ namespace Voyage.Lighting
             RenderSettings.ambientIntensity = ambient;
             RenderSettings.reflectionIntensity = reflection;
             ApplySky(day, horizonGlow, sunDirection);
-            UpdateCelestialVisuals(sunDirection, moonDirection, sunValue, moonValue);
+
             ApplyCameraFallbackColor(day, horizonGlow);
             PublishGrassEnvironment(day);
             Changed?.Invoke(Snapshot);
@@ -182,7 +173,7 @@ namespace Voyage.Lighting
 
         void PublishGrassEnvironment(float day)
         {
-            // Grass never receives or casts realtime shadows. Its appearance
+            // Grass and terrain share the same environment multiplier. Their appearance
             // follows the independent day/night environment smoothly instead.
             Color nightGrass = new Color(.46f, .54f, .72f, 1f);
             Color dayGrass = new Color(1f, .94f, .80f, 1f);
@@ -209,24 +200,13 @@ namespace Voyage.Lighting
         static void ConfigureCameras()
         {
             Camera[] cameras = FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-            Camera primary = null;
-            for (int i = 0; i < cameras.Length; i++)
-                if (cameras[i] != null && cameras[i].enabled &&
-                    (cameras[i].name.IndexOf("Main Camera", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     cameras[i].name.IndexOf("Voyage Runtime Camera", StringComparison.OrdinalIgnoreCase) >= 0))
-                { primary = cameras[i]; break; }
-            if (primary == null) primary = Camera.main;
-            if (primary == null)
-                for (int i = 0; i < cameras.Length; i++)
-                    if (cameras[i] != null && cameras[i].enabled) { primary = cameras[i]; break; }
             for (int i = 0; i < cameras.Length; i++)
             {
                 Camera camera = cameras[i];
                 if (camera == null) continue;
-                if (primary != null && camera != primary) camera.enabled = false;
-                // A solid fallback keeps the environment visible on URP/DX12
-                // paths where DrawSkybox is skipped for a target texture.
-                camera.clearFlags = CameraClearFlags.SolidColor;
+
+                // Draw the world-space sky behind opaque geometry.
+                camera.clearFlags = CameraClearFlags.Skybox;
                 camera.backgroundColor = Color.black;
             }
         }
@@ -241,82 +221,12 @@ namespace Voyage.Lighting
             camera.fieldOfView = 67f;
             camera.nearClipPlane = .3f;
             camera.farClipPlane = 1000f;
-            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.clearFlags = CameraClearFlags.Skybox;
             camera.backgroundColor = Color.black;
             go.AddComponent<AudioListener>();
             // DrivingCore binds its follow target to Camera.main during startup.
             System.Type followType = System.Type.GetType("FollowCamera, Assembly-CSharp");
             if (followType != null && go.GetComponent(followType) == null) go.AddComponent(followType);
-        }
-
-        void EnsureCelestialVisuals()
-        {
-            if (sunVisual != null && moonVisual != null) return;
-            Shader shader = Shader.Find("Voyage/Celestial");
-            if (shader == null) shader = Shader.Find("Universal Render Pipeline/Unlit");
-            if (shader == null) shader = Shader.Find("Unlit/Color");
-            if (shader == null) return;
-            sunVisualMaterial = new Material(shader) { name = "Voyage Sun Visual" };
-            moonVisualMaterial = new Material(shader) { name = "Voyage Moon Visual" };
-            sunVisualMaterial.renderQueue = 4000;
-            moonVisualMaterial.renderQueue = 4000;
-            if (sunVisualMaterial.HasProperty("_ZTest")) sunVisualMaterial.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
-            if (moonVisualMaterial.HasProperty("_ZTest")) moonVisualMaterial.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
-            SetMaterialColor(sunVisualMaterial, new Color(1f, .72f, .25f, 1f));
-            SetMaterialColor(moonVisualMaterial, new Color(.62f, .75f, 1f, 1f));
-            sunVisual = CreateCelestialVisual("Voyage Sun Disc", sunVisualMaterial, 42f);
-            moonVisual = CreateCelestialVisual("Voyage Moon Disc", moonVisualMaterial, 30f);
-        }
-
-        static GameObject CreateCelestialVisual(string name, Material material, float size)
-        {
-            GameObject body = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            body.name = name;
-            body.transform.localScale = Vector3.one * size;
-            body.layer = 0;
-            Collider collider = body.GetComponent<Collider>();
-            if (collider != null) DestroyObject(collider);
-            MeshRenderer renderer = body.GetComponent<MeshRenderer>();
-            renderer.sharedMaterial = material;
-            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            renderer.receiveShadows = false;
-            return body;
-        }
-
-        static void SetMaterialColor(Material material, Color color)
-        {
-            if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", color);
-            if (material.HasProperty("_Color")) material.SetColor("_Color", color);
-        }
-
-        void UpdateCelestialVisuals(Vector3 sunDirection, Vector3 moonDirection, float sunIntensity, float moonIntensity)
-        {
-            Camera camera = Camera.main;
-            if (camera == null) camera = FindFirstObjectByType<Camera>();
-            if (camera == null || sunVisual == null || moonVisual == null) return;
-            Vector3 origin = camera.transform.position;
-            // Keep the celestial bodies in the camera's sky hemisphere. The
-            // physical direction still drives their elevation and day/night
-            // visibility, but a chase camera must not lose them behind its
-            // limited horizontal view or behind the terrain.
-            sunVisual.transform.position = SkyPosition(camera, sunDirection, 650f);
-            moonVisual.transform.position = SkyPosition(camera, moonDirection, 640f);
-            sunVisual.SetActive(sunIntensity > .001f);
-            moonVisual.SetActive(moonIntensity > .001f);
-            float sunScale = Mathf.Lerp(28f, 52f, Mathf.Clamp01(sunIntensity / daySunIntensity));
-            sunVisual.transform.localScale = Vector3.one * sunScale;
-            moonVisual.transform.localScale = Vector3.one * 30f;
-        }
-
-        static Vector3 SkyPosition(Camera camera, Vector3 direction, float distance)
-        {
-            float horizontal = Vector3.Dot(direction, camera.transform.right);
-            float vertical = Vector3.Dot(direction, camera.transform.up);
-            horizontal = Mathf.Clamp(horizontal, -.72f, .72f);
-            vertical = Mathf.Clamp(vertical, -.18f, .62f);
-            return camera.transform.position + camera.transform.forward * distance +
-                camera.transform.right * (horizontal * distance * .45f) +
-                camera.transform.up * (vertical * distance * .42f);
         }
 
         void ApplyCameraFallbackColor(float day, float horizonGlow)
@@ -325,16 +235,10 @@ namespace Voyage.Lighting
             color = Color.Lerp(color, horizonSkyColor, horizonGlow * .45f);
             foreach (Camera camera in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
             {
-                camera.clearFlags = CameraClearFlags.SolidColor;
+                if (camera.cameraType != CameraType.Game) continue;
+                camera.clearFlags = CameraClearFlags.Skybox;
                 camera.backgroundColor = color;
             }
-        }
-
-        static void DestroyObject(UnityEngine.Object value)
-        {
-            if (value == null) return;
-            if (Application.isPlaying) UnityEngine.Object.Destroy(value);
-            else UnityEngine.Object.DestroyImmediate(value);
         }
 
         void ApplySky(float day, float sunset, Vector3 sunDirection)
@@ -366,5 +270,10 @@ namespace Voyage.Lighting
 
         static float ClockDistance(float a, float b) =>
             Mathf.Abs(Mathf.DeltaAngle(a * 15f, b * 15f)) / 15f;
+
+        // Cementery's elevation-based blend keeps dawn/dusk gradual across the sky,
+        // ambient light, fog, clouds and the shared grass/ground palette.
+        public static float EvaluateDaylight(float sunHeight) =>
+            Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-.08f, 1f, sunHeight));
     }
 }

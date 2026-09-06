@@ -109,11 +109,6 @@ public class StartProcedure : MonoBehaviour
 
     private IEnumerator ShutdownRoutine()
     {
-        if (carControl != null)
-        {
-            carControl.SetGear(CarControl.GearMode.Park);
-        }
-
         yield return new WaitForSeconds(shutdownDelaySeconds);
         engineOn = false;
         if (carControl != null)
@@ -129,7 +124,7 @@ public class StartProcedure : MonoBehaviour
         if (carControl != null)
         {
             carControl.SetEngineOn(false);
-            carControl.SetGear(CarControl.GearMode.Park);
+            // Switching off the engine preserves the selected gear and momentum.
         }
         OnStateChanged?.Invoke();
     }

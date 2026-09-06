@@ -50,7 +50,7 @@ namespace Voyage.Lighting
 
         void Publish(LightingSnapshot snapshot)
         {
-            float daylight = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-.04f, .2f, snapshot.sunHeight));
+            float daylight = DayNightSystem.EvaluateDaylight(snapshot.sunHeight);
             Light sun = dayNight != null ? dayNight.sun : RenderSettings.sun;
             Vector3 direction = sun != null ? -sun.transform.forward : Vector3.up;
             Color sunColor = sun != null ? sun.color : Color.white;

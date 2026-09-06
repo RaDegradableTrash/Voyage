@@ -85,7 +85,7 @@ namespace Voyage.Lighting
             LightingSnapshot snapshot = day == null
                 ? new LightingSnapshot { time = 12f, sunHeight = 1f }
                 : day.Snapshot;
-            float daylight = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-.04f, .24f, snapshot.sunHeight));
+            float daylight = DayNightSystem.EvaluateDaylight(snapshot.sunHeight);
             float sunsetTime = day != null ? day.sunsetTime : 18f;
             float sunriseTime = day != null ? day.sunriseTime : 6f;
             float sunset = Mathf.Clamp01(1f - ClockDistance(snapshot.time, sunsetTime) / 1.8f);
