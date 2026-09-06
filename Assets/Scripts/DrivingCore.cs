@@ -65,6 +65,7 @@ public sealed class DrivingCore : MonoBehaviour
         grassInteraction = GetComponent<GrassInteractionSystem>();
         if (grassInteraction == null) grassInteraction = GrassInteractionSystem.Instance;
         if (grassInteraction == null) grassInteraction = gameObject.AddComponent<GrassInteractionSystem>();
+        if (GetComponent<VoyageCommandConsole>() == null) gameObject.AddComponent<VoyageCommandConsole>();
         if (GetComponent<VoyageHUD>() == null) gameObject.AddComponent<VoyageHUD>();
     }
 
@@ -109,7 +110,7 @@ public sealed class DrivingCore : MonoBehaviour
     void Update()
     {
         UpdateTerrainStreaming();
-        if (Player == null) return;
+        if (Player == null || VoyageCommandConsole.IsOpen || VoyageCommandConsole.ConsumedInputThisFrame) return;
         if (ReadKeyDown(KeyCode.P) || ReadKeyDown(KeyCode.Escape))
         {
             HudPaused = !HudPaused;

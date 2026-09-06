@@ -157,6 +157,7 @@ public class CarControl : MonoBehaviour
     
     // 引擎声音相关变量
     private float engineLoad = 0f;
+    private volatile bool engineSoundRequested;
     private double phase;
     private double exhaustPhase;
     private double intakePhase;
@@ -203,6 +204,7 @@ public class CarControl : MonoBehaviour
         }
 
         engineOn = value;
+        if (!value) engineSoundRequested = false;
         OnEngineStateChanged?.Invoke(engineOn);
     }
 
@@ -239,7 +241,7 @@ public class CarControl : MonoBehaviour
         bool targetSix = IsSixLockGear(targetGear);
         if (currentSix || targetSix)
         {
-            bool isHandBraking = activeControl && Input.GetKey(KeyCode.Space);
+            bool isHandBraking = activeControl && !VoyageCommandConsole.IsOpen && Input.GetKey(KeyCode.Space);
             return GetMaxWheelRpm() <= sixLockSwitchMaxWheelRpm || isHandBraking;
         }
         return true;
@@ -384,12 +386,13 @@ public class CarControl : MonoBehaviour
             }
         }
         
-        float rawVertical = activeControl ? Input.GetAxis("Vertical") : 0f;
-        float hInputRaw = activeControl ? Input.GetAxisRaw("Horizontal") : 0f;
+        bool inputAllowed = activeControl && !VoyageCommandConsole.IsOpen && Time.timeScale > 0f;
+        float rawVertical = inputAllowed ? Input.GetAxisRaw("Vertical") : 0f;
+        float hInputRaw = inputAllowed ? Input.GetAxisRaw("Horizontal") : 0f;
         // Keep the reference legacy axes as the primary path. Unity 6 can
         // still have the Input System package active while the old axis
         // backend returns zero, so use the keyboard device only as a fallback.
-        if (activeControl && Keyboard.current != null)
+        if (inputAllowed && Keyboard.current != null)
         {
             if (Mathf.Abs(rawVertical) < 0.01f)
             {
@@ -486,6 +489,7 @@ public class CarControl : MonoBehaviour
                 break;
         }
 
+        if (!wantsForward) l6ThrottleCurrent = 0f;
         float appliedThrottleInput = throttleInput;
         if (currentGear == GearMode.L6)
         {
@@ -623,10 +627,11 @@ public class CarControl : MonoBehaviour
             currentSteerAngle = Mathf.MoveTowards(currentSteerAngle, 0f, returnSpeed * Time.deltaTime);
         }
 
-        bool isHandBraking = activeControl && Input.GetKey(KeyCode.Space);
+        bool isHandBraking = activeControl && !VoyageCommandConsole.IsOpen && Input.GetKey(KeyCode.Space);
         
         // ★★★ 动能回收处理 ★★★
         HandleRegenerativeBraking(brakeInput, isHandBraking);
+        HandleFuelConsumption(Mathf.Abs(throttleInput));
 
         foreach (var wheel in wheels)
         {
@@ -671,7 +676,7 @@ public class CarControl : MonoBehaviour
                 bool isMotorized = isSixLock ? allowSixLockDrive : wheel.motorized;
                 
                 // ★★★ 引擎熄火时完全不输出动力 ★★★
-                if (isMotorized && engineOn)
+                if (isMotorized && engineOn && electricalPowerOn && FuelTank.SharedFuel > 0f)
                 {
                     wheel.WheelCollider.motorTorque = appliedThrottleInput * currentMotorTorque;
                 }
@@ -692,11 +697,7 @@ public class CarControl : MonoBehaviour
             steeringWheel.localRotation = steeringWheelInitialLocalRotation * Quaternion.AngleAxis(targetAngle, steeringWheelLocalAxis);
         }
 
-        // Reference RVcode uses the legacy Vertical axis for fuel load.
-        throttleInput = activeControl ? Mathf.Clamp01(Input.GetAxis("Vertical")) : 0f;
-
-        // ★★★ 燃油消耗管理（会自动熄火）★★★
-        HandleFuelConsumption(throttleInput);
+        engineSoundRequested = inputAllowed && wantsForward && engineOn && electricalPowerOn && FuelTank.SharedFuel > 0f;
     }
 
     private void UpdateSpeedDisplay(float displaySpeed)
@@ -890,22 +891,22 @@ if (!isBraking)
     // ★★★ 公共接口：添加燃油 ★★★
     public void AddFuel(float amount)
     {
-        if (amount <= 0) return;
+        if (float.IsNaN(amount) || float.IsInfinity(amount) || amount <= 0f) return;
         
         float oldFuel = FuelTank.SharedFuel;
-        FuelTank.SharedFuel = Mathf.Min(100f, FuelTank.SharedFuel + amount);
+        FuelTank.AddSharedFuel(amount);
         
         float added = FuelTank.SharedFuel - oldFuel;
         if (added > 0)
         {
-            Debug.Log($"Added {added:F2} fuel. Total: {FuelTank.SharedFuel:F2}/100");
+            Debug.Log($"Added {added:F2} fuel. Total: {FuelTank.SharedFuel:F2}/{FuelTank.SharedCapacity:F2}");
             
             // 如果有加油动画或UI事件可以在这里触发
             // OnFuelAdded?.Invoke(added);
-                    if (oldFuel <= 0f && FuelTank.SharedFuel > 0f && startProcedure != null)
-        {
-            startProcedure.TryAutoRestartEngine();
-        }
+            if (oldFuel <= 0f && FuelTank.SharedFuel > 0f && startProcedure != null)
+            {
+                startProcedure.TryAutoRestartEngine();
+            }
         }
     }
     
@@ -924,6 +925,8 @@ if (!isBraking)
         return (noiseSeed / (float)uint.MaxValue) * 2f - 1f;
     }
 
+    void OnDisable() => engineSoundRequested = false;
+
     void OnAudioFilterRead(float[] data, int channels)
     {
         float rpm = Mathf.Max(0, smoothEngineRpm);
@@ -933,7 +936,7 @@ if (!isBraking)
             return;
         }
 
-        if (vol <= 0.0001f || (rpm <= 1f && engineLoad <= 0.0001f))
+        if (!engineSoundRequested || vol <= 0.0001f || (rpm <= 1f && engineLoad <= 0.0001f))
         {
             System.Array.Clear(data, 0, data.Length);
             return;

@@ -46,8 +46,14 @@ Shader "Voyage/Sky/Gradient"
                 float3 viewDir = normalize(input.direction);
                 float sunDot = dot(viewDir, normalize(_SunDirection.xyz));
                 float moonDot = dot(viewDir, normalize(_MoonDirection.xyz));
-                float sunDisk = smoothstep(0.9992, 0.9998, sunDot);
-                float moonDisk = smoothstep(0.9990, 0.9997, moonDot);
+                // World-space angular discs: camera translation cannot move them.
+                float aboveHorizon = smoothstep(-0.01, 0.015, height);
+                float sunVisible = smoothstep(-0.035, 0.01, _SunDirection.y) * aboveHorizon;
+                float moonVisible = smoothstep(-0.035, 0.01, _MoonDirection.y) * aboveHorizon;
+                float sunDisk = smoothstep(0.99965, 0.99985, sunDot) * sunVisible;
+                float moonDisk = smoothstep(0.99965, 0.99985, moonDot) * moonVisible;
+                // Broad atmospheric glow follows the same direction as the disc.
+                sky += float3(1.0, 0.48, 0.15) * pow(saturate(sunDot), 128.0) * 0.16 * sunVisible;
                 sky = lerp(sky, float3(1.0, 0.82, 0.42), sunDisk);
                 sky = lerp(sky, float3(0.82, 0.88, 1.0), moonDisk);
                 return fixed4(sky * exp2(_Exposure), 1.0);

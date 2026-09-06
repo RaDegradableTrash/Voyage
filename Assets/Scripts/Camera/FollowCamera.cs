@@ -161,7 +161,7 @@ public class FollowCamera : MonoBehaviour
 
     void UpdateCursorState()
     {
-        bool shouldOwn = DrivingActive();
+        bool shouldOwn = DrivingActive() && !VoyageCommandConsole.IsOpen;
         if (shouldOwn)
         {
             Cursor.lockState = CursorLockMode.Locked;
@@ -191,7 +191,7 @@ public class FollowCamera : MonoBehaviour
 
         if (cameraComponent == null) cameraComponent = GetComponent<Camera>();
         UpdateCursorState();
-        ReadLookInput();
+        if (!VoyageCommandConsole.IsOpen) ReadLookInput();
 
         float vehicleSpeedMix = 0f;
         if (targetCar == null) targetCar = target.GetComponent<PlayerCar>();
