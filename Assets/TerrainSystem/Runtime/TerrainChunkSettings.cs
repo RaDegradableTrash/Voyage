@@ -35,6 +35,8 @@ namespace Voyage.TerrainSystem
         [Header("Baked grass")]
         [Tooltip("Bake deterministic per-tile grass placement so streaming never raycasts thousands of candidates at runtime.")]
         public bool bakeGrass = true;
+        [Tooltip("Render saved GrassFlow brush patches; disable legacy runtime grass generation.")]
+        public bool usePaintedGrass;
         [Min(0.25f)] public float grassClusterSpacing = 0.34f;
         [Min(1)] public int grassBladesPerCluster = 18;
         [Min(0.05f)] public float grassClusterRadius = 0.70f;

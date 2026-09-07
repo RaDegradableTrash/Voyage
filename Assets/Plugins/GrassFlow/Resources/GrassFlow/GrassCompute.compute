@@ -1,0 +1,427 @@
+// Compute Shader for calculating grass blade positions
+// Generates 1M grass positions with organic clumping and variation
+
+#pragma kernel CSMain
+#pragma kernel CSCull
+
+// Grass data structure matching the one in C# and render shader
+struct GrassData
+{
+    float3 position;
+    uint facing;        // Packed float2
+    uint heightWidth;   // Packed float2 (height, widthScale)
+    uint surfaceNormal; // Packed half2 of the ground normal's XZ; Y is reconstructed.
+};
+
+// Helper Functions for Packing
+uint PackHalf2(float2 v)
+{
+    return f32tof16(v.x) | (f32tof16(v.y) << 16);
+}
+
+float2 UnpackHalf2(uint v)
+{
+    return float2(f16tof32(v & 0xFFFF), f16tof32(v >> 16));
+}
+
+// Output buffer for grass positions
+RWStructuredBuffer<GrassData> grassDataBuffer;
+
+// Culling buffers
+StructuredBuffer<GrassData> _SourceGrassBuffer;
+AppendStructuredBuffer<GrassData> _CulledGrassBufferLOD0;
+AppendStructuredBuffer<GrassData> _CulledGrassBufferLOD1;
+AppendStructuredBuffer<GrassData> _CulledGrassBufferLOD2;
+float4 _FrustumPlanes[6];
+float _MaxDrawDistanceSq;
+float _MaxDrawDistance;
+float _LOD0DistanceSq;
+float _LOD1DistanceSq;
+float3 _CameraPosition;
+
+// Density Scaling
+bool _EnableDensityScaling;
+float _MinDensity;
+float _DensityFalloffStart;
+float _WidthCompensation;
+
+// Parameters
+float _TerrainSize;     // Size of the terrain
+float3 _ObjectPosition; // World position of the grass renderer
+float _MinHeight;       // Minimum grass height
+float _MaxHeight;       // Maximum grass height
+float _Time;            // Time
+uint _GrassCount;       // Total number of grass blades
+uint _GrassPerRow;      // Number of grass blades per row
+
+// Adjustable Generation Parameters
+float _ClumpScale;      // Scale of the noise for clumping (Frequency)
+float _ClumpStrength;   // How strongly grass is pushed into clumps
+float _HeightScale;     // Scale of the noise for height variation
+float _HeightFactor;    // Minimum height multiplier (0.0 = gaps, 1.0 = uniform)
+float _NaturalDensityVariation;
+float _AngleVariation;  // Control the range of random rotation (0.0 = aligned, 1.0 = full random)
+
+// Terrain Integration
+Texture2D<float4> _HeightMap;
+SamplerState sampler_HeightMap;
+float4 _TerrainSizeData; // x = width, y = height, z = length
+float3 _TerrainPos;
+
+// Density Map Integration
+Texture2D<float4> _DensityMap;
+bool _UseDensityMap;
+float _DensityThreshold;
+
+// Occlusion Culling
+bool _UseOcclusionCulling;
+float4x4 _VPMatrix;
+Texture2D<float> _HiZTexture; // Changed from _DepthTexture
+float2 _HiZTextureSize;       // Changed from _ScreenParams
+float _OcclusionBias;
+float4 _ZBufferParams;
+
+// Helper for LinearEyeDepth
+float LinearEyeDepth(float z)
+{
+    return 1.0 / (_ZBufferParams.z * z + _ZBufferParams.w);
+}
+
+// --- NOISE FUNCTIONS ---
+
+// Hash function
+float3 hash33(float3 p3)
+{
+    p3 = frac(p3 * float3(.1031, .1030, .0973));
+    p3 += dot(p3, p3.yxz + 33.33);
+    return frac((p3.xxy + p3.yxx) * p3.zyx);
+}
+
+float hash12(float2 p)
+{
+    float3 p3 = frac(float3(p.xyx) * .1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+// Simplex Noise 2D (Standard implementation)
+float3 permute(float3 x) { return fmod(((x*34.0)+1.0)*x, 289.0); }
+
+float snoise(float2 v)
+{
+    const float4 C = float4(0.211324865405187, 0.366025403784439,
+                             -0.577350269189626, 0.024390243902439);
+    float2 i  = floor(v + dot(v, C.yy));
+    float2 x0 = v -   i + dot(i, C.xx);
+    float2 i1;
+    i1 = (x0.x > x0.y) ? float2(1.0, 0.0) : float2(0.0, 1.0);
+    float4 x12 = x0.xyxy + C.xxzz;
+    x12.xy -= i1;
+    i = fmod(i, 289.0);
+    float3 p = permute( permute( i.y + float3(0.0, i1.y, 1.0 ))
+        + i.x + float3(0.0, i1.x, 1.0 ));
+    float3 m = max(0.5 - float3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+    m = m*m ;
+    m = m*m ;
+    float3 x = 2.0 * frac( p * C.www ) - 1.0;
+    float3 h = abs(x) - 0.5;
+    float3 ox = floor(x + 0.5);
+    float3 a0 = x - ox;
+    m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
+    float3 g;
+    g.x  = a0.x  * x0.x  + h.x  * x0.y;
+    g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+    return 130.0 * dot(m, g);
+}
+
+// Value Noise (Faster than Simplex)
+float valueNoise(float2 p)
+{
+    float2 i = floor(p);
+    float2 f = frac(p);
+    float2 u = f * f * (3.0 - 2.0 * f);
+
+    float a = hash12(i);
+    float b = hash12(i + float2(1.0, 0.0));
+    float c = hash12(i + float2(0.0, 1.0));
+    float d = hash12(i + float2(1.0, 1.0));
+
+    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+}
+
+// Fractal Brownian Motion for more detail
+float fbm(float2 p)
+{
+    float value = 0.0;
+    float amplitude = 0.5;
+    float frequency = 1.0;
+    for (int i = 0; i < 3; i++)
+    {
+        // Using Value Noise instead of Simplex for performance
+        // Remap 0..1 to -1..1 to match snoise range roughly
+        value += amplitude * (valueNoise(p * frequency) * 2.0 - 1.0);
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+    return value;
+}
+
+[numthreads(256, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _GrassCount)
+        return;
+
+    // 1. Basic Grid Position
+    uint row = id.x / _GrassPerRow;
+    uint col = id.x % _GrassPerRow;
+
+    float cellSize = _TerrainSize / _GrassPerRow;
+    float2 basePos = float2(col * cellSize, row * cellSize);
+
+    // Center around origin
+    basePos -= _TerrainSize * 0.5;
+
+    // 2. Random Jitter (Standard)
+    float2 seed = basePos;
+    float2 jitter = (float2(hash12(seed), hash12(seed + 123.45)) - 0.5) * cellSize;
+
+    // 3. Organic Clumping
+    // Use exposed parameters for scale and strength
+    float2 noisePos = basePos * _ClumpScale;
+    float2 clumpOffset = float2(
+        valueNoise(noisePos) * 2.0 - 1.0,
+        valueNoise(noisePos + 100.0) * 2.0 - 1.0
+    );
+
+    float2 finalPos2D = clamp(basePos + jitter + (clumpOffset * _ClumpStrength), -_TerrainSize * 0.5 + 0.01, _TerrainSize * 0.5 - 0.01);
+
+    // 4. Height Variation
+    float densityNoise = fbm(finalPos2D * _HeightScale);
+
+    // Map noise to _HeightFactor..1.0 range
+    // If _HeightFactor is 0.5, height varies between 50% and 100%
+    float heightMultiplier = (densityNoise * 0.5 + 0.5) * (1.0 - _HeightFactor) + _HeightFactor;
+
+    // 5. Final Data Assembly
+    GrassData grass;
+
+    // Calculate World Position
+    // finalPos2D is local to the patch (centered at 0)
+    // We add _ObjectPosition to place it in the world
+    float3 worldPos = float3(finalPos2D.x, 0, finalPos2D.y) + _ObjectPosition;
+
+    // Terrain Height Sampling
+    float terrainHeight = _ObjectPosition.y; // Default to object height
+
+    // Check if we have a valid terrain size (avoid divide by zero)
+    if (_TerrainSizeData.x > 0)
+    {
+        float2 uv = (worldPos.xz - _TerrainPos.xz) / _TerrainSizeData.xz;
+
+        // Check if inside terrain bounds
+        if (uv.x >= 0 && uv.x <= 1 && uv.y >= 0 && uv.y <= 1)
+        {
+            // Sample height (R channel usually holds height)
+            float4 surface = _HeightMap.SampleLevel(sampler_HeightMap, uv, 0);
+            float h = surface.r;
+            if (surface.g < 0.99) heightMultiplier = 0.0;
+            terrainHeight = _TerrainPos.y + h * _TerrainSizeData.y;
+
+            // Density Map Check
+            if (_UseDensityMap)
+            {
+                float density = _DensityMap.SampleLevel(sampler_HeightMap, uv, 0).r;
+                // Broad world-space patches; painted zeroes stay zero, adjacent tiles agree.
+                float meadowDensity = lerp(.68, 1.0, smoothstep(.22,.78,valueNoise(worldPos.xz*.075)));
+                density *= lerp(1.0, meadowDensity, _NaturalDensityVariation);
+                if (density < _DensityThreshold || hash12(basePos + 193.17) >= density)
+                {
+                    // Set height to 0 to be culled later
+                    heightMultiplier = 0.0;
+                }
+            }
+        }
+    }
+
+    grass.position = float3(worldPos.x, terrainHeight, worldPos.z);
+
+    // Randomize height slightly per blade, but respect the clump height
+    // Use basePos for seed to avoid precision issues with large IDs
+    float randomHeight = lerp(_MinHeight, _MaxHeight, hash12(basePos * 1.23 + 45.6));
+    float finalHeight = randomHeight * heightMultiplier;
+
+    // Random Rotation (controlled by _AngleVariation)
+    // Map hash (0..1) to (-0.5..0.5), then scale by variation and 2PI
+    // If _AngleVariation is 1.0, range is -PI to +PI (full circle)
+    // If _AngleVariation is 0.0, angle is 0.0 (aligned)
+    float facingAngle = (hash12(basePos + 56.78) - 0.5) * _AngleVariation * 6.28318;
+    float2 facingDir = float2(cos(facingAngle), sin(facingAngle));
+    grass.facing = PackHalf2(facingDir);
+
+    // Evaluate once on regeneration; keep the existing 24-byte instance layout.
+    uint mapWidth, mapHeight; _HeightMap.GetDimensions(mapWidth,mapHeight);
+    float2 texel = 1.0 / float2(mapWidth,mapHeight);
+    float2 normalUV = (worldPos.xz-_TerrainPos.xz)/_TerrainSizeData.xz;
+    float left = _HeightMap.SampleLevel(sampler_HeightMap,normalUV-float2(texel.x,0),0).r;
+    float right = _HeightMap.SampleLevel(sampler_HeightMap,normalUV+float2(texel.x,0),0).r;
+    float back = _HeightMap.SampleLevel(sampler_HeightMap,normalUV-float2(0,texel.y),0).r;
+    float front = _HeightMap.SampleLevel(sampler_HeightMap,normalUV+float2(0,texel.y),0).r;
+    float2 slope = float2(right-left,front-back)*_TerrainSizeData.y / (2*texel*_TerrainSizeData.xz);
+    float3 surfaceNormal = normalize(float3(-slope.x,1,-slope.y));
+    grass.surfaceNormal = PackHalf2(surfaceNormal.xz);
+
+    float widthScale = 1.0;
+    grass.heightWidth = PackHalf2(float2(finalHeight, widthScale));
+
+    grassDataBuffer[id.x] = grass;
+}
+
+[numthreads(256, 1, 1)]
+void CSCull(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _GrassCount)
+        return;
+
+    GrassData grass = _SourceGrassBuffer[id.x];
+    float3 pos = grass.position;
+
+    // Unpack needed data
+    float2 hw = UnpackHalf2(grass.heightWidth);
+    float height = hw.x;
+    if (height <= 0.001) return;
+    float widthScale = hw.y;
+
+    // 1. Distance Check (Optimization: Check distance first to skip frustum calculations for far objects)
+    float3 diff = pos - _CameraPosition;
+    float distSq = dot(diff, diff);
+
+    if (distSq > _MaxDrawDistanceSq)
+        return;
+
+    // Density Scaling
+    if (_EnableDensityScaling)
+    {
+        float dist = sqrt(distSq);
+        if (dist > _DensityFalloffStart)
+        {
+            // Calculate density factor (1.0 at start, _MinDensity at end)
+            // Use _MaxDrawDistance as the end of the falloff
+            float t = saturate((dist - _DensityFalloffStart) / (_MaxDrawDistance - _DensityFalloffStart));
+            float density = lerp(1.0, _MinDensity, t);
+
+            // Random check to see if this blade survives
+            // Use a stable hash based on ID or position
+            float randomVal = hash12(float2(id.x, id.x * 0.5));
+
+            if (randomVal > density)
+            {
+                return; // Cull this blade
+            }
+
+            // Compensate width for remaining blades
+            // If density is 0.5 (50% blades), width should be 2.0 (200%)
+            float targetWidthScale = 1.0 / max(0.001, density);
+            widthScale = lerp(1.0, targetWidthScale, _WidthCompensation);
+            grass.heightWidth = PackHalf2(float2(height, widthScale));
+        }
+    }
+
+    // 2. Frustum Culling
+    // Check a sphere around the grass blade
+    // Center is at half height, radius is height
+    float3 center = pos + float3(0, height * 0.5, 0);
+    float radius = max(height * 1.4, 2.4); // Includes distributed roots, wind and LOD width compensation
+
+    bool visible = true;
+
+    // Unroll loop for performance (though compiler usually does this)
+    [unroll]
+    for (int i = 0; i < 6; i++)
+    {
+        float4 plane = _FrustumPlanes[i];
+        // dot(normal, point) + distance
+        float dist = dot(plane.xyz, center) + plane.w;
+
+        // If point is behind plane by more than radius, it's outside
+        if (dist < -radius)
+        {
+            visible = false;
+            break;
+        }
+    }
+
+    // Occlusion Culling
+    if (visible && _UseOcclusionCulling)
+    {
+        float4 clipPos = mul(_VPMatrix, float4(center, 1.0));
+
+        // Check if behind camera
+        if (clipPos.w <= 0)
+        {
+            // Behind camera
+        }
+        else
+        {
+            float3 ndc = clipPos.xyz / clipPos.w;
+            float2 uv = ndc.xy * 0.5 + 0.5;
+
+            // Check if inside screen
+            if (uv.x > 0 && uv.x < 1 && uv.y > 0 && uv.y < 1)
+            {
+                // Calculate Box Size
+                // Project a point on the edge of the sphere to get size
+                float4 clipPosRight = mul(_VPMatrix, float4(center + float3(radius, 0, 0), 1.0));
+                float4 clipPosUp = mul(_VPMatrix, float4(center + float3(0, radius, 0), 1.0));
+
+                float2 uvRight = (clipPosRight.xyz / clipPosRight.w).xy * 0.5 + 0.5;
+                float2 uvUp = (clipPosUp.xyz / clipPosUp.w).xy * 0.5 + 0.5;
+
+                // Calculate box size in pixels
+                float2 sizePixels = float2(
+                    abs(uvRight.x - uv.x) * _HiZTextureSize.x * 2.0,
+                    abs(uvUp.y - uv.y) * _HiZTextureSize.y * 2.0
+                );
+
+                float maxDim = max(sizePixels.x, sizePixels.y);
+
+                // Calculate Mip Level
+                float mip = ceil(log2(maxDim));
+                mip = max(0, mip);
+
+                // Sample HiZ
+                float2 mipSize = _HiZTextureSize / pow(2, mip);
+                int2 mipCoords = int2(uv * mipSize);
+                mipCoords = clamp(mipCoords, int2(0, 0), int2(mipSize) - 1);
+
+                float hizDepth = _HiZTexture.Load(int3(mipCoords, mip));
+
+                float sceneDepth = LinearEyeDepth(hizDepth);
+                float grassDepth = clipPos.w - radius; // Closest point
+
+                // If grass is further than scene depth + bias, it is occluded
+                if (grassDepth > sceneDepth + _OcclusionBias)
+                {
+                    visible = false;
+                }
+            }
+        }
+    }
+
+    if (visible)
+    {
+        // LOD Selection based on squared distance
+        if (distSq < _LOD0DistanceSq)
+        {
+            _CulledGrassBufferLOD0.Append(grass);
+        }
+        else if (distSq < _LOD1DistanceSq)
+        {
+            _CulledGrassBufferLOD1.Append(grass);
+        }
+        else
+        {
+            _CulledGrassBufferLOD2.Append(grass);
+        }
+    }
+}

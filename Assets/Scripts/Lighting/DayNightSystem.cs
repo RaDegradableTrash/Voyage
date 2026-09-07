@@ -24,6 +24,9 @@ namespace Voyage.Lighting
         [Range(0f, 24f)] public float currentTime = 12f;
         public bool advanceTime = true;
         [Min(1f)] public float dayDuration = 60f;
+        [Min(.01f), Tooltip("Multiplier applied to the authored cycle duration.")]
+        public float cycleDurationMultiplier = 4f;
+        public float CycleDurationSeconds => Mathf.Max(1f, dayDuration) * Mathf.Max(.01f, cycleDurationMultiplier);
         public float timeScale = 1f;
         [Range(0f, 24f)] public float sunriseTime = 6f;
         [Range(0f, 24f)] public float sunsetTime = 18f;
@@ -55,6 +58,8 @@ namespace Voyage.Lighting
         public event Action<LightingSnapshot> Changed;
         private Material runtimeSkybox;
         private Material previousSkybox;
+        private Camera[] managedCameras;
+        private float cameraRefreshTime;
         private readonly System.Collections.Generic.List<Light> disabledDirectionalLights = new System.Collections.Generic.List<Light>();
         static readonly int GrassEnvironmentColorId = Shader.PropertyToID("_VoyageGrassEnvironmentColor");
         static readonly int GrassEnvironmentLightId = Shader.PropertyToID("_VoyageGrassEnvironmentLight");
@@ -92,11 +97,15 @@ namespace Voyage.Lighting
         void Update()
         {
             if (Application.isPlaying && advanceTime)
-                currentTime = Mathf.Repeat(currentTime + Time.deltaTime * timeScale * 24f / Mathf.Max(1f, dayDuration), 24f);
+                AdvanceClock(Time.deltaTime);
             Apply();
         }
 
         public void SetTime(float value) { currentTime = Mathf.Repeat(value, 24f); Apply(); }
+        public void AdvanceClock(float elapsedSeconds)
+        {
+            currentTime = Mathf.Repeat(currentTime + elapsedSeconds * timeScale * 24f / CycleDurationSeconds, 24f);
+        }
 
         void EnsureLights()
         {
@@ -147,16 +156,20 @@ namespace Voyage.Lighting
             float sunrise = Mathf.Clamp01(1f - ClockDistance(currentTime, sunriseTime) / 1.5f);
             float horizonGlow = Mathf.Max(sunrise, sunset);
             Vector3 moonDirection = -sunDirection;
-            float sunValue = height <= 0f ? 0f : Mathf.Lerp(nightSunIntensity, daySunIntensity, day);
+            // Cementery: attenuate direct lighting by elevation independently from
+            // the sky/ambient blend, keeping dawn and dusk free of sudden light jumps.
+            float elevation = Mathf.Clamp01(height / .75f);
+            float sunValue = daySunIntensity * elevation * elevation;
             float moonValue = moonIntensity * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0f, .18f, moonDirection.y));
             float ambient = Mathf.Lerp(nightAmbientIntensity, dayAmbientIntensity, day);
             float reflection = Mathf.Lerp(nightReflectionIntensity, dayReflectionIntensity, day);
             if (sun != null) { sun.transform.rotation = Quaternion.LookRotation(-sunDirection, Vector3.up); sun.intensity = sunValue; sun.color = Color.Lerp(daySunColor, sunsetSunColor, horizonGlow); sun.enabled = sunValue > .001f; RenderSettings.sun = sun; }
             if (moon != null) { moon.transform.rotation = Quaternion.LookRotation(-moonDirection, Vector3.up); moon.intensity = moonValue; moon.color = moonColor; moon.enabled = moonValue > .001f; }
+            RenderSettings.sun = height > 0f ? sun : moon;
             Snapshot = new LightingSnapshot { time = currentTime, sunHeight = height, sunIntensity = sunValue, moonIntensity = moonValue, ambientIntensity = ambient };
             RenderSettings.ambientMode = AmbientMode.Trilight;
             RenderSettings.ambientSkyColor = Color.Lerp(nightSkyColor, daySkyColor, day);
-            RenderSettings.ambientEquatorColor = Color.Lerp(RenderSettings.ambientSkyColor, Color.gray, .45f);
+            RenderSettings.ambientEquatorColor = Color.Lerp(new Color(.065f,.08f,.12f),new Color(.32f,.35f,.39f),day);
             // Never use a pure-black environment ground. URP Lit surfaces
             // can otherwise become silhouettes whenever the realtime key
             // light is shadowed, even though the material itself is valid.
@@ -233,9 +246,16 @@ namespace Voyage.Lighting
         {
             Color color = Color.Lerp(nightSkyColor, daySkyColor, day);
             color = Color.Lerp(color, horizonSkyColor, horizonGlow * .45f);
-            foreach (Camera camera in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            if (managedCameras == null || Time.unscaledTime >= cameraRefreshTime)
             {
+                managedCameras = FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+                cameraRefreshTime = Time.unscaledTime + 2f;
+            }
+            foreach (Camera camera in managedCameras)
+            {
+                if (camera == null) continue;
                 if (camera.cameraType != CameraType.Game) continue;
+                camera.farClipPlane = Mathf.Max(camera.farClipPlane, 12000f);
                 camera.clearFlags = CameraClearFlags.Skybox;
                 camera.backgroundColor = color;
             }
@@ -249,6 +269,8 @@ namespace Voyage.Lighting
             Color groundColor = Color.Lerp(new Color(.075f, .055f, .025f), new Color(.32f, .34f, .35f), day);
             groundColor = Color.Lerp(groundColor, new Color(.48f, .22f, .13f), sunset * .35f);
             if (runtimeSkybox.HasProperty("_SkyTint")) runtimeSkybox.SetColor("_SkyTint", skyColor);
+            if (runtimeSkybox.HasProperty("_HorizonTint")) runtimeSkybox.SetColor("_HorizonTint", Color.Lerp(Color.Lerp(nightSkyColor, new Color(.65f,.74f,.80f),day),horizonSkyColor,sunset*.65f));
+            if (runtimeSkybox.HasProperty("_SunColor")) runtimeSkybox.SetColor("_SunColor",Color.Lerp(new Color(1f,.96f,.82f),new Color(1f,.36f,.16f),sunset));
             if (runtimeSkybox.HasProperty("_GroundColor")) runtimeSkybox.SetColor("_GroundColor", groundColor);
             if (runtimeSkybox.HasProperty("_Exposure")) runtimeSkybox.SetFloat("_Exposure", Mathf.Lerp(.08f, .78f, day) + sunset * .08f);
             if (runtimeSkybox.HasProperty(SkySunDirectionId)) runtimeSkybox.SetVector(SkySunDirectionId, new Vector4(sunDirection.x, sunDirection.y, sunDirection.z, 0f));

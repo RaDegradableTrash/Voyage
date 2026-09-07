@@ -145,6 +145,12 @@ public sealed class DrivingCore : MonoBehaviour
         }
         Vector3 spawnPoint = new Vector3(-24f, 0f, -24f);
         terrainIndex.RebuildLookup();
+        // A small, collider-free LOD3 backdrop survives the local streaming
+        // radius. Fog can hide its fill without erasing mountain silhouettes.
+        var horizonRequest = Resources.LoadAsync<GameObject>("TerrainSystem/Horizon/TerrainHorizon");
+        yield return horizonRequest;
+        if (horizonRequest.asset != null)
+            Instantiate((GameObject)horizonRequest.asset, Vector3.zero, Quaternion.identity, transform);
         StreamTerrain(spawnPoint, true);
         // Do not spawn a controllable vehicle into an empty streaming bubble.
         // The visible radius must be ready before the player can outrun it.
