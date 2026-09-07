@@ -826,6 +826,9 @@ public class PlayerCar : MonoBehaviour
 
     void InitializeEngineAudio()
     {
+        // The reference vehicle's DSP owns its AudioSource. Rebuilding visuals
+        // must not replace that carrier or change its pitch/volume.
+        if (GetComponent<CarControl>() != null) { engineAudio = null; return; }
         if (!TryGetComponent<AudioSource>(out engineAudio))
         {
             engineAudio = null;

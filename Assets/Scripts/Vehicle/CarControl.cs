@@ -163,6 +163,11 @@ public class CarControl : MonoBehaviour
     private float engineAudioEnvelope;
     private float engineAudioRpm;
     private float engineAudioLoad;
+    private float audioReleaseStep;
+    private bool audioWasRequested;
+    private volatile bool engineAudioSuspended;
+    private bool hasInputFocus = true;
+    private bool audioPausedByGame;
     private double phase;
     private double exhaustPhase;
     private double intakePhase;
@@ -205,6 +210,7 @@ public class CarControl : MonoBehaviour
 
     public void SetEngineOn(bool value)
     {
+        if (!value) ClearDriveDemand();
         if (engineOn == value)
         {
             return;
@@ -217,6 +223,7 @@ public class CarControl : MonoBehaviour
 
     public void SetElectricalPower(bool value)
     {
+        if (!value) ClearDriveDemand();
         if (electricalPowerOn == value)
         {
             return;
@@ -350,6 +357,8 @@ public class CarControl : MonoBehaviour
             audioSource.clip = engineCarrier;
             audioSource.priority = 0;
             audioSource.volume = 1f;
+            audioSource.pitch = 1f;
+            audioSource.dopplerLevel = 0f;
             audioSource.Play();
         }
         
@@ -392,8 +401,7 @@ public class CarControl : MonoBehaviour
 
     void Update()
     {
-        if (engineAudioSource != null && !engineAudioSource.isPlaying && Time.timeScale > 0f)
-            engineAudioSource.Play();
+        UpdateAudioSuspension();
         if (startProcedure != null)
         {
             SetElectricalPower(startProcedure.HasAnyBatteryOn());
@@ -403,7 +411,7 @@ public class CarControl : MonoBehaviour
             }
         }
         
-        bool inputAllowed = activeControl && !VoyageCommandConsole.IsOpen && Time.timeScale > 0f;
+        bool inputAllowed = activeControl && hasInputFocus && !VoyageCommandConsole.IsOpen && Time.timeScale > 0f;
         float rawVertical = inputAllowed ? Input.GetAxisRaw("Vertical") : 0f;
         float hInputRaw = inputAllowed ? Input.GetAxisRaw("Horizontal") : 0f;
         // Keep the reference legacy axes as the primary path. Unity 6 can
@@ -411,17 +419,22 @@ public class CarControl : MonoBehaviour
         // backend returns zero, so use the keyboard device only as a fallback.
         if (inputAllowed && Keyboard.current != null)
         {
-            if (Mathf.Abs(rawVertical) < 0.01f)
-            {
-                rawVertical = (Keyboard.current.wKey.isPressed || Keyboard.current.upArrowKey.isPressed ? 1f : 0f)
-                    - (Keyboard.current.sKey.isPressed || Keyboard.current.downArrowKey.isPressed ? 1f : 0f);
-            }
+            rawVertical = ResolvePedalInput(rawVertical,
+                Keyboard.current.wKey.isPressed || Keyboard.current.upArrowKey.isPressed,
+                Keyboard.current.sKey.isPressed || Keyboard.current.downArrowKey.isPressed);
             if (Mathf.Abs(hInputRaw) < 0.01f)
             {
                 hInputRaw = (Keyboard.current.dKey.isPressed || Keyboard.current.rightArrowKey.isPressed ? 1f : 0f)
                     - (Keyboard.current.aKey.isPressed || Keyboard.current.leftArrowKey.isPressed ? 1f : 0f);
             }
         }
+        bool handbrake = Input.GetKey(KeyCode.Space) || (Keyboard.current != null && Keyboard.current.spaceKey.isPressed);
+        UpdateDriving(rawVertical, hInputRaw, inputAllowed, handbrake);
+    }
+
+    void UpdateDriving(float rawVertical, float hInputRaw, bool inputAllowed, bool handbrake)
+    {
+        if (!inputAllowed) { rawVertical = 0f; hInputRaw = 0f; }
         float forwardSpeed = Vector3.Dot(DriveForward, rigidBody.linearVelocity);
 
         float displaySpeed = Mathf.Abs(forwardSpeed) * 3.6f * speedMultiplier;
@@ -461,6 +474,9 @@ public class CarControl : MonoBehaviour
 
         bool wantsForward = rawVertical > 0.01f;
         bool wantsBackward = rawVertical < -0.01f;
+        float accelerator = wantsForward ? Mathf.Clamp01(rawVertical) : 0f;
+        bool engineRunning = engineOn && electricalPowerOn && FuelTank.SharedFuel > 0f;
+        bool isHandBraking = inputAllowed && handbrake;
 
         float throttleInput = 0f;
         float brakeInput = 0f;
@@ -563,22 +579,7 @@ public class CarControl : MonoBehaviour
         // ========== 用转速限制车速 ==========
         float maxEngineRpm = 2800f;
 
-        float wheelRadius = GetWheelRadius();
-
-        if (currentGear == GearMode.Drive || currentGear == GearMode.Sport || IsSixLockGear(currentGear))
-        {
-            float maxWheelRpmForCurrentGear = maxEngineRpm / (currentGearRatio * finalDriveRatio);
-            float maxForwardSpeedForCurrentGear = maxWheelRpmForCurrentGear * (2f * Mathf.PI * wheelRadius) / 60f;
-            
-            float absForwardSpeed = Mathf.Abs(forwardSpeed);
-            if (absForwardSpeed > maxForwardSpeedForCurrentGear)
-            {
-                float limitedSpeed = Mathf.Sign(forwardSpeed) * maxForwardSpeedForCurrentGear;
-                rigidBody.linearVelocity += DriveForward * (limitedSpeed - forwardSpeed);
-                forwardSpeed = limitedSpeed;
-            }
-        }
-
+        // Limit propulsion, never overwrite momentum while coasting or changing gear.
         float absWheelRpm = GetStableWheelRpm(forwardSpeed);
         float calculatedEngineRpm = absWheelRpm * currentGearRatio * finalDriveRatio;
         float targetEngineRpm = Mathf.Max(engineMinRpm, Mathf.Min(calculatedEngineRpm, maxEngineRpm));
@@ -604,13 +605,13 @@ public class CarControl : MonoBehaviour
             appliedThrottleInput = 0f;
             targetEngineRpm = engineMinRpm;
         }
-        else if (currentGear == GearMode.Park || currentGear == GearMode.Neutral)
+        else if (currentGear == GearMode.Park || currentGear == GearMode.Neutral || isHandBraking)
         {
-            targetEngineRpm = engineMinRpm + Mathf.Abs(throttleInput) * (upshiftRpm - engineMinRpm);
+            targetEngineRpm = engineMinRpm + accelerator * (upshiftRpm - engineMinRpm);
         }
 
         // ★★★ 关键修改：引擎熄火时强制 throttle 为 0 ★★★
-        if (!engineOn)
+        if (!engineRunning)
         {
             targetEngineRpm = 0f;
             appliedThrottleInput = 0f;
@@ -618,7 +619,7 @@ public class CarControl : MonoBehaviour
 
         float rpmLerpSpeed = (targetEngineRpm > smoothEngineRpm) ? 5f : 3f;
         
-        if (engineOn)
+        if (engineRunning)
         {
             smoothEngineRpm = Mathf.Lerp(smoothEngineRpm, targetEngineRpm, Time.deltaTime * rpmLerpSpeed);
         }
@@ -627,7 +628,11 @@ public class CarControl : MonoBehaviour
             smoothEngineRpm = Mathf.Lerp(smoothEngineRpm, 0f, Time.deltaTime * 3f);
         }
 
-        float targetLoad = engineOn ? Mathf.Abs(appliedThrottleInput) : 0f;
+        // Neutral/park can rev without wheel torque; shifting or a road-speed
+        // limiter unloads a driving engine without interrupting held-W audio.
+        float engineThrottle = currentGear == GearMode.Park || currentGear == GearMode.Neutral || isHandBraking
+            ? accelerator : Mathf.Abs(appliedThrottleInput);
+        float targetLoad = engineRunning ? engineThrottle : 0f;
         engineLoad = Mathf.Lerp(engineLoad, targetLoad, Time.deltaTime * 8f);
 
         UpdateRpmDisplay(smoothEngineRpm);
@@ -644,11 +649,10 @@ public class CarControl : MonoBehaviour
             currentSteerAngle = Mathf.MoveTowards(currentSteerAngle, 0f, returnSpeed * Time.deltaTime);
         }
 
-        bool isHandBraking = activeControl && !VoyageCommandConsole.IsOpen && Input.GetKey(KeyCode.Space);
         
         // ★★★ 动能回收处理 ★★★
         HandleRegenerativeBraking(brakeInput, isHandBraking);
-        HandleFuelConsumption(Mathf.Abs(throttleInput));
+        HandleFuelConsumption(engineThrottle);
 
         foreach (var wheel in wheels)
         {
@@ -714,7 +718,7 @@ public class CarControl : MonoBehaviour
             steeringWheel.localRotation = steeringWheelInitialLocalRotation * Quaternion.AngleAxis(targetAngle, steeringWheelLocalAxis);
         }
 
-        engineSoundRequested = inputAllowed && wantsForward && engineOn && electricalPowerOn && FuelTank.SharedFuel > 0f;
+        engineSoundRequested = inputAllowed && accelerator > .01f && engineOn && electricalPowerOn && FuelTank.SharedFuel > 0f;
     }
 
     private void UpdateSpeedDisplay(float displaySpeed)
@@ -923,7 +927,51 @@ if (!isBraking)
         return (noiseSeed / (float)uint.MaxValue) * 2f - 1f;
     }
 
-    void OnDisable() => engineSoundRequested = false;
+    public static float ResolvePedalInput(float legacyAxis, bool forward, bool brake)
+    {
+        // Braking wins over W even when the legacy axis reports the last key pressed.
+        return brake ? -1f : forward ? 1f : Mathf.Clamp(legacyAxis, -1f, 1f);
+    }
+
+    void ClearDriveDemand()
+    {
+        engineSoundRequested = false;
+        l6ThrottleCurrent = 0f;
+        engineLoad = 0f;
+        if (wheels == null) return;
+        foreach (var wheel in wheels)
+            if (wheel != null && wheel.WheelCollider != null) wheel.WheelCollider.motorTorque = 0f;
+    }
+
+    void OnEnable() => AudioSettings.OnAudioConfigurationChanged += AudioConfigurationChanged;
+    void AudioConfigurationChanged(bool deviceChanged) => samplingRate = Mathf.Max(8000, AudioSettings.outputSampleRate);
+    void OnApplicationFocus(bool focused)
+    {
+        hasInputFocus = focused;
+        if (!focused) ClearDriveDemand();
+        UpdateAudioSuspension();
+    }
+    void UpdateAudioSuspension()
+    {
+        engineAudioSuspended = !hasInputFocus || Time.timeScale <= 0f;
+        if (engineAudioSource == null) return;
+        if (engineAudioSuspended)
+        {
+            if (!audioPausedByGame) engineAudioSource.Pause();
+            audioPausedByGame = true;
+        }
+        else
+        {
+            if (audioPausedByGame) engineAudioSource.UnPause();
+            audioPausedByGame = false;
+            if (!engineAudioSource.isPlaying) engineAudioSource.Play();
+        }
+    }
+    void OnDisable()
+    {
+        AudioSettings.OnAudioConfigurationChanged -= AudioConfigurationChanged;
+        ClearDriveDemand();
+    }
     void OnDestroy() { if (engineCarrier != null) Destroy(engineCarrier); }
 
     void OnAudioFilterRead(float[] data, int channels)
@@ -936,14 +984,26 @@ if (!isBraking)
             return;
         }
 
-        if ((!requested && engineAudioEnvelope <= 0f) || vol <= 0.0001f)
+        if (engineAudioSuspended)
         {
             System.Array.Clear(data, 0, data.Length);
             return;
         }
 
+        if ((!requested && engineAudioEnvelope <= 0f) || vol <= 0.0001f)
+        {
+            engineAudioEnvelope = 0f;
+            audioWasRequested = false;
+            System.Array.Clear(data, 0, data.Length);
+            return;
+        }
+
         double rate = System.Math.Max(8000, samplingRate);
-        float envelopeStep = (float)(1.0 / (rate * (requested ? .025 : Mathf.Max(.2f, engineReleaseSeconds))));
+        if (!requested && audioWasRequested)
+            audioReleaseStep = engineAudioEnvelope / Mathf.Max(.2f, engineReleaseSeconds);
+        audioWasRequested = requested;
+        // Even a short tap gets the full release duration, from its current gain.
+        float envelopeStep = requested ? (float)(1.0 / (rate * .025)) : audioReleaseStep / (float)rate;
         float rpmBlend = 1f - Mathf.Exp(-1f / ((float)rate * (requested ? .10f : .40f)));
         float loadBlend = 1f - Mathf.Exp(-1f / ((float)rate * .14f));
         float targetLoad = requested ? engineLoad : 0f;
