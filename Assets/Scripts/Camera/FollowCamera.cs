@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Rendering.Universal;
 
 /// <summary>
 /// Original vehicle camera framing with an independent orbit around the vehicle.
@@ -15,7 +16,7 @@ public class FollowCamera : MonoBehaviour
     public float vehicleHeight = 1.15f;
     public float minDistance = 4f;
     [Tooltip("Absolute maximum distance reached by mouse-wheel zoom-out.")]
-    public float maxDistance = 32f;
+    public float maxDistance = 160f;
     public float wheelZoomStep = 0.0015f;
     public float zoomSmooth = 12f;
     public float defaultYaw = 0f;
@@ -64,7 +65,7 @@ public class FollowCamera : MonoBehaviour
     {
         distance = 10.5f;
         targetHeight = 1.05f;
-        maxDistance = Mathf.Max(maxDistance, 32f);
+        maxDistance = Mathf.Max(maxDistance, 160f);
         defaultYaw = 0f;
         defaultPitch = 34f;
         minPitch = -20f;
@@ -101,7 +102,7 @@ public class FollowCamera : MonoBehaviour
             distance = 18f;
             targetHeight = 2.35f;
             minDistance = 8f;
-            maxDistance = 40f;
+            maxDistance = 200f;
             defaultPitch = 24f;
         }
         ResetOrbitIfNeeded();
@@ -124,6 +125,14 @@ public class FollowCamera : MonoBehaviour
     void Awake()
     {
         cameraComponent = GetComponent<Camera>();
+        if (cameraComponent != null)
+        {
+            cameraComponent.allowDynamicResolution = false;
+            var additional = cameraComponent.GetUniversalAdditionalCameraData();
+            additional.renderPostProcessing = true;
+            additional.antialiasing = AntialiasingMode.SubpixelMorphologicalAntiAliasing;
+            additional.antialiasingQuality = AntialiasingQuality.High;
+        }
         ResetOrbitIfNeeded();
     }
 
@@ -229,6 +238,8 @@ public class FollowCamera : MonoBehaviour
             float targetFov = onFoot ? baseFov : baseFov + vehicleSpeedMix * 5f;
             cameraComponent.fieldOfView = Mathf.Lerp(cameraComponent.fieldOfView, targetFov, 1f - Mathf.Exp(-4f * Time.unscaledDeltaTime));
         }
+        // Smoothing and shake can cross a slope even when the desired orbit is safe.
+        transform.position = ResolveCollision(pivot, transform.position);
     }
 
     void ReadLookInput()
@@ -277,17 +288,22 @@ public class FollowCamera : MonoBehaviour
         zoom = Mathf.Lerp(zoom, zoomTarget, 1f - Mathf.Exp(-zoomSmooth * Time.unscaledDeltaTime));
     }
 
-    float currentCollisionDistance = -1f;
-
     Vector3 ResolveCollision(Vector3 pivot, Vector3 desired)
     {
         Vector3 ray = desired - pivot;
         float length = ray.magnitude;
         if (length < 0.01f) return desired;
 
+        float radius = cameraCollisionRadius;
+        if (cameraComponent != null)
+        {
+            float near = cameraComponent.nearClipPlane;
+            float halfHeight = near * Mathf.Tan(cameraComponent.fieldOfView * Mathf.Deg2Rad * .5f);
+            radius = Mathf.Max(radius, Mathf.Sqrt(near * near + halfHeight * halfHeight * (1f + cameraComponent.aspect * cameraComponent.aspect)));
+        }
         int hitCount = Physics.SphereCastNonAlloc(
             pivot,
-            cameraCollisionRadius,
+            radius,
             ray / length,
             cameraCollisionHits,
             length,
@@ -299,20 +315,17 @@ public class FollowCamera : MonoBehaviour
             Transform hitTransform = cameraCollisionHits[i].collider != null ? cameraCollisionHits[i].collider.transform : null;
             if (hitTransform == target || (hitTransform != null && hitTransform.IsChildOf(target))) continue;
 
-            // A ground triangle below the vehicle is not a camera obstruction. Treating
-            // it as one collapses the original rear camera into the vehicle or terrain.
-            if (cameraCollisionHits[i].normal.y > 0.55f && cameraCollisionHits[i].point.y <= pivot.y + 0.2f) continue;
             nearest = Mathf.Min(nearest, cameraCollisionHits[i].distance);
         }
 
-        float targetCollisionDistance = nearest < length ? Mathf.Max(1.5f, nearest - cameraCollisionPadding) : length;
-        if (currentCollisionDistance < 0f) currentCollisionDistance = targetCollisionDistance;
-        else
+        // NonAlloc hits are unordered; a full buffer may omit the closest wall.
+        if (hitCount == cameraCollisionHits.Length)
         {
-            float speed = targetCollisionDistance < currentCollisionDistance ? 24f : 8f;
-            currentCollisionDistance = Mathf.Lerp(currentCollisionDistance, targetCollisionDistance, 1f - Mathf.Exp(-speed * Time.unscaledDeltaTime));
+            foreach (var hit in Physics.SphereCastAll(pivot, radius, ray / length, length, cameraCollisionLayers, QueryTriggerInteraction.Ignore))
+                if (hit.transform != target && !hit.transform.IsChildOf(target)) nearest = Mathf.Min(nearest, hit.distance);
         }
-
-        return pivot + ray.normalized * currentCollisionDistance;
+        // Pull in immediately; LateUpdate already smooths outward recovery.
+        float safeDistance = nearest < length ? Mathf.Max(0f, nearest - cameraCollisionPadding) : length;
+        return pivot + ray.normalized * safeDistance;
     }
 }

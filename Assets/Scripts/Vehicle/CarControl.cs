@@ -134,6 +134,7 @@ public class CarControl : MonoBehaviour
     // ========== 引擎声音参数 ==========
     [Header("Engine Audio")]
     [Range(0f, 0.8f)] public float engineMasterVolume = 0.5f;
+    [Range(0.2f, 3f)] public float engineReleaseSeconds = 1.25f;
     [Range(0.05f, 0.25f)] public float pulseWidth = 0.12f;
     [Range(0f, 1f)] public float pulseSharpness = 0.6f;
     [Range(0f, 1f)] public float exhaustResonance = 0.7f;
@@ -158,11 +159,17 @@ public class CarControl : MonoBehaviour
     // 引擎声音相关变量
     private float engineLoad = 0f;
     private volatile bool engineSoundRequested;
+    // Owned by the audio thread: keep oscillator phase through the release tail.
+    private float engineAudioEnvelope;
+    private float engineAudioRpm;
+    private float engineAudioLoad;
     private double phase;
     private double exhaustPhase;
     private double intakePhase;
     private double turboPhase;
-    private double samplingRate;
+    private double samplingRate = 48000;
+    private AudioSource engineAudioSource;
+    private AudioClip engineCarrier;
     private uint noiseSeed = 123456789u;
     
     // 动能回收相关
@@ -329,12 +336,20 @@ public class CarControl : MonoBehaviour
         BuildSixLockWheelSet();
         
         // 初始化 AudioSource
+        samplingRate = Mathf.Max(8000, AudioSettings.outputSampleRate);
         AudioSource audioSource = GetComponent<AudioSource>();
+        engineAudioSource = audioSource;
         if (audioSource != null)
         {
             audioSource.playOnAwake = false;
             audioSource.loop = true;
             audioSource.spatialBlend = 0f;
+            // A dedicated looping carrier keeps the DSP callback alive independent of
+            // imported clip gaps, clip completion and source virtualization.
+            engineCarrier = AudioClip.Create("Continuous engine DSP carrier", 48000, 1, 48000, false);
+            audioSource.clip = engineCarrier;
+            audioSource.priority = 0;
+            audioSource.volume = 1f;
             audioSource.Play();
         }
         
@@ -377,6 +392,8 @@ public class CarControl : MonoBehaviour
 
     void Update()
     {
+        if (engineAudioSource != null && !engineAudioSource.isPlaying && Time.timeScale > 0f)
+            engineAudioSource.Play();
         if (startProcedure != null)
         {
             SetElectricalPower(startProcedure.HasAnyBatteryOn());
@@ -768,6 +785,13 @@ public class CarControl : MonoBehaviour
 
     // ★★★ 燃油系统（新增自动熄火逻辑）★★★
 //--燃油系统（完全基于转速重构版）--
+    // Issue #21: one tenth of the previous rate, including authored prefab multipliers.
+    public static float FuelRatePerSecond(float rpm, float throttle, float idleFactor, float multiplier)
+    {
+        const float maximumRate = 100f * .05f / 60f;
+        return maximumRate * Mathf.Clamp01(rpm / 2800f) *
+            (throttle > .05f ? throttle : idleFactor) * multiplier;
+    }
 private void HandleFuelConsumption(float throttle)
 {
     // 1. 安全边界判断：如果油箱已经没油了，确保强制熄火并退出
@@ -790,34 +814,8 @@ private void HandleFuelConsumption(float throttle)
     // 这一步直接杀死了“下车按W扣油”的Bug，因为下车/熄火时转速为0
     if (!engineOn || !electricalPowerOn || smoothEngineRpm <= 10f) return;
 
-    // 3. 计算燃油消耗率 (基于当前真实的转速 RPM)
-    // 设定：当引擎达到最大转速 2800 RPM 且踩满油门时，达到最大消耗率
-    float maxEngineRpm = 2800f;
-    float maxCapacity = 100f;
-    
-    // 满载最大每秒消耗率 = 50% / 60秒 = 0.8333f (即 2800转且满油门时的消耗)
-    float maxRatePerSecond = (maxCapacity * 0.5f) / 60f; 
+    float finalConsumption = FuelRatePerSecond(smoothEngineRpm, throttle, idleConsumptionFactor, fuelConsumptionMultiplier) * Time.deltaTime;
 
-    // 计算当前的转速比例 (0f 到 1f)
-    float rpmRatio = Mathf.Clamp01(smoothEngineRpm / maxEngineRpm);
-
-    float currentRate = 0f;
-
-    if (throttle > 0.05f)
-    {
-        // 【有油门状态】：消耗由 “当前转速” 和 “油门深度” 共同决定（高转速大油门狂扣油）
-        currentRate = maxRatePerSecond * rpmRatio * throttle;
-    }
-    else
-    {
-        // 【无油门/怠速/滑行状态】：玩家没踩油门，消耗纯粹由 “当前转速” 决定
-        // 挂空挡轰油门放开后，转速回落的过程中，油会随着转速变低而越扣越少，直到降回怠速线
-        currentRate = maxRatePerSecond * rpmRatio * idleConsumptionFactor;
-    }
-
-    // 4. 应用 Inspector 里的全局速度控制系数与帧时间
-    float finalConsumption = currentRate * fuelConsumptionMultiplier * Time.deltaTime;
-    
     // 5. 扣除共享燃油，做防负数保护
     if (finalConsumption >= FuelTank.SharedFuel)
     {
@@ -926,28 +924,30 @@ if (!isBraking)
     }
 
     void OnDisable() => engineSoundRequested = false;
+    void OnDestroy() { if (engineCarrier != null) Destroy(engineCarrier); }
 
     void OnAudioFilterRead(float[] data, int channels)
     {
-        float rpm = Mathf.Max(0, smoothEngineRpm);
+        bool requested = engineSoundRequested;
+        float targetRpm = requested ? Mathf.Max(engineMinRpm, smoothEngineRpm) : 0f;
         float vol = engineMasterVolume;
         if (data == null || data.Length == 0 || channels <= 0)
         {
             return;
         }
 
-        if (!engineSoundRequested || vol <= 0.0001f || (rpm <= 1f && engineLoad <= 0.0001f))
+        if ((!requested && engineAudioEnvelope <= 0f) || vol <= 0.0001f)
         {
             System.Array.Clear(data, 0, data.Length);
             return;
         }
 
-        float rpmRatio = Mathf.Clamp01(rpm / 2800f);
-        
-        double freqIncrement = (rpm / 60.0) * 4.0 / samplingRate;
-        double exhaustIncrement = (rpm / 60.0) * 2.0 / samplingRate;
-        double intakeIncrement = (rpm / 60.0) * 8.0 / samplingRate;
-        double turboIncrement = (rpm / 60.0) * 24.0 / samplingRate;
+        double rate = System.Math.Max(8000, samplingRate);
+        float envelopeStep = (float)(1.0 / (rate * (requested ? .025 : Mathf.Max(.2f, engineReleaseSeconds))));
+        float rpmBlend = 1f - Mathf.Exp(-1f / ((float)rate * (requested ? .10f : .40f)));
+        float loadBlend = 1f - Mathf.Exp(-1f / ((float)rate * .14f));
+        float targetLoad = requested ? engineLoad : 0f;
+        if (requested && engineAudioEnvelope <= 0f) engineAudioRpm = targetRpm;
         
         float pWidth = pulseWidth;
         float sharpness = pulseSharpness;
@@ -958,8 +958,6 @@ if (!isBraking)
         float mechanical = mechanicalNoise;
         float imbalance = cylinderImbalance;
         
-        float idleBias = Mathf.Clamp01(1f - rpmRatio * 2f);
-        float highRpmBias = rpmRatio * rpmRatio;
         
         double localPhase = phase;
         double localExhaustPhase = exhaustPhase;
@@ -968,6 +966,17 @@ if (!isBraking)
         
         for (int i = 0; i < data.Length; i += channels)
         {
+            engineAudioEnvelope = Mathf.MoveTowards(engineAudioEnvelope, requested ? 1f : 0f, envelopeStep);
+            engineAudioRpm += (targetRpm - engineAudioRpm) * rpmBlend;
+            engineAudioLoad += (targetLoad - engineAudioLoad) * loadBlend;
+            float rpm = engineAudioRpm;
+            float rpmRatio = Mathf.Clamp01(rpm / 2800f);
+            float idleBias = Mathf.Clamp01(1f - rpmRatio * 2f);
+            float highRpmBias = rpmRatio * rpmRatio;
+            double freqIncrement = (rpm / 60.0) * 4.0 / rate;
+            double exhaustIncrement = (rpm / 60.0) * 2.0 / rate;
+            double intakeIncrement = (rpm / 60.0) * 8.0 / rate;
+            double turboIncrement = (rpm / 60.0) * 24.0 / rate;
             localPhase += freqIncrement;
             if (localPhase > 1.0) localPhase -= 1.0;
             localExhaustPhase += exhaustIncrement;
@@ -1029,11 +1038,11 @@ if (!isBraking)
             mechNoise *= (0.5f + rpmRatio * 0.5f);
             signal += mechNoise;
             
-            float loadPulse = Mathf.Sin(phaseAngle * 4f) * engineLoad * 0.2f;
+            float loadPulse = Mathf.Sin(phaseAngle * 4f) * engineAudioLoad * 0.2f;
             signal += loadPulse;
             
             float volumeEnvelope = Mathf.Lerp(0.65f, 1.0f, rpmRatio);
-            volumeEnvelope += engineLoad * 0.2f;
+            volumeEnvelope += engineAudioLoad * 0.2f;
             volumeEnvelope = Mathf.Clamp01(volumeEnvelope);
             
             float filteredSignal = signal;
@@ -1042,7 +1051,8 @@ if (!isBraking)
                 filteredSignal = signal * 0.7f + mechNoise * 0.3f;
             }
             
-            float finalSample = filteredSignal * vol * volumeEnvelope;
+            float releaseGain = engineAudioEnvelope * engineAudioEnvelope * (3f - 2f * engineAudioEnvelope);
+            float finalSample = filteredSignal * vol * volumeEnvelope * releaseGain;
             finalSample = Mathf.Clamp(finalSample, -0.95f, 0.95f);
             
             for (int ch = 0; ch < channels; ch++)

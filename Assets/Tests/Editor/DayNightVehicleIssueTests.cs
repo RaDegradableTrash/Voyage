@@ -84,8 +84,62 @@ namespace Voyage.Tests.Editor
                 Set(car, "engineSoundRequested", true);
                 Call(car, "OnAudioFilterRead", samples, 2);
                 Assert.That(Array.Exists(samples, x => Mathf.Abs(x) > .00001f), Is.True);
+                // A held throttle must keep producing every DSP block, including a
+                // transient zero-RPM physics sample during startup or a gear change.
+                for (int block = 0; block < 128; block++)
+                {
+                    Set(car, "smoothEngineRpm", block % 7 == 0 ? 0f : 1800f);
+                    Call(car, "OnAudioFilterRead", samples, 2);
+                    Assert.That(Array.Exists(samples, x => Mathf.Abs(x) > .00001f), Is.True, "Silent engine block " + block);
+                    Assert.That(Array.Exists(samples, x => float.IsNaN(x) || float.IsInfinity(x)), Is.False);
+                }
             }
             finally { Object.DestroyImmediate(go); }
+        }
+
+        [TestCase(48000, 2)]
+        [TestCase(44100, 1)]
+        public void EngineReleasePlaysQuietingTailAndCanResume(int rate, int channels)
+        {
+            var go = new GameObject("Engine release regression");
+            try
+            {
+                go.SetActive(false);
+                var car = go.AddComponent(GameType("CarControl"));
+                Set(car, "samplingRate", (double)rate);
+                Set(car, "smoothEngineRpm", 2000f);
+                Set(car, "engineLoad", 1f);
+                Set(car, "engineSoundRequested", true);
+                var block = new float[(rate / 10) * channels];
+                Call(car, "OnAudioFilterRead", block, channels);
+                Set(car, "engineSoundRequested", false);
+                Call(car, "OnAudioFilterRead", block, channels);
+                float early = AudioRms(block);
+                Assert.That(early, Is.GreaterThan(.001f), "Stopping must retain the original engine tone rather than clear the next block.");
+                for (int i = 0; i < 10; i++) Call(car, "OnAudioFilterRead", block, channels);
+                float late = AudioRms(block);
+                Assert.That(late, Is.GreaterThan(0f));
+                Assert.That(late, Is.LessThan(early * .1f), "The end of the release must be audibly quieter.");
+                // Resume before the tail ends, without waiting for a clip restart.
+                Set(car, "engineSoundRequested", true);
+                for (int i = 0; i < 5; i++)
+                {
+                    Call(car, "OnAudioFilterRead", block, channels);
+                    Assert.That(AudioRms(block), Is.GreaterThan(.001f));
+                    Assert.That(Array.Exists(block, x => float.IsNaN(x) || float.IsInfinity(x)), Is.False);
+                }
+                Set(car, "engineSoundRequested", false);
+                for (int i = 0; i < 15; i++) Call(car, "OnAudioFilterRead", block, channels);
+                Assert.That(block, Is.All.EqualTo(0f), "The tail must eventually finish even if the wheels still report high RPM.");
+            }
+            finally { Object.DestroyImmediate(go); }
+        }
+
+        static float AudioRms(float[] samples)
+        {
+            double sum=0;
+            foreach(float sample in samples) sum+=sample*sample;
+            return (float)Math.Sqrt(sum/samples.Length);
         }
 
         [TestCase("/time NaN")]

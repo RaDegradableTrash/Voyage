@@ -18,6 +18,8 @@ namespace Voyage.TerrainSystem
         private bool collisionStateKnown;
         private bool collisionState;
         private InteractiveGrassTile configuredGrass;
+        private bool paintedGrassResolved;
+        private GrassFlow.GrassFlowPatch generatedPatch;
         private MeshRenderer[][] lodRenderers;
         private MaterialPropertyBlock lodProperties;
         private int outgoingLod = -1;
@@ -35,6 +37,7 @@ namespace Voyage.TerrainSystem
         {
             get
             {
+                if (settings != null && settings.usePaintedGrass) return true;
                 InteractiveGrassTile grass = GetComponent<InteractiveGrassTile>();
                 return grass == null || grass.BuildFinished;
             }
@@ -135,11 +138,69 @@ namespace Voyage.TerrainSystem
             return bounds.SqrDistance(viewerPosition) <= radius * radius;
         }
 
-        public bool NeedsGrassInitialization => currentLod < 3 && configuredGrass == null && CollisionEnabled;
+        public bool NeedsGrassInitialization => settings != null && settings.usePaintedGrass
+            ? !paintedGrassResolved && currentLod < 2
+            : currentLod < 3 && configuredGrass == null && CollisionEnabled;
 
         public void InitializeGrass()
         {
+            if (settings != null && settings.usePaintedGrass)
+            {
+                if (currentLod >= 2) return;
+                if (paintedGrassResolved) return;
+                paintedGrassResolved = true;
+                var legacy = GetComponent<InteractiveGrassTile>();
+                if (legacy != null) legacy.enabled = false;
+                if (Application.isPlaying)
+                {
+                    StartCoroutine(LoadPaintedGrass());
+                    return;
+                }
+                var patch = Resources.Load<GrassFlow.GrassFlowPatch>($"GrassFlow/Tiles/Grass_{coordinate.x}_{coordinate.y}");
+                if (patch != null)
+                {
+                    var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
+                    if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
+                    renderer.patch = patch;
+                }
+                else if (Application.isPlaying && lodRoots[0] != null)
+                    StartCoroutine(StreamedGrassSurface.Build(lodRoots[0].GetComponentsInChildren<MeshFilter>(true), bounds, value =>
+                    {
+                        generatedPatch = value;
+                        var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
+                        if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
+                        renderer.patch = value;
+                    }));
+                return;
+            }
             if (NeedsGrassInitialization) EnsureGrassForCurrentLod(bounds);
+        }
+
+        private void OnDestroy()
+        {
+            if (generatedPatch == null) return;
+            Destroy(generatedPatch.surface); Destroy(generatedPatch.density); Destroy(generatedPatch);
+        }
+
+        private System.Collections.IEnumerator LoadPaintedGrass()
+        {
+            var request = Resources.LoadAsync<GrassFlow.GrassFlowPatch>($"GrassFlow/Tiles/Grass_{coordinate.x}_{coordinate.y}");
+            yield return request;
+            var patch = request.asset as GrassFlow.GrassFlowPatch;
+            if (patch != null)
+            {
+                var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
+                if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
+                renderer.patch = patch;
+            }
+            else if (lodRoots[0] != null)
+                yield return StreamedGrassSurface.Build(lodRoots[0].GetComponentsInChildren<MeshFilter>(true), bounds, value =>
+                {
+                    generatedPatch = value;
+                    var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
+                    if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
+                    renderer.patch = value;
+                });
         }
 
         private int CalculateLod(Vector3 viewerPosition)
@@ -235,6 +296,13 @@ namespace Voyage.TerrainSystem
             root.transform.SetParent(transform, false);
             meshCollider = root.GetComponent<MeshCollider>();
             if (meshCollider == null) meshCollider = root.AddComponent<MeshCollider>();
+            // Configure before assigning a mesh, otherwise Unity cooks it once
+            // with default flags and again after switching to the worker's flags.
+            meshCollider.enabled = false;
+            meshCollider.convex = false;
+            meshCollider.isTrigger = false;
+            if (meshCollider.cookingOptions != CollisionCookingOptions)
+                meshCollider.cookingOptions = CollisionCookingOptions;
             Transform lod0 = transform.Find("LOD0");
             MeshFilter filter = lod0 == null ? null : lod0.GetComponent<MeshFilter>();
             // Always synchronize with LOD0. This prevents old/generated prefabs
@@ -244,11 +312,6 @@ namespace Voyage.TerrainSystem
                 meshCollider.sharedMesh = null;
                 meshCollider.sharedMesh = filter.sharedMesh;
             }
-            meshCollider.convex = false;
-            meshCollider.isTrigger = false;
-            if (meshCollider.cookingOptions != CollisionCookingOptions)
-                meshCollider.cookingOptions = CollisionCookingOptions;
-            meshCollider.enabled = false;
         }
 
         private void ConfigureLighting()
