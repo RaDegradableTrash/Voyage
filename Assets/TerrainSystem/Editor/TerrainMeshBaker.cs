@@ -80,7 +80,7 @@ namespace Voyage.TerrainSystem.Editor
                 if (!onlyCoordinate.HasValue && cleanGeneratedAssets)
                 {
                     AssetDatabase.DeleteAsset("Assets/TerrainSystem/GeneratedLOD");
-                    AssetDatabase.DeleteAsset("Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles");
+                    AssetDatabase.DeleteAsset("Assets/TerrainSystem/GeneratedTiles/RuntimeTiles");
                     // Unity's asset database can retain stale folder state for
                     // one editor tick after deleting a generated tree. Flush
                     // that state before creating the first rebuilt tile.
@@ -323,7 +323,7 @@ namespace Voyage.TerrainSystem.Editor
             DeleteGeneratedAsset(lodFolder + tileName + "_Skirt2.asset");
             DeleteGeneratedAsset(lodFolder + tileName + "_Skirt3.asset");
             DeleteGeneratedAsset(lodFolder + tileName + "_BakedGrass.asset");
-            AssetDatabase.DeleteAsset("Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles/" + tileName + ".prefab");
+            AssetDatabase.DeleteAsset("Assets/TerrainSystem/GeneratedTiles/RuntimeTiles/" + tileName + ".prefab");
             EnsureAssetFolder(lodFolder);
             // DeleteAsset can leave Unity's folder cache one refresh behind.
             // Ensure the physical directory exists and synchronise the asset
@@ -391,7 +391,7 @@ namespace Voyage.TerrainSystem.Editor
             rootsProperty.arraySize = roots.Count;
             for (int i = 0; i < roots.Count; i++) rootsProperty.GetArrayElementAtIndex(i).objectReferenceValue = roots[i];
             serialized.ApplyModifiedPropertiesWithoutUndo();
-            string prefabPath = "Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles/" + tileName + ".prefab";
+            string prefabPath = "Assets/TerrainSystem/GeneratedTiles/RuntimeTiles/" + tileName + ".prefab";
             PrefabUtility.SaveAsPrefabAsset(prefabRoot, prefabPath);
             UnityEngine.Object.DestroyImmediate(prefabRoot);
             Bounds bounds = settings.GetTileBounds(coordinate);
@@ -528,7 +528,7 @@ namespace Voyage.TerrainSystem.Editor
 
         private static void EnsureDirectories()
         {
-            EnsureAssetFolder("Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles/");
+            EnsureAssetFolder("Assets/TerrainSystem/GeneratedTiles/RuntimeTiles/");
             EnsureAssetFolder("Assets/TerrainSystem/GeneratedLOD/");
         }
 

@@ -35,7 +35,7 @@ namespace Voyage.TerrainSystem
         public void Sync()
         {
 #if UNITY_EDITOR
-            if (Application.isPlaying || syncing) return;
+            if (Application.isPlaying || syncing || UnityEditor.BuildPipeline.isBuildingPlayer) return;
             syncing = true;
             try
             {
@@ -56,7 +56,7 @@ namespace Voyage.TerrainSystem
                     wanted.Add(record.coordinate);
                     if (!instances.TryGetValue(record.coordinate, out GameObject instance) || instance == null)
                     {
-                        GameObject prefab = Resources.Load<GameObject>(record.resourcePath);
+                        GameObject prefab = TerrainPrefabStore.LoadInEditor(record.resourcePath);
                         if (prefab == null) continue;
                         instance = UnityEditor.PrefabUtility.InstantiatePrefab(prefab, previewRoot) as GameObject;
                         if (instance == null) continue;

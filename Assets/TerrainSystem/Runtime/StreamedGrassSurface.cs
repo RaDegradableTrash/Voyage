@@ -13,10 +13,21 @@ namespace Voyage.TerrainSystem
         {
             if (!Application.isPlaying) return true;
             if(frame!=Time.frameCount) { frame=Time.frameCount; frameStart=Time.realtimeSinceStartupAsDouble; }
-            return Time.realtimeSinceStartupAsDouble-frameStart<.0015;
+            return Time.realtimeSinceStartupAsDouble-frameStart<.00075;
         }
         public static IEnumerator Build(MeshFilter[] filters, Bounds bounds, Action<GrassFlowPatch> ready)
         {
+            if (Application.isPlaying)
+            {
+                // Runtime fallback tiles are generated while the vehicle is
+                // moving. Triangle rasterization allocates the complete LOD
+                // vertex/index arrays and can spike when a chunk enters the
+                // streaming ring. A coarse height sample has the same visual
+                // purpose for fallback grass, but keeps work bounded and
+                // independent of terrain mesh triangle count.
+                yield return BuildRuntimeSampled(bounds, ready);
+                yield break;
+            }
             const int n = 128;
             var pixels = new Color[n*n];
             var min = bounds.min; var size = bounds.size; size.y = Mathf.Max(.1f,size.y);
@@ -53,6 +64,62 @@ namespace Voyage.TerrainSystem
             for(int i=0;i<pixels.Length;i++) pixels[i]=Color.white*(pixels[i].g>.5f?.78f:0);
             patch.density=new Texture2D(n,n,TextureFormat.RGBA32,false,true) { wrapMode=TextureWrapMode.Clamp };
             patch.density.SetPixels(pixels); patch.density.Apply(); ready(patch);
+        }
+
+        static IEnumerator BuildRuntimeSampled(Bounds bounds, Action<GrassFlowPatch> ready)
+        {
+            const int n = 16;
+            Color[] surfacePixels = new Color[n * n];
+            Color[] densityPixels = new Color[n * n];
+            Vector3 min = bounds.min;
+            Vector3 size = bounds.size;
+            float rayTop = bounds.center.y + 2000f;
+            float rayDistance = 4000f;
+            // Keep a small height field inside each tile. A single center
+            // sample makes every streamed tile a flat slab of grass, which is
+            // visible as staircase-like patches on slopes. Sixteen-by-sixteen
+            // samples are enough for bilinear filtering while remaining far
+            // cheaper than rasterizing the source mesh triangles.
+            for (int z = 0; z < n; z++)
+            {
+                for (int x = 0; x < n; x++)
+                {
+                    while (!HasBudget()) yield return null;
+                    float px = min.x + (x + 0.5f) / n * size.x;
+                    float pz = min.z + (z + 0.5f) / n * size.z;
+                    RaycastHit hit;
+                    bool found = Physics.Raycast(new Vector3(px, rayTop, pz), Vector3.down,
+                        out hit, rayDistance, Physics.DefaultRaycastLayers,
+                        QueryTriggerInteraction.Ignore);
+                    int index = z * n + x;
+                    if (!found)
+                    {
+                        surfacePixels[index] = new Color(0.5f, 1f, 0f, 1f);
+                        densityPixels[index] = Color.clear;
+                        continue;
+                    }
+                    float normalizedHeight = Mathf.InverseLerp(min.y, min.y + size.y, hit.point.y);
+                    surfacePixels[index] = new Color(normalizedHeight, 1f, 0f, 1f);
+                    float slope = Vector3.Angle(hit.normal, Vector3.up);
+                    float density = 1f - Mathf.InverseLerp(28f, 58f, slope);
+                    densityPixels[index] = Color.white * Mathf.Clamp01(density * 0.78f);
+                }
+            }
+            yield return null;
+            GrassFlowPatch patch = ScriptableObject.CreateInstance<GrassFlowPatch>();
+            patch.name = "Streamed meadow";
+            patch.bounds = new Bounds(min + size * 0.5f, size);
+            patch.surface = new Texture2D(n, n, TextureFormat.RGFloat, false, true)
+            { wrapMode = TextureWrapMode.Clamp };
+            patch.surface.filterMode = FilterMode.Bilinear;
+            patch.surface.SetPixels(surfacePixels);
+            patch.surface.Apply();
+            patch.density = new Texture2D(n, n, TextureFormat.RGBA32, false, true)
+            { wrapMode = TextureWrapMode.Clamp };
+            patch.density.filterMode = FilterMode.Bilinear;
+            patch.density.SetPixels(densityPixels);
+            patch.density.Apply();
+            ready(patch);
         }
     }
 }

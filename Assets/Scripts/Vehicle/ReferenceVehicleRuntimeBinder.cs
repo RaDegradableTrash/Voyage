@@ -16,11 +16,28 @@ public sealed class ReferenceVehicleRuntimeBinder : MonoBehaviour
         bound = true;
 
         DisableEmbeddedCameras();
+        ConfigureChassisPhysics();
         NormalizeWheelPhysics();
 
         CarControl car = GetComponent<CarControl>();
         if (car == null) car = gameObject.AddComponent<CarControl>();
         StartCoroutine(ActivateAfterReferenceStart(car));
+    }
+
+    private void ConfigureChassisPhysics()
+    {
+        Rigidbody body = GetComponent<Rigidbody>();
+        if (body == null) return;
+
+        // Keep the WheelCollider chassis stable when adjacent streamed mesh
+        // colliders meet. Interpolation removes visible one-frame stepping,
+        // while continuous collision detection and extra solver iterations
+        // prevent a fast crossing from tunnelling through the seam and then
+        // correcting with a longitudinal impulse.
+        body.interpolation = RigidbodyInterpolation.Interpolate;
+        body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+        body.solverIterations = Mathf.Max(body.solverIterations, 12);
+        body.solverVelocityIterations = Mathf.Max(body.solverVelocityIterations, 6);
     }
 
     void NormalizeWheelPhysics()
@@ -49,6 +66,21 @@ public sealed class ReferenceVehicleRuntimeBinder : MonoBehaviour
             collider.radius = worldRadius / Mathf.Max(0.001f, Mathf.Max(Mathf.Abs(physicsScale.y), Mathf.Abs(physicsScale.z)));
             collider.suspensionDistance = worldTravel / Mathf.Max(0.001f, Mathf.Abs(physicsScale.y));
             collider.forceAppPointDistance = worldForceOffset / Mathf.Max(0.001f, Mathf.Abs(physicsScale.y));
+            JointSpring suspension = collider.suspensionSpring;
+            // The imported spring is tuned for the source vehicle scale. A
+            // streamed terrain seam can otherwise make it rebound once after
+            // a contact-normal change, which is perceived as a fore/aft hitch.
+            suspension.damper = Mathf.Max(suspension.damper, suspension.spring * 0.65f);
+            collider.suspensionSpring = suspension;
+            collider.wheelDampingRate = Mathf.Max(collider.wheelDampingRate, 0.8f);
+            WheelFrictionCurve forwardFriction = collider.forwardFriction;
+            forwardFriction.stiffness = Mathf.Min(forwardFriction.stiffness, 2.0f);
+            collider.forwardFriction = forwardFriction;
+            // WheelCollider's default single physics substep is especially
+            // sensitive to a contact-normal change when a wheel crosses a
+            // streamed mesh seam. Extra substeps keep the suspension and tire
+            // force continuous at the vehicle's normal travel speeds.
+            collider.ConfigureVehicleSubsteps(12f, 5, 3);
             wheel.BindCollider(collider);
         }
     }
