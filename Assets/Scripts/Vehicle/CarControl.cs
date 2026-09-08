@@ -180,10 +180,6 @@ public class CarControl : MonoBehaviour
     // 动能回收相关
     private float lastFrameVelocity = 0f;
     private Vector3 lastFramePosition;
-    [Header("Terrain Seam Stability")]
-    [SerializeField, Min(1f)] private float groundedAccelerationLimit = 42f;
-    private float lastPhysicsForwardSpeed;
-    private bool hasLastPhysicsForwardSpeed;
     // The reference RV's nose is local -Z; normalized physics wheels roll
     // along local +Z, hence the negative drive torque below.
     public Vector3 DriveForward => -transform.forward;
@@ -723,39 +719,6 @@ public class CarControl : MonoBehaviour
         }
 
         engineSoundRequested = inputAllowed && accelerator > .01f && engineOn && electricalPowerOn && FuelTank.SharedFuel > 0f;
-    }
-
-    private void FixedUpdate()
-    {
-        if (rigidBody == null || wheels == null || wheels.Length == 0) return;
-
-        int grounded = 0;
-        for (int i = 0; i < wheels.Length; i++)
-        {
-            WheelControl wheel = wheels[i];
-            if (wheel != null && wheel.WheelCollider != null && wheel.WheelCollider.isGrounded)
-                grounded++;
-        }
-
-        Vector3 velocity = rigidBody.linearVelocity;
-        float forwardSpeed = Vector3.Dot(DriveForward, velocity);
-        if (grounded >= 4 && hasLastPhysicsForwardSpeed)
-        {
-            float maxStep = Mathf.Max(1f, groundedAccelerationLimit) * Mathf.Max(0.001f, Time.fixedDeltaTime);
-            float step = forwardSpeed - lastPhysicsForwardSpeed;
-            // A supported vehicle should not gain or lose several metres per
-            // second in one solver step. Such a spike is the signature of a
-            // wheel crossing a streamed collider seam; clamp only that excess
-            // so ordinary throttle and braking remain unchanged.
-            if (Mathf.Abs(step) > maxStep)
-            {
-                float clampedSpeed = lastPhysicsForwardSpeed + Mathf.Clamp(step, -maxStep, maxStep);
-                rigidBody.linearVelocity = velocity + DriveForward * (clampedSpeed - forwardSpeed);
-            }
-        }
-
-        lastPhysicsForwardSpeed = Vector3.Dot(DriveForward, rigidBody.linearVelocity);
-        hasLastPhysicsForwardSpeed = true;
     }
 
     private void UpdateSpeedDisplay(float displaySpeed)
