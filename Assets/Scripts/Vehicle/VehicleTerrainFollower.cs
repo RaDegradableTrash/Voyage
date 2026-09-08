@@ -5,6 +5,15 @@ using UnityEngine;
 [RequireComponent(typeof(Rigidbody))]
 public sealed class VehicleTerrainFollower : MonoBehaviour
 {
+    // Contact stability policy for the raycast fallback vehicle. Keeping the
+    // tolerances together makes the fallback predictable without spreading
+    // unexplained literals through the wheel solver.
+    const float TireSweepRadiusScale = 0.35f;
+    const float ContactColliderHysteresis = 0.12f;
+    const int MissedContactGraceSteps = 2;
+    const float MissedContactHeightMargin = 0.2f;
+    const float SuspensionTravelSmoothing = 0.5f;
+
     public enum VehicleState { Grounded, PartialGrounded, Airborne, Landing, Flipped, Stuck }
 
     [Header("Vehicle")]
@@ -306,9 +315,9 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             wheel.tireForce = Vector3.zero;
 
             Vector3 castOrigin = origin + Vector3.up * groundDetectionDistance;
-            // Sweep a small tire area so a generated-mesh seam cannot make a
-            // wheel lose contact for one frame.
-            int hitCount = Physics.SphereCastNonAlloc(castOrigin, tireRadius * 0.35f,
+            // Sweep a small tire area so a narrow collider boundary cannot
+            // make a wheel lose contact for one fixed step.
+            int hitCount = Physics.SphereCastNonAlloc(castOrigin, tireRadius * TireSweepRadiusScale,
                 Vector3.down, raycastBuffer, castLength + groundDetectionDistance,
                 groundLayers, QueryTriggerInteraction.Ignore);
             float nearest = float.MaxValue;
@@ -329,11 +338,10 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                     previousColliderHit = hit;
                 }
             }
-            // Adjacent streamed tiles can overlap by a few centimeters. Keep
-            // the previous collider when it is effectively as close as the
-            // new nearest hit; otherwise the suspension force alternates at
-            // the seam and the vehicle jolts fore/aft every physics step.
-            if (previousColliderDistance <= nearest + 0.12f)
+            // Adjacent streamed colliders can overlap by a few centimeters.
+            // Keep the previous contact while it is effectively as close as
+            // the new hit, preventing suspension force from alternating.
+            if (previousColliderDistance <= nearest + ContactColliderHysteresis)
             {
                 nearest = previousColliderDistance;
                 wheel.hit = previousColliderHit;
@@ -352,17 +360,13 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                 found = TrySampleRuntimeTerrain(origin, out contactPoint, out normal);
             }
 
-            // A streamed MeshCollider can spend one physics step being
-            // enabled/cooked while the wheel is already crossing its seam.
-            // Dropping suspension and drive force for that single failed cast
-            // makes the body visibly twitch. Reuse the last valid contact for
-            // at most two fixed steps, and only while the wheel is still
-            // within its physical extension range; this cannot keep an
-            // airborne wheel grounded indefinitely.
-            if (!found && wasWheelGrounded && wheel.missedContactFrames < 2)
+            // Preserve a valid contact briefly while a streamed collider is
+            // being enabled. The extension check prevents this from keeping
+            // an airborne wheel grounded indefinitely.
+            if (!found && wasWheelGrounded && wheel.missedContactFrames < MissedContactGraceSteps)
             {
                 float previousDistance = origin.y - wheel.contactPoint.y;
-                if (previousDistance - tireRadius <= suspensionLength + maxExtension + 0.2f)
+                if (previousDistance - tireRadius <= suspensionLength + maxExtension + MissedContactHeightMargin)
                 {
                     found = true;
                     contactPoint = wheel.contactPoint;
@@ -383,12 +387,10 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                     wheel.landingContact = !wasWheelGrounded;
                     wheel.contactPoint = contactPoint;
                     wheel.groundNormal = normal;
-                    // Smooth the measured travel at collider seams. The
-                    // contact hysteresis above prevents surface swapping;
-                    // this second filter prevents a tiny height quantization
-                    // difference from becoming a full spring-force impulse.
+                    // Smooth tiny height quantization changes so they do not
+                    // become a full spring-force impulse.
                     wheel.suspensionTravel = wasWheelGrounded
-                        ? Mathf.Lerp(wheel.suspensionTravel, travel, 0.5f) : travel;
+                        ? Mathf.Lerp(wheel.suspensionTravel, travel, SuspensionTravelSmoothing) : travel;
                     wheel.contactCollider = nearest < float.MaxValue ? wheel.hit.collider : null;
                 }
             }
