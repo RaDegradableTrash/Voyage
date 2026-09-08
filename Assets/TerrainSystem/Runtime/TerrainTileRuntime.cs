@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.Rendering;
+using System.Collections.Generic;
 
 namespace Voyage.TerrainSystem
 {
@@ -11,7 +12,10 @@ namespace Voyage.TerrainSystem
         [SerializeField] private GameObject[] lodRoots = new GameObject[4];
         [SerializeField] private bool hlod;
         private Collider[] colliders;
+        private MeshCollider seamCollider;
+        private Mesh seamMesh;
         private static Material grasslandFallbackMaterial;
+        private static PhysicsMaterial terrainContactMaterial;
         private static bool terrainShaderDiagnosticLogged;
         private int currentLod = -1;
         private TerrainChunkSettings settings;
@@ -90,6 +94,9 @@ namespace Voyage.TerrainSystem
             bounds = record.bounds;
             settings = chunkSettings;
             hlod = useHlod;
+            // The baked LOD0 edges are already snapped to shared heights. Do
+            // not add a second overlapping seam surface: WheelCollider can
+            // alternate between coplanar contacts and create its own chatter.
             // Existing baked prefabs may contain legacy skirts with duplicate
             // windings. Keep the terrain surface authoritative until those
             // prefabs are rebaked with the corrected skirt builder.
@@ -178,8 +185,92 @@ namespace Voyage.TerrainSystem
 
         private void OnDestroy()
         {
-            if (generatedPatch == null) return;
-            Destroy(generatedPatch.surface); Destroy(generatedPatch.density); Destroy(generatedPatch);
+            if (generatedPatch != null)
+            {
+                Destroy(generatedPatch.surface); Destroy(generatedPatch.density); Destroy(generatedPatch);
+            }
+            if (seamMesh != null) Destroy(seamMesh);
+        }
+
+        private void BuildSeamCollision()
+        {
+            if (hlod || seamCollider != null) return;
+            Transform lod0 = transform.Find("LOD0");
+            MeshFilter filter = lod0 == null ? null : lod0.GetComponent<MeshFilter>();
+            Mesh source = filter == null ? null : filter.sharedMesh;
+            if (source == null || source.vertexCount < 4) return;
+
+            Vector3[] sourceVertices = source.vertices;
+            float half = settings != null ? settings.tileSize * 0.5f : 128f;
+            float tolerance = Mathf.Max(0.02f, half * 0.0005f);
+            float stripWidth = Mathf.Clamp(half * 0.0025f, 0.2f, 0.8f);
+            List<Vector3> vertices = new List<Vector3>();
+            List<int> triangles = new List<int>();
+            // A seam is owned by the tile on its negative side. Generating
+            // both sides creates two nearly coplanar MeshColliders and lets
+            // WheelCollider alternate between them at the boundary.
+            AddSeamEdge(sourceVertices, vertices, triangles, 0, half, tolerance, stripWidth);
+            int depthAxis = settings != null && settings.horizontalAxes == TerrainHorizontalAxes.XY ? 1 : 2;
+            AddSeamEdge(sourceVertices, vertices, triangles, depthAxis, half, tolerance, stripWidth);
+            if (triangles.Count == 0) return;
+
+            seamMesh = new Mesh { name = name + " Seam Collision" };
+            if (vertices.Count > 65535) seamMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            seamMesh.SetVertices(vertices);
+            seamMesh.SetTriangles(triangles, 0, true);
+            seamMesh.RecalculateBounds();
+            GameObject seamObject = new GameObject("Seam Collision");
+            seamObject.transform.SetParent(transform, false);
+            seamCollider = seamObject.AddComponent<MeshCollider>();
+            seamCollider.sharedMesh = seamMesh;
+            seamCollider.convex = false;
+            seamCollider.isTrigger = false;
+            seamCollider.material = terrainContactMaterial;
+            seamCollider.contactOffset = 0.04f;
+            seamCollider.enabled = false;
+            colliders = GetComponentsInChildren<Collider>(true);
+        }
+
+        private static void AddSeamEdge(Vector3[] source, List<Vector3> vertices, List<int> triangles,
+            int axis, float boundary, float tolerance, float stripWidth)
+        {
+            List<Vector3> points = new List<Vector3>();
+            for (int i = 0; i < source.Length; i++)
+            {
+                float value = axis == 0 ? source[i].x : axis == 1 ? source[i].y : source[i].z;
+                if (Mathf.Abs(value - boundary) <= tolerance && !ContainsPoint(points, source[i])) points.Add(source[i]);
+            }
+            if (points.Count < 2) return;
+            int alongAxis = axis == 0 ? 2 : 0;
+            points.Sort((a, b) => (alongAxis == 0 ? a.x : a.z).CompareTo(alongAxis == 0 ? b.x : b.z));
+            for (int i = 0; i + 1 < points.Count; i++)
+            {
+                Vector3 a = points[i];
+                Vector3 b = points[i + 1];
+                Vector3 outward = axis == 0 ? new Vector3(Mathf.Sign(boundary) * stripWidth, 0f, 0f) :
+                    (axis == 1 ? new Vector3(0f, Mathf.Sign(boundary) * stripWidth, 0f) : new Vector3(0f, 0f, Mathf.Sign(boundary) * stripWidth));
+                int start = vertices.Count;
+                vertices.Add(a); vertices.Add(b); vertices.Add(b + outward); vertices.Add(a + outward);
+                Vector3 normal = Vector3.Cross(b - a, outward);
+                float up = axis == 1 ? normal.z : normal.y;
+                if (up >= 0f)
+                {
+                    triangles.Add(start); triangles.Add(start + 1); triangles.Add(start + 2);
+                    triangles.Add(start); triangles.Add(start + 2); triangles.Add(start + 3);
+                }
+                else
+                {
+                    triangles.Add(start); triangles.Add(start + 2); triangles.Add(start + 1);
+                    triangles.Add(start); triangles.Add(start + 3); triangles.Add(start + 2);
+                }
+            }
+        }
+
+        private static bool ContainsPoint(List<Vector3> points, Vector3 value)
+        {
+            for (int i = 0; i < points.Count; i++)
+                if ((points[i] - value).sqrMagnitude < 0.000001f) return true;
+            return false;
         }
 
         private System.Collections.IEnumerator LoadPaintedGrass()
@@ -258,7 +349,12 @@ namespace Voyage.TerrainSystem
                 // but made the streamed fallback visibly empty. Keep the
                 // budget authored in settings while still protecting against
                 // an accidental unbounded value.
-                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 24000);
+                // A 24k-cluster cap creates large structured/visible buffers
+                // for every streamed tile. Once several tiles are near the
+                // camera, those allocations and culling dispatches become a
+                // repeating GPU/GC spike. The shared four-blade cluster keeps
+                // 12k placements visually dense while halving that pressure.
+                grass.runtimeClusterBudget = Mathf.Min(settings.grassClusterBudget, 12000);
                 grass.clustersPerFrame = Mathf.Clamp(grass.clustersPerFrame, 32, 96);
                 grass.fullDensityBelowSlope = settings.grassFullDensityBelowSlope;
                 grass.noGrassAboveSlope = settings.grassNoGrassAboveSlope;
@@ -301,6 +397,21 @@ namespace Voyage.TerrainSystem
             meshCollider.enabled = false;
             meshCollider.convex = false;
             meshCollider.isTrigger = false;
+            if (terrainContactMaterial == null)
+            {
+                terrainContactMaterial = new PhysicsMaterial("Voyage Terrain Contact")
+                {
+                    staticFriction = 0.72f,
+                    dynamicFriction = 0.58f,
+                    bounciness = 0f,
+                    frictionCombine = PhysicsMaterialCombine.Minimum,
+                    bounceCombine = PhysicsMaterialCombine.Minimum
+                };
+            }
+            // Keep the contact response identical on both sides of a streamed
+            // seam so WheelCollider friction cannot jump at the boundary.
+            meshCollider.material = terrainContactMaterial;
+            meshCollider.contactOffset = 0.04f;
             if (meshCollider.cookingOptions != CollisionCookingOptions)
                 meshCollider.cookingOptions = CollisionCookingOptions;
             Transform lod0 = transform.Find("LOD0");
@@ -399,7 +510,13 @@ namespace Voyage.TerrainSystem
             // changed; that creates periodic render-thread spikes while the
             // vehicle is moving and makes its wheels appear to step.
             if (currentLod == lod && !immediate) return;
-            bool fade = !immediate && Application.isPlaying && settings != null && settings.useCrossFade && currentLod >= 0;
+            // Cross-fading keeps two complete terrain hierarchies active and
+            // writes a property block for every renderer during the fade.
+            // With streamed tiles this creates a synchronized render spike
+            // when several tiles cross an LOD boundary together. Runtime
+            // terrain uses an immediate single-LOD switch; the editor still
+            // keeps authored cross-fades for visual inspection.
+            bool fade = !immediate && !Application.isPlaying && settings != null && settings.useCrossFade && currentLod >= 0;
             // Finish the previous pair before starting a new transition.
             outgoingLod = fade ? currentLod : -1;
             lodTransition = fade ? 0f : 1f;

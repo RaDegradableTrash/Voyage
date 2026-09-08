@@ -10,7 +10,7 @@ namespace Voyage.TerrainSystem.Editor
     public static class TerrainTileIndexRecovery
     {
         private const string IndexPath = "Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/TerrainTileIndex.asset";
-        private const string PrefabFolder = "Assets/TerrainSystem/GeneratedTiles/Resources/TerrainSystem/GeneratedTiles";
+        private const string PrefabFolder = "Assets/TerrainSystem/GeneratedTiles/RuntimeTiles";
         private const string SourcePath = "Assets/TerrainSystem/Source/TerrainSource.asset";
         private const string SettingsPath = "Assets/TerrainSystem/Source/TerrainChunkSettings.asset";
 

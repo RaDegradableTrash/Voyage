@@ -19,7 +19,7 @@ public static class PrefabBootstrap
     [MenuItem("NightRunner/Generate Prefabs")]
     public static void EnsurePrefabs()
     {
-        if (EditorApplication.isPlayingOrWillChangePlaymode || Application.isPlaying) return;
+        if (EditorApplication.isPlayingOrWillChangePlaymode || Application.isPlaying || BuildPipeline.isBuildingPlayer) return;
         EditorApplication.delayCall -= EnsurePrefabs;
         const string folder = "Assets/Resources/Prefabs";
         if (!AssetDatabase.IsValidFolder("Assets/Resources")) AssetDatabase.CreateFolder("Assets", "Resources");

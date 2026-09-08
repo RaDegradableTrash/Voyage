@@ -114,6 +114,13 @@ namespace Voyage.TerrainSystem
         {
             if (initialized || buildRoutine != null) return;
             initialized = true;
+            // Gameplay has one authoritative camera. Enumerating every
+            // camera and issuing a second grass draw for each streamed tile
+            // multiplies the render cost and becomes visible whenever a new
+            // tile is added. Keep additional camera rendering for editor
+            // painting/preview, where it is useful, but never pay for it in
+            // the player build.
+            if (Application.isPlaying) renderInAdditionalCameras = false;
             tileFade = 0f;
             BuildFinished = false;
             debugWorldBounds = worldBounds;
@@ -374,8 +381,8 @@ namespace Voyage.TerrainSystem
                 sharedFrustumFrame = Time.frameCount;
             }
             bool recull = sourceUpdated || currentLod != lastIndirectCullLod ||
-                          Time.frameCount - lastIndirectCullFrame >= 3 ||
-                          (camera.transform.position - lastIndirectCullCameraPosition).sqrMagnitude > 4f;
+                          Time.frameCount - lastIndirectCullFrame >= 6 ||
+                          (camera.transform.position - lastIndirectCullCameraPosition).sqrMagnitude > 81f;
             if (recull)
             {
                 indirectVisibleBuffer.SetCounterValue(0);

@@ -2,7 +2,6 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
-using Unity.Jobs;
 using Unity.Profiling;
 using Voyage.TerrainSystem;
 
@@ -39,18 +38,12 @@ public sealed class DrivingCore : MonoBehaviour
     Coroutine terrainLoadRoutine;
     Vector2Int streamedCenter;
     bool hasStreamedCenter;
+    Vector2Int prefetchedCenter;
+    bool hasPrefetchedCenter;
     int terrainWorkFrame = -1;
-    JobHandle collisionBakeJob;
-    bool collisionBakePending;
     static readonly ProfilerMarker InstantiateTileMarker = new ProfilerMarker("Voyage.Terrain.Instantiate");
     static readonly ProfilerMarker ActivateCollisionMarker = new ProfilerMarker("Voyage.Terrain.ActivateCollision");
     static readonly ProfilerMarker InitializeGrassMarker = new ProfilerMarker("Voyage.Terrain.InitializeGrass");
-
-    struct CollisionBakeJob : IJob
-    {
-        public EntityId meshId;
-        public void Execute() => Physics.BakeMesh(meshId, false, TerrainTileRuntime.CollisionCookingOptions);
-    }
 
     bool TryBeginTerrainWork()
     {
@@ -157,6 +150,15 @@ public sealed class DrivingCore : MonoBehaviour
         while (!AreVisibleTerrainTilesReady(spawnPoint) &&
                (pendingTerrainLoads.Count > 0 || terrainLoadRoutine != null))
             yield return null;
+        // Do not hand control to the vehicle while the rest of the initial
+        // preload ring is still instantiating. Starting the car here made the
+        // first few cell crossings compete with the startup queue and caused
+        // a repeating hitch that looked like a physics seam problem. The
+        // loading work remains budgeted across frames, so this is a short
+        // loading phase rather than one blocking frame.
+        while (pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0 ||
+               terrainLoadRoutine != null)
+            yield return null;
         Physics.SyncTransforms();
         Debug.Log("FBX TERRAIN // loaded " + loadedTerrainTiles.Count + " nearby modeled blocks");
         yield return null;
@@ -204,14 +206,38 @@ public sealed class DrivingCore : MonoBehaviour
         // gated by the cell change below.
         if (!force && hasStreamedCenter && center == streamedCenter)
         {
-            UpdateLoadedTerrainLods(position, settings, center);
-            return;
+            // Begin the next ring while the vehicle is still inside the
+            // current tile. This moves AssetBundle IO and prefab integration
+            // away from the exact boundary frame where the hitch is visible.
+            float localX = Mathf.Repeat(position.x - settings.worldOrigin.x, settings.tileSize);
+            float localZ = Mathf.Repeat(position.z - settings.worldOrigin.z, settings.tileSize);
+            float edge = Mathf.Min(Mathf.Min(localX, settings.tileSize - localX),
+                                   Mathf.Min(localZ, settings.tileSize - localZ));
+            if (edge > 224f || (hasPrefetchedCenter && prefetchedCenter == center))
+            {
+                UpdateLoadedTerrainLods(position, settings, center);
+                return;
+            }
+            prefetchedCenter = center;
+            hasPrefetchedCenter = true;
+        }
+        else if (!hasStreamedCenter || center != streamedCenter)
+        {
+            prefetchedCenter = center;
+            hasPrefetchedCenter = false;
         }
         streamedCenter = center;
         hasStreamedCenter = true;
 
         int loadRadius = settings.GetPreloadRadius();
         int unloadRadius = Mathf.Max(loadRadius + 1, settings.unloadRadius);
+        // The square preload radius is only an indexing convenience. Loading
+        // every corner of that square made a cell crossing instantiate dozens
+        // of tiles that could not contribute a pixel to the view. Keep a
+        // small one-tile safety margin, but reject tiles outside the actual
+        // view circle before they enter the streaming queue.
+        float preloadDistance = settings.GetVisualDistance() + settings.tileSize;
+        float preloadDistanceSq = preloadDistance * preloadDistance;
         List<TerrainTileRecord> candidates = new List<TerrainTileRecord>();
         for (int y = center.y - loadRadius; y <= center.y + loadRadius; y++)
         for (int x = center.x - loadRadius; x <= center.x + loadRadius; x++)
@@ -220,12 +246,31 @@ public sealed class DrivingCore : MonoBehaviour
             if (!terrainIndex.TryGet(new Vector2Int(x, y), out record) || record == null ||
                 loadedTerrainTiles.ContainsKey(record.coordinate) ||
                 pendingTerrainCoordinates.Contains(record.coordinate)) continue;
+            if (record.bounds.SqrDistance(position) > preloadDistanceSq) continue;
             candidates.Add(record);
+        }
+        Vector3 travelDirection = Vector3.zero;
+        if (Player != null)
+        {
+            Rigidbody vehicleBody = Player.GetComponent<Rigidbody>();
+            if (vehicleBody != null) travelDirection = vehicleBody.linearVelocity;
+            if (travelDirection.sqrMagnitude < 4f) travelDirection = Player.transform.right;
+            travelDirection.y = 0f;
+            if (travelDirection.sqrMagnitude > 0.001f) travelDirection.Normalize();
         }
         candidates.Sort((a, b) =>
         {
             float da = (a.bounds.center - position).sqrMagnitude;
             float db = (b.bounds.center - position).sqrMagnitude;
+            if (settings.prioritizeForward && travelDirection.sqrMagnitude > 0.001f)
+            {
+                float aheadA = Vector3.Dot(a.bounds.center - position, travelDirection);
+                float aheadB = Vector3.Dot(b.bounds.center - position, travelDirection);
+                // Behind tiles are still loaded, but never delay the forward
+                // ring that the vehicle is about to enter.
+                da += Mathf.Max(0f, -aheadA) * settings.tileSize * 2f;
+                db += Mathf.Max(0f, -aheadB) * settings.tileSize * 2f;
+            }
             return da.CompareTo(db);
         });
         for (int i = 0; i < candidates.Count; i++)
@@ -258,7 +303,10 @@ public sealed class DrivingCore : MonoBehaviour
         yield return null;
         while (pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0)
         {
-            if (pendingTerrainUnloads.Count > 0)
+            // Forward terrain and its colliders must win the streaming budget.
+            // Destroying an old tile first can trigger MeshCollider broadphase
+            // work exactly at a boundary and make the vehicle hitch.
+            if (pendingTerrainUnloads.Count > 0 && pendingTerrainLoads.Count == 0)
             {
                 while (!TryBeginTerrainWork()) yield return null;
                 Destroy(pendingTerrainUnloads.Dequeue());
@@ -272,26 +320,8 @@ public sealed class DrivingCore : MonoBehaviour
             int distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
             if (distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
             {
-                ResourceRequest request = Resources.LoadAsync<GameObject>(record.resourcePath);
-                yield return request;
-                GameObject prefab = request.asset as GameObject;
-                if (prefab != null)
-                {
-                    Transform lod0 = prefab.transform.Find("LOD0");
-                    MeshFilter filter = lod0 == null ? null : lod0.GetComponent<MeshFilter>();
-                    Mesh mesh = filter == null ? null : filter.sharedMesh;
-                    // Readable generated meshes can be cooked on a worker.
-                    // Hold the prefab reference and finish the job before instantiation.
-                    if (mesh != null && mesh.isReadable)
-                    {
-                        collisionBakeJob = new CollisionBakeJob { meshId = mesh.GetEntityId() }.Schedule();
-                        collisionBakePending = true;
-                        JobHandle.ScheduleBatchedJobs();
-                        while (!collisionBakeJob.IsCompleted) yield return null;
-                        collisionBakeJob.Complete();
-                        collisionBakePending = false;
-                    }
-                }
+                GameObject prefab = null;
+                yield return TerrainPrefabStore.LoadAsync(record.resourcePath, value => prefab = value);
                 // Recheck after IO: the player may already be in another cell.
                 viewer = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
                 currentCenter = settings.WorldToTile(viewer);
@@ -310,7 +340,10 @@ public sealed class DrivingCore : MonoBehaviour
                     // main thread. Keep that work below a small per-frame
                     // budget so crossing a cell cannot consume a whole
                     // render frame.
-                    AsyncInstantiateOperation.SetIntegrationTimeMS(1.5f);
+                    // Keep hierarchy integration below a millisecond so a
+                    // prefetched tile cannot consume the whole frame while
+                    // the vehicle is still moving at speed.
+                    AsyncInstantiateOperation.SetIntegrationTimeMS(0.75f);
                     yield return instantiate;
                     while (!TryBeginTerrainWork()) yield return null;
                     if (instantiate.isDone && instantiate.Result != null && instantiate.Result.Length > 0)
@@ -324,6 +357,13 @@ public sealed class DrivingCore : MonoBehaviour
                             {
                                 tile.SetCollisionEnabled(false);
                                 tile.Initialize(record, settings, false, viewer);
+                                // WheelCollider vehicles can cross a tile seam in
+                                // a single physics step.  Do not leave a newly
+                                // integrated tile visible but non-colliding until
+                                // the throttled LOD scan reaches it: that creates
+                                // a brief drop/recontact impulse at the seam.
+                                if (tile.WantsCollision(viewer, settings))
+                                    tile.SetCollisionEnabled(true);
                             }
                             loadedTerrainTiles.Add(record.coordinate, tileObject);
                         }
@@ -338,7 +378,6 @@ public sealed class DrivingCore : MonoBehaviour
 
     void OnDestroy()
     {
-        if (collisionBakePending) collisionBakeJob.Complete();
         Shader.SetGlobalVector("_VoyageTerrainView", Vector4.zero);
         foreach (GameObject tile in loadedTerrainTiles.Values)
             if (tile != null) Destroy(tile);
@@ -348,11 +387,27 @@ public sealed class DrivingCore : MonoBehaviour
 
     void UpdateLoadedTerrainLods(Vector3 position, TerrainChunkSettings settings, Vector2Int center)
     {
+        // LOD transitions do not need render-frame precision. Scanning every
+        // loaded tile each frame competes with the vehicle and grass systems,
+        // especially while a new ring is being integrated. Updating on
+        // alternating frames halves that steady-state work; the wheel contact
+        // grace in VehicleTerrainFollower covers the resulting one-step
+        // collider activation interval.
+        if ((Time.frameCount & 1) != 0) return;
         TerrainTileRuntime nextActivation = null;
         TerrainTileRuntime nextGrass = null;
-        TerrainTileRuntime nextDeactivation = null;
         float activationDistance = float.MaxValue;
         float grassDistance = float.MaxValue;
+        // GrassFlow patch loading creates GPU buffers and uploads density
+        // textures. Do not do that for every preloaded terrain tile: the
+        // player cannot see grass beyond the authored fade band anyway.
+        float grassPreparationDistance = Mathf.Min(settings.grassFadeEnd + 32f, 180f);
+        float grassPreparationDistanceSq = grassPreparationDistance * grassPreparationDistance;
+        // GrassFlow patch assignment can upload a sizeable GPU buffer. Never
+        // schedule that upload while terrain IO/instantiation is still queued;
+        // doing both on a streaming boundary creates a visible catch-up hitch
+        // that feels like the vehicle moved backwards and forwards.
+        bool allowGrassPreparation = pendingTerrainLoads.Count == 0 && pendingTerrainUnloads.Count == 0;
         foreach (KeyValuePair<Vector2Int, GameObject> pair in loadedTerrainTiles)
         {
             TerrainTileRuntime tile = pair.Value == null ? null : pair.Value.GetComponent<TerrainTileRuntime>();
@@ -365,15 +420,15 @@ public sealed class DrivingCore : MonoBehaviour
                 nextActivation = tile;
                 activationDistance = distance;
             }
-            else if (!collisionWanted && tile.CollisionEnabled) nextDeactivation = tile;
-            if (collisionWanted && tile.NeedsGrassInitialization && distance < grassDistance)
+            if (allowGrassPreparation && collisionWanted && tile.NeedsGrassInitialization &&
+                distance <= grassPreparationDistanceSq && distance < grassDistance)
             {
                 nextGrass = tile;
                 grassDistance = distance;
             }
         }
         // One expensive action across the loader and activation loop per frame.
-        // Near collision/grass takes priority over distant activation and cleanup.
+        // Near collision/grass takes priority over distant activation.
         if (nextActivation != null && activationDistance <= grassDistance)
         {
             if (TryBeginTerrainWork())
@@ -384,7 +439,10 @@ public sealed class DrivingCore : MonoBehaviour
             if (TryBeginTerrainWork())
                 using (InitializeGrassMarker.Auto()) nextGrass.InitializeGrass();
         }
-        else if (nextDeactivation != null && TryBeginTerrainWork()) nextDeactivation.SetCollisionEnabled(false);
+        // Never disable an already-cooked static collider while it remains
+        // loaded. Removing it from PhysX broadphase at the collision radius
+        // creates the same periodic boundary spike as enabling a new tile;
+        // the unload queue removes the object once it is genuinely distant.
     }
 
     bool ReadKeyDown(KeyCode key)

@@ -91,7 +91,7 @@ namespace GrassFlow.Editor
 
         public static Mesh ReadWorldMesh(TerrainTileRecord record)
         {
-            var prefab = Resources.Load<GameObject>(record.resourcePath);
+            var prefab = TerrainPrefabStore.LoadInEditor(record.resourcePath);
             if (prefab == null) return null;
             var runtime = prefab.GetComponent<TerrainTileRuntime>();
             var roots = new SerializedObject(runtime).FindProperty("lodRoots");

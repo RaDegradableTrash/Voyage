@@ -64,6 +64,8 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         public Vector3 groundNormal;
         [System.NonSerialized] public bool contactFresh;
         [System.NonSerialized] public bool landingContact;
+        [System.NonSerialized] public int missedContactFrames;
+        [System.NonSerialized] public Collider contactCollider;
     }
 
     readonly WheelData[] wheels = new WheelData[4];
@@ -310,6 +312,8 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                 Vector3.down, raycastBuffer, castLength + groundDetectionDistance,
                 groundLayers, QueryTriggerInteraction.Ignore);
             float nearest = float.MaxValue;
+            float previousColliderDistance = float.MaxValue;
+            RaycastHit previousColliderHit = default(RaycastHit);
             for (int h = 0; h < hitCount; h++)
             {
                 RaycastHit hit = raycastBuffer[h];
@@ -319,6 +323,20 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                     nearest = hit.distance;
                     wheel.hit = hit;
                 }
+                if (hit.collider == wheel.contactCollider && hit.distance < previousColliderDistance)
+                {
+                    previousColliderDistance = hit.distance;
+                    previousColliderHit = hit;
+                }
+            }
+            // Adjacent streamed tiles can overlap by a few centimeters. Keep
+            // the previous collider when it is effectively as close as the
+            // new nearest hit; otherwise the suspension force alternates at
+            // the seam and the vehicle jolts fore/aft every physics step.
+            if (previousColliderDistance <= nearest + 0.12f)
+            {
+                nearest = previousColliderDistance;
+                wheel.hit = previousColliderHit;
             }
 
             Vector3 contactPoint;
@@ -334,6 +352,26 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                 found = TrySampleRuntimeTerrain(origin, out contactPoint, out normal);
             }
 
+            // A streamed MeshCollider can spend one physics step being
+            // enabled/cooked while the wheel is already crossing its seam.
+            // Dropping suspension and drive force for that single failed cast
+            // makes the body visibly twitch. Reuse the last valid contact for
+            // at most two fixed steps, and only while the wheel is still
+            // within its physical extension range; this cannot keep an
+            // airborne wheel grounded indefinitely.
+            if (!found && wasWheelGrounded && wheel.missedContactFrames < 2)
+            {
+                float previousDistance = origin.y - wheel.contactPoint.y;
+                if (previousDistance - tireRadius <= suspensionLength + maxExtension + 0.2f)
+                {
+                    found = true;
+                    contactPoint = wheel.contactPoint;
+                    normal = wheel.groundNormal.sqrMagnitude > 0.01f ? wheel.groundNormal : Vector3.up;
+                    wheel.missedContactFrames++;
+                }
+            }
+            if (found) wheel.missedContactFrames = 0;
+
             if (found)
             {
                 float distance = origin.y - contactPoint.y;
@@ -345,7 +383,13 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                     wheel.landingContact = !wasWheelGrounded;
                     wheel.contactPoint = contactPoint;
                     wheel.groundNormal = normal;
-                    wheel.suspensionTravel = travel;
+                    // Smooth the measured travel at collider seams. The
+                    // contact hysteresis above prevents surface swapping;
+                    // this second filter prevents a tiny height quantization
+                    // difference from becoming a full spring-force impulse.
+                    wheel.suspensionTravel = wasWheelGrounded
+                        ? Mathf.Lerp(wheel.suspensionTravel, travel, 0.5f) : travel;
+                    wheel.contactCollider = nearest < float.MaxValue ? wheel.hit.collider : null;
                 }
             }
 

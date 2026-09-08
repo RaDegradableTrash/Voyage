@@ -103,6 +103,9 @@ namespace Voyage.Lighting
             CurrentStartDistance = Mathf.Lerp(authoredEnd, authoredStart, contribution);
             CurrentEndDistance = Mathf.Lerp(100000f, authoredEnd, contribution);
             bool fogActive = enableFog && contribution > .001f;
+            // Fog is enabled at runtime, not in the saved scene. GraphicsSettings
+            // must retain fog variants explicitly; automatic scene-based stripping
+            // otherwise makes this switch ineffective in standalone players.
             RenderSettings.fog = fogActive;
             RenderSettings.fogMode = FogMode.Linear;
             RenderSettings.fogColor = CurrentColor;
