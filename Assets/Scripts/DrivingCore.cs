@@ -390,9 +390,8 @@ public sealed class DrivingCore : MonoBehaviour
         // LOD transitions do not need render-frame precision. Scanning every
         // loaded tile each frame competes with the vehicle and grass systems,
         // especially while a new ring is being integrated. Updating on
-        // alternating frames halves that steady-state work; the wheel contact
-        // grace in VehicleTerrainFollower covers the resulting one-step
-        // collider activation interval.
+        // alternating frames halves that steady-state work; collision
+        // activation is handled separately by the prioritized work queue.
         if ((Time.frameCount & 1) != 0) return;
         TerrainTileRuntime nextActivation = null;
         TerrainTileRuntime nextGrass = null;

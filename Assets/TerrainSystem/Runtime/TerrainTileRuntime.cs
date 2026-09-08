@@ -94,9 +94,6 @@ namespace Voyage.TerrainSystem
             // The baked LOD0 edges are already snapped to shared heights. Do
             // not add a second overlapping seam surface: WheelCollider can
             // alternate between coplanar contacts and create its own chatter.
-            // Existing baked prefabs may contain legacy skirts with duplicate
-            // windings. Keep the terrain surface authoritative until those
-            // prefabs are rebaked with the corrected skirt builder.
             if (useHlod) SetCollisionEnabled(false);
             int initialLod = useHlod ? 3 : CalculateLod(viewerPosition);
             SetLod(initialLod, true);
