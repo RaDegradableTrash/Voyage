@@ -10,6 +10,7 @@ public class StartProcedure : MonoBehaviour
     private bool leftPumpOn;
     private bool rightPumpOn;
     private bool engineOn;
+    private Coroutine pendingShutdown;
 
     public event System.Action OnStateChanged;
 
@@ -90,7 +91,7 @@ public class StartProcedure : MonoBehaviour
     {
         if (engineOn)
         {
-            StartCoroutine(ShutdownRoutine());
+            if (pendingShutdown == null) pendingShutdown = StartCoroutine(ShutdownRoutine());
             return;
         }
 
@@ -109,12 +110,8 @@ public class StartProcedure : MonoBehaviour
 
     private IEnumerator ShutdownRoutine()
     {
-        if (carControl != null)
-        {
-            carControl.SetGear(CarControl.GearMode.Park);
-        }
-
         yield return new WaitForSeconds(shutdownDelaySeconds);
+        pendingShutdown = null;
         engineOn = false;
         if (carControl != null)
         {
@@ -125,11 +122,12 @@ public class StartProcedure : MonoBehaviour
 
     public void ForceShutdownEngine()
     {
+        CancelPendingShutdown();
         engineOn = false;
         if (carControl != null)
         {
             carControl.SetEngineOn(false);
-            carControl.SetGear(CarControl.GearMode.Park);
+            // Switching off the engine preserves the selected gear and momentum.
         }
         OnStateChanged?.Invoke();
     }
@@ -142,6 +140,7 @@ public void TryAutoRestartEngine()
     // 如果引擎未启动，但有油量且启动条件满足
     if (!engineOn && CanStartEngine())
     {
+        CancelPendingShutdown();
         // 可选：自动重启，或者触发提示让玩家手动启动
         // 这里实现自动重启（如果你希望自动的话）
         engineOn = true;
@@ -156,6 +155,7 @@ public void TryAutoRestartEngine()
 
     public void ForceStartVehicle()
 {
+    CancelPendingShutdown();
     // 强制打开所有电池
     for (int i = 0; i < batteries.Length; i++)
     {
@@ -192,7 +192,13 @@ public void TryAutoRestartEngine()
         return false;
     }
 
+    void CancelPendingShutdown()
+    {
+        if (pendingShutdown != null) StopCoroutine(pendingShutdown);
+        pendingShutdown = null;
+    }
+    void OnDisable() => CancelPendingShutdown();
+
     
 }
-
 

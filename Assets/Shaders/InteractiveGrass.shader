@@ -23,6 +23,7 @@ Shader "Voyage/Grass/InteractiveLit"
         _FieldInteractionEnabled ("Field Interaction", Float) = 1
         _DistantAlphaClip ("Distant Alpha Clip", Float) = 0
         _Density ("Density", Range(0,1)) = 1
+        _TileFade ("Tile Fade", Range(0,1)) = 1
         _AmbientStrength ("Ambient Strength", Range(0,2)) = 0.75
         _DirectLightStrength ("Direct Light Strength", Range(0,2)) = 1.0
         _BladeHeight ("Blade Height", Float) = 1.0
@@ -51,27 +52,16 @@ Shader "Voyage/Grass/InteractiveLit"
             #pragma target 3.5
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            #include "GrassDistance.hlsl"
 
             TEXTURE2D(_VoyageGrassInteraction); SAMPLER(sampler_VoyageGrassInteraction);
             TEXTURE2D(_VoyageGrassPermanentInteraction); SAMPLER(sampler_VoyageGrassPermanentInteraction);
+            TEXTURE2D(_VoyageGrassFarInteraction); SAMPLER(sampler_VoyageGrassFarInteraction);
+            float4 _VoyageGrassFarWorld;
+            float _VoyageGrassFarRecovery;
             float4 _VoyageGrassInteractionWorld;
-            float4 _VoyageGrassWheelPositions[8];
-            float4 _VoyageGrassWheelDirections[8];
-            float4 _VoyageGrassWheel0;
-            float4 _VoyageGrassWheel1;
-            float4 _VoyageGrassWheel2;
-            float4 _VoyageGrassWheel3;
-            float4 _VoyageGrassWheel4;
-            float4 _VoyageGrassWheel5;
-            float4 _VoyageGrassWheelDirection0;
-            float4 _VoyageGrassWheelDirection1;
-            float4 _VoyageGrassWheelDirection2;
-            float4 _VoyageGrassWheelDirection3;
-            float4 _VoyageGrassWheelDirection4;
-            float4 _VoyageGrassWheelDirection5;
-            float _VoyageGrassWheelCount;
-            float4 _VoyageGrassVehicleData;
-            float4 _VoyageGrassVehicleParams;
+            float4 _VoyageAtmosphereColor;
+            float4 _VoyageAtmosphereRange;
             float _VoyageGrassDebugStateMachine;
             float4 _Color;
             float4 _BaseColor;
@@ -86,6 +76,8 @@ Shader "Voyage/Grass/InteractiveLit"
             float _FadeStart;
             float _FadeEnd;
             float4 _VoyageGrassWind;
+            float4 _VoyageGrassEnvironmentColor;
+            float _VoyageGrassEnvironmentLight;
             #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
             StructuredBuffer<float4x4> _VoyageGrassMatrices;
             void ConfigureProcedural()
@@ -107,6 +99,7 @@ Shader "Voyage/Grass/InteractiveLit"
             float _FieldInteractionEnabled;
             float _DistantAlphaClip;
             float _Density;
+            float _TileFade;
             float _AmbientStrength;
             float _DirectLightStrength;
             float _BladeHeight;
@@ -132,6 +125,8 @@ Shader "Voyage/Grass/InteractiveLit"
                 float bendAmount : TEXCOORD5;
                 float directBendAmount : TEXCOORD6;
                 float4 shadowCoord : TEXCOORD7;
+                half fogFactor : TEXCOORD8;
+                float densityFade : TEXCOORD9;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -156,44 +151,16 @@ Shader "Voyage/Grass/InteractiveLit"
 
                 float4 permanent = SAMPLE_TEXTURE2D_LOD(_VoyageGrassPermanentInteraction, sampler_VoyageGrassPermanentInteraction, uv, 0);
                 float permanentWeight = permanent.b * inside * edgeFade * 0.42;
-                float2 temporaryDirection = temporary.rg * 2.0 - 1.0;
-                float2 permanentDirection = permanent.rg * 2.0 - 1.0;
-                return temporaryDirection * temporaryWeight + permanentDirection * permanentWeight;
-            }
-
-            float2 SampleImmediateWheelBend(float3 positionWS)
-            {
-                float2 p = positionWS.xz;
-                float2 result = 0.0;
-                float2 d;
-                float influence;
-                d = p - _VoyageGrassWheel0.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel0.z, 0.001)); result += _VoyageGrassWheelDirection0.xy * influence * influence * _VoyageGrassWheel0.w;
-                d = p - _VoyageGrassWheel1.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel1.z, 0.001)); result += _VoyageGrassWheelDirection1.xy * influence * influence * _VoyageGrassWheel1.w;
-                d = p - _VoyageGrassWheel2.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel2.z, 0.001)); result += _VoyageGrassWheelDirection2.xy * influence * influence * _VoyageGrassWheel2.w;
-                d = p - _VoyageGrassWheel3.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel3.z, 0.001)); result += _VoyageGrassWheelDirection3.xy * influence * influence * _VoyageGrassWheel3.w;
-                d = p - _VoyageGrassWheel4.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel4.z, 0.001)); result += _VoyageGrassWheelDirection4.xy * influence * influence * _VoyageGrassWheel4.w;
-                d = p - _VoyageGrassWheel5.xy; influence = saturate(1.0 - length(d) / max(_VoyageGrassWheel5.z, 0.001)); result += _VoyageGrassWheelDirection5.xy * influence * influence * _VoyageGrassWheel5.w;
-                return result;
-            }
-
-            float2 SampleVehicleFootprintBend(float3 positionWS)
-            {
-                float2 forward = normalize(_VoyageGrassVehicleData.zw + float2(0.0001, 0.0001));
-                float2 lateral = float2(-forward.y, forward.x);
-                float2 result = 0.0;
-                float radius = max(_VoyageGrassVehicleParams.z, 0.001);
-                for (int longitudinal = -1; longitudinal <= 1; longitudinal += 2)
-                {
-                    for (int side = -1; side <= 1; side += 2)
-                    {
-                        float2 wheel = _VoyageGrassVehicleData.xy
-                                     + forward * (_VoyageGrassVehicleParams.x * longitudinal)
-                                     + lateral * (_VoyageGrassVehicleParams.y * side);
-                        float influence = saturate(1.0 - distance(positionWS.xz, wheel) / radius);
-                        result += forward * influence * influence * _VoyageGrassVehicleParams.w;
-                    }
-                }
-                return result;
+                float2 temporaryDirection = temporary.rg;
+                float2 permanentDirection = permanent.rg;
+                float2 nearBend = (temporaryDirection + permanentDirection * 0.42);
+                float2 world = _VoyageGrassInteractionWorld.xy + (uv - 0.5) * _VoyageGrassInteractionWorld.z;
+                float2 farUV = (world - _VoyageGrassFarWorld.xy) / max(_VoyageGrassFarWorld.z, 1.0) + 0.5;
+                float farInside = step(0.0, farUV.x) * step(farUV.x, 1.0) * step(0.0, farUV.y) * step(farUV.y, 1.0);
+                float2 farBend = SAMPLE_TEXTURE2D_LOD(_VoyageGrassFarInteraction, sampler_VoyageGrassFarInteraction, farUV, 0).rg;
+                farBend *= farInside * _VoyageGrassFarRecovery;
+                float nearBlend = smoothstep(0.0, 8.0, edgeDistance * _VoyageGrassInteractionWorld.z) * inside;
+                return lerp(farBend, nearBend, nearBlend);
             }
 
             float DistantDitherThreshold(float2 pixelPosition)
@@ -216,6 +183,16 @@ Shader "Voyage/Grass/InteractiveLit"
                 UNITY_SETUP_INSTANCE_ID(input);
                 Varyings output;
                 float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
+                float3 clusterPosition = TransformObjectToWorld(float3(0, 0, 0));
+                // A baked mesh has no per-cluster transform; use blade position
+                // in that legacy path instead of fading the entire tile at once.
+                #if !defined(UNITY_INSTANCING_ENABLED) && !defined(UNITY_PROCEDURAL_INSTANCING_ENABLED)
+                    clusterPosition = positionWS;
+                #endif
+                float clusterDistance = distance(clusterPosition, GetCameraPositionWS());
+                float density = VoyageGrassDensity(clusterDistance, _FadeStart, _FadeEnd);
+                float selection = VoyageGrassSelection(clusterPosition);
+                output.densityFade = 1.0 - smoothstep(density, density + 0.08, selection);
                 // Every generated grass blade is authored around a local
                 // ground plane at y=0; terrain height is carried only by the
                 // per-instance matrix translation. Do not reconstruct the
@@ -228,60 +205,14 @@ Shader "Voyage/Grass/InteractiveLit"
                 float tip = saturate(input.uv.y);
                 float temporaryWeight;
                 float recoveryAge;
-                // Keep sampling the field for diagnostics/recovery telemetry,
-                // but do not let a stale or reprojected texel bend an entire
-                // streamed tile. Actual deformation below is wheel-local.
-                float2 fieldBend = 0.0;
-                if (_FieldInteractionEnabled > 0.5)
-                    fieldBend = SampleBend(FieldUV(positionWS), temporaryWeight, recoveryAge);
-                // Direct wheel-space influence is intentionally local and is
-                // evaluated from world coordinates, so a bad tile/field
-                // reprojection can never flatten an entire grass chunk.
-                // The six-wheel distance test is expensive at this vertex
-                // count. Keep it for the close LOD where tire contact is
-                // visible; mid/far LODs still use the filtered interaction
-                // field and therefore retain the broad tire trail.
-                float2 immediateWheelBend = _ImmediateInteractionEnabled > 0.5
-                    ? SampleImmediateWheelBend(positionWS)
-                    : 0.0;
-                // The wheel array is the authoritative footprint. Do not add
-                // a second body-derived footprint here: its inferred axle
-                // spacing can overlap an adjacent streamed tile and make a
-                // whole chunk look pressed even though no tire is there.
-                float2 liveBend = immediateWheelBend * 3.5;
-                // Preserve a strong, filtered tire impression behind the
-                // vehicle, but reject the weak edge/noise of the field. This
-                // keeps the trail local instead of allowing a stale texel to
-                // flatten an entire streamed tile.
-                // Only the strong center of a recorded tire impression may
-                // contribute to deformation. Bilinear/filtering noise at the
-                // impression edge was previously enough to flatten a whole
-                // streamed tile when its texture was reprojected.
-                float historySignal = smoothstep(0.72, 0.96, temporaryWeight);
-                float2 historyDirection = normalize(fieldBend + float2(0.0001, 0.0001));
-                float2 historyBend = historyDirection * historySignal * 1.35;
-
-                // The interaction texture alpha is the recovery timer. Follow
-                // it directly so pressed grass stands back up smoothly.
-                float recoveryVariation = lerp(0.86, 1.14, input.instanceRandom.y);
-                // A missing/empty field sample means this blade has no stored
-                // tire impression yet. It must still respond to the direct
-                // wheel sample. Only apply recovery to pixels that actually
-                // contain a temporary impression; otherwise the direct bend
-                // is multiplied by zero and the wheel appears inert.
-                float hasTemporaryImpression = step(0.002, temporaryWeight);
-                float recoveryStrength = lerp(1.0,
-                                              pow(saturate(1.0 - recoveryAge), recoveryVariation),
-                                              hasTemporaryImpression);
-                // Current tire contact always wins over a weak/stale field
-                // texel. Otherwise a nearly recovered impression can still
-                // multiply the live wheel bend down to zero exactly where
-                // the next tire pass is supposed to be visible.
-                float directWheelActive = step(0.001, length(immediateWheelBend));
-                float liveRecovery = max(recoveryStrength, directWheelActive);
-                liveBend *= liveRecovery;
-                float2 interactionBend = (liveBend + historyBend) * _InteractionEnabled * _BendStrength * 1.8;
-
+                // Stored, world-space contact state is the sole source of
+                // deformation. Moving/stopping the vehicle cannot move or
+                // erase an existing impression.
+                temporaryWeight = 0.0;
+                recoveryAge = 1.0;
+                float2 fieldBend = _FieldInteractionEnabled > 0.5
+                    ? SampleBend(FieldUV(bladeRootWS), temporaryWeight, recoveryAge) : 0.0;
+                float2 interactionBend = fieldBend * _InteractionEnabled * _BendStrength;
                 float2 globalWindDirection = normalize(_VoyageGrassWind.xy + float2(0.0001, 0.0001));
                 float globalWindSpeed = _VoyageGrassWind.z > 0.0 ? _VoyageGrassWind.z : 1.0;
                 float globalGustStrength = saturate(_VoyageGrassWind.w);
@@ -295,16 +226,16 @@ Shader "Voyage/Grass/InteractiveLit"
                 float windDistanceAttenuation = lerp(1.0, 0.28, farBlend);
                 float2 wind = globalWindDirection * wave * _WindStrength * 1.35 * windDistanceAttenuation *
                               lerp(1.0, gust, globalGustStrength) * windVariation;
-                float bendTip = tip * tip * (0.35 + 0.65 * tip);
+                float bendTip = sqrt(tip);
                 // The field stores a soft, filtered tire footprint. Expand
                 // that signal before converting it to an angle so a tire
                 // impression remains visibly pressed at LOD1/LOD2 instead
                 // of looking identical to wind-only motion.
-                float interactionAmount = saturate(length(interactionBend) * 4.0);
+                float interactionAmount = saturate(length(interactionBend));
                 float windAmount = saturate(length(wind) * 1.05);
                 // Make a live tire pass visually unambiguous: the blade root
                 // remains planted while the tip can approach horizontal.
-                float bendAngle = saturate(interactionAmount * 3.2 + windAmount * 0.28) * 1.56;
+                float bendAngle = min(1.48, interactionAmount * 1.48 + windAmount * 0.22 * (1.0 - interactionAmount));
                 float2 bendDirection = normalize(interactionBend + wind * 0.38 + float2(0.0001, 0.0001));
                 float angleAtVertex = bendAngle * bendTip;
                 float bladeHeight = max(0.0, positionWS.y - bladeRootWS.y);
@@ -328,6 +259,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 output.positionWS = positionWS;
                 output.shadowCoord = TransformWorldToShadowCoord(positionWS);
                 output.positionCS = TransformWorldToHClip(positionWS);
+                output.fogFactor = ComputeFogFactor(output.positionCS.z);
                 float3 normalOS = dot(input.normalOS, input.normalOS) > 0.01 ? input.normalOS : float3(0, 1, 0);
                 float3 baseNormalWS = NormalizeNormalPerVertex(TransformObjectToWorldNormal(normalOS));
                 // Keep lighting coherent with the displaced blade. Without a
@@ -343,7 +275,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 output.farBlend = farBlend;
                 // Keep the debug channel separate from wind: a red pixel must
                 // mean direct tire influence, not merely a wind-bent blade.
-                float directAngleAtVertex = saturate(saturate(length(liveBend) * 4.0) * 3.2) * 1.56 * bendTip;
+                float directAngleAtVertex = 0.0;
                 output.bendAmount = saturate(abs(sin(angleAtVertex)));
                 output.directBendAmount = saturate(abs(sin(directAngleAtVertex)));
                 return output;
@@ -355,7 +287,8 @@ Shader "Voyage/Grass/InteractiveLit"
                 float bladeWidth = lerp(1.0, 0.16, saturate(input.uv.y));
                 clip(centerMask - max(1.0 - bladeWidth, _AlphaClip));
                 float cameraDistance = distance(input.positionWS, GetCameraPositionWS());
-                float fade = 1.0 - smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance);
+                float fade = (1.0 - smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance)) * _TileFade * input.densityFade;
+                clip(fade - 0.001);
                 float distanceGroundBlend = smoothstep(_FadeStart, max(_FadeStart + 0.01, _FadeEnd), cameraDistance);
                 if (_DistantAlphaClip > 0.5 && cameraDistance > _FadeStart)
                 {
@@ -366,12 +299,11 @@ Shader "Voyage/Grass/InteractiveLit"
                     fade = 1.0;
                 }
 
-                // Keep the authored grass color independent of sun direction
-                // and ambient light. Only the main-light shadow attenuation is
-                // applied, so external objects can shade the meadow without
-                // introducing self-lighting or card-to-card gradients.
-                Light mainLight = GetMainLight(input.shadowCoord);
-                half shadowAttenuation = saturate(mainLight.shadowAttenuation);
+                // Grass deliberately does not receive or cast realtime
+                // shadows. Match the surrounding day/night environment with
+                // a smooth global colour and brightness adjustment instead.
+                half3 environmentColor = max(_VoyageGrassEnvironmentColor.rgb, half3(0.35h, 0.35h, 0.35h));
+                half environmentLight = max(_VoyageGrassEnvironmentLight, 0.35h);
                 float macro = frac(sin(dot(floor(input.positionWS.xz * max(_MacroScale, 0.001)), float2(12.9898, 78.233))) * 43758.5453);
                 float macroStrength = lerp(_MacroStrength, 0.08, input.farBlend);
                 macro = lerp(1.0, lerp(0.82, 1.18, macro), macroStrength);
@@ -383,10 +315,9 @@ Shader "Voyage/Grass/InteractiveLit"
                 half randomVariation = lerp(0.82h, 1.12h, input.instanceRandom.y);
                 randomVariation = lerp(randomVariation, 1.0h, input.farBlend * 0.82h);
                 grassColor *= macro * randomVariation;
-                half3 color = grassColor * shadowAttenuation;
+                half3 color = grassColor * environmentColor * environmentLight;
                 if (_VoyageGrassDebugStateMachine > 0.5)
                 {
-                    float immediate = length(SampleImmediateWheelBend(input.positionWS));
                     float4 fieldSample = SAMPLE_TEXTURE2D_LOD(_VoyageGrassInteraction,
                                                                sampler_VoyageGrassInteraction,
                                                                FieldUV(input.positionWS), 0);
@@ -398,7 +329,15 @@ Shader "Voyage/Grass/InteractiveLit"
                 // The distant grass must converge toward the deep-green terrain
                 // before its alpha fades, otherwise yellow/red tips remain
                 // visible as a mismatched transparent veil.
-                color = lerp(color, _FadeColor.rgb, distanceGroundBlend * 0.82h);
+                half3 horizonColor = _VoyageAtmosphereRange.w > 0.5
+                    ? _VoyageAtmosphereColor.rgb
+                    : _FadeColor.rgb;
+                color = lerp(color, horizonColor, distanceGroundBlend * 0.82h);
+                color = MixFog(color, input.fogFactor);
+                if (any(color != color)) color = _BaseColor.rgb;
+                // Streaming and fog transitions must never expose a black
+                // card; the ground palette remains the minimum visible tone.
+                color = max(color, _RootColor.rgb * lerp(0.14h, 0.22h, environmentLight));
                 // Keep the near field fully opaque and let the terrain show
                 // through progressively in the transition band. This avoids
                 // the hard dither horizon produced by distance clip alone.

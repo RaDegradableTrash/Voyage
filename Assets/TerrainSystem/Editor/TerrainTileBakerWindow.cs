@@ -39,6 +39,12 @@ namespace Voyage.TerrainSystem.Editor
             settings = (TerrainChunkSettings)EditorGUILayout.ObjectField("Chunk Settings", settings, typeof(TerrainChunkSettings), false);
             if (settings != null)
                 settings.triangleBoundaryPolicy = (TerrainTriangleBoundaryPolicy)EditorGUILayout.EnumPopup("Boundary Cut", settings.triangleBoundaryPolicy);
+            if (settings != null)
+            {
+                settings.bakeGrass = EditorGUILayout.Toggle("Bake grass now", settings.bakeGrass);
+                if (settings.bakeGrass)
+                    EditorGUILayout.HelpBox("草地烘焙会显著增加内存和序列化时间；商业项目建议关闭，运行时按 tile 加载。", MessageType.Warning);
+            }
             descriptor = (TerrainSourceAsset)EditorGUILayout.ObjectField("Source Descriptor", descriptor, typeof(TerrainSourceAsset), false);
             index = (TerrainTileIndex)EditorGUILayout.ObjectField("Tile Index", index, typeof(TerrainTileIndex), false);
             EditorGUILayout.Space(8f);
@@ -83,7 +89,7 @@ namespace Voyage.TerrainSystem.Editor
 
         private void RunAnalyze()
         {
-            try { TerrainMeshBaker.Analyze(sourceObject, descriptor); status = "分析完成：源 FBX 未被修改。"; Repaint(); }
+            try { TerrainMeshBaker.Analyze(sourceObject, descriptor, settings); status = "分析完成：源 FBX 未被修改。"; Repaint(); }
             catch (Exception exception) { status = exception.Message; Debug.LogException(exception); }
         }
 
@@ -92,6 +98,15 @@ namespace Voyage.TerrainSystem.Editor
             settings = LoadOrCreate<TerrainChunkSettings>(SettingsPath);
             descriptor = LoadOrCreate<TerrainSourceAsset>(DescriptorPath);
             index = LoadOrCreate<TerrainTileIndex>(IndexPath);
+
+            // The descriptor is the authoritative source selection. This prevents
+            // a stale EditorWindow object reference (for example a vehicle FBX)
+            // from being analyzed or generated accidentally.
+            if (descriptor != null && !string.IsNullOrEmpty(descriptor.sourceAssetPath))
+            {
+                GameObject authoritativeSource = AssetDatabase.LoadAssetAtPath<GameObject>(descriptor.sourceAssetPath);
+                if (authoritativeSource != null) sourceObject = authoritativeSource;
+            }
 
             if (sourceObject == null)
             {
@@ -133,7 +148,7 @@ namespace Voyage.TerrainSystem.Editor
                 settings.triangleBoundaryPolicy = TerrainTriangleBoundaryPolicy.ClipDerivedMesh;
                 EditorUtility.SetDirty(settings);
                 AssetDatabase.SaveAssets();
-                TerrainMeshBaker.Generate(sourceObject, settings, descriptor, index, coordinate);
+                TerrainMeshBaker.Generate(sourceObject, settings, descriptor, index, coordinate, false);
                 status = coordinate.HasValue ? "指定地块生成完成。" : "全部地块生成完成。";
                 EnsureScenePreview();
                 Repaint();
@@ -145,8 +160,18 @@ namespace Voyage.TerrainSystem.Editor
         {
             // Regeneration is intentionally a complete, deterministic rebuild. This avoids
             // leaving stale LOD/collision assets behind after source or settings changes.
-            RunGenerate(null);
-            status = "全部地块已重新生成，Scene 预览已刷新。";
+            try
+            {
+                EnsureToolAssets();
+                settings.triangleBoundaryPolicy = TerrainTriangleBoundaryPolicy.ClipDerivedMesh;
+                EditorUtility.SetDirty(settings);
+                AssetDatabase.SaveAssets();
+                TerrainMeshBaker.Generate(sourceObject, settings, descriptor, index, null, true);
+                status = "全部地块已清理并重新生成，Scene 预览已刷新。";
+                EnsureScenePreview();
+                Repaint();
+            }
+            catch (Exception exception) { status = exception.Message; Debug.LogException(exception); }
         }
 
         private void RunRebuildGrassPrototype()
@@ -163,7 +188,10 @@ namespace Voyage.TerrainSystem.Editor
 
         private void EnsureScenePreview()
         {
-            TerrainTileScenePreview preview = FindAnyObjectByType<TerrainTileScenePreview>(FindObjectsInactive.Include);
+            TerrainTileScenePreview[] previews = FindObjectsByType<TerrainTileScenePreview>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            TerrainTileScenePreview preview = previews.Length > 0 ? previews[0] : null;
+            for (int i = 1; i < previews.Length; i++)
+                if (previews[i] != null) Undo.DestroyObjectImmediate(previews[i].gameObject);
             if (preview == null)
             {
                 GameObject root = new GameObject("Terrain Tile Scene Preview");
@@ -172,9 +200,13 @@ namespace Voyage.TerrainSystem.Editor
             }
             preview.index = index;
             preview.settings = settings;
-            preview.showGeneratedTiles = true;
+            // Do not instantiate 9792 prefab instances at the end of a bake or
+            // during editor startup. That makes the editor appear hung while
+            // creating colliders and grass components. Use runtime streaming for
+            // the full world; the editor preview is an explicit opt-in.
+            preview.showGeneratedTiles = false;
+            preview.Clear();
             EditorUtility.SetDirty(preview);
-            preview.Sync();
         }
 
         private void ClearGeneratedAssets()

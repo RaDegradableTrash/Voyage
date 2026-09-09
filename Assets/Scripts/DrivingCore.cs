@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using Unity.Profiling;
 using Voyage.TerrainSystem;
 
 /// <summary>Only the vehicle, terrain, camera and pause loop.</summary>
@@ -33,9 +34,23 @@ public sealed class DrivingCore : MonoBehaviour
     readonly Dictionary<Vector2Int, GameObject> loadedTerrainTiles = new Dictionary<Vector2Int, GameObject>();
     readonly Queue<TerrainTileRecord> pendingTerrainLoads = new Queue<TerrainTileRecord>();
     readonly HashSet<Vector2Int> pendingTerrainCoordinates = new HashSet<Vector2Int>();
+    readonly Queue<GameObject> pendingTerrainUnloads = new Queue<GameObject>();
     Coroutine terrainLoadRoutine;
     Vector2Int streamedCenter;
     bool hasStreamedCenter;
+    Vector2Int prefetchedCenter;
+    bool hasPrefetchedCenter;
+    int terrainWorkFrame = -1;
+    static readonly ProfilerMarker InstantiateTileMarker = new ProfilerMarker("Voyage.Terrain.Instantiate");
+    static readonly ProfilerMarker ActivateCollisionMarker = new ProfilerMarker("Voyage.Terrain.ActivateCollision");
+    static readonly ProfilerMarker InitializeGrassMarker = new ProfilerMarker("Voyage.Terrain.InitializeGrass");
+
+    bool TryBeginTerrainWork()
+    {
+        if (terrainWorkFrame == Time.frameCount) return false;
+        terrainWorkFrame = Time.frameCount;
+        return true;
+    }
 
     void Awake()
     {
@@ -43,6 +58,7 @@ public sealed class DrivingCore : MonoBehaviour
         grassInteraction = GetComponent<GrassInteractionSystem>();
         if (grassInteraction == null) grassInteraction = GrassInteractionSystem.Instance;
         if (grassInteraction == null) grassInteraction = gameObject.AddComponent<GrassInteractionSystem>();
+        if (GetComponent<VoyageCommandConsole>() == null) gameObject.AddComponent<VoyageCommandConsole>();
         if (GetComponent<VoyageHUD>() == null) gameObject.AddComponent<VoyageHUD>();
     }
 
@@ -87,7 +103,7 @@ public sealed class DrivingCore : MonoBehaviour
     void Update()
     {
         UpdateTerrainStreaming();
-        if (Player == null) return;
+        if (Player == null || VoyageCommandConsole.IsOpen || VoyageCommandConsole.ConsumedInputThisFrame) return;
         if (ReadKeyDown(KeyCode.P) || ReadKeyDown(KeyCode.Escape))
         {
             HudPaused = !HudPaused;
@@ -121,18 +137,62 @@ public sealed class DrivingCore : MonoBehaviour
             yield break;
         }
         Vector3 spawnPoint = new Vector3(-24f, 0f, -24f);
+        terrainIndex.RebuildLookup();
+        // A small, collider-free LOD3 backdrop survives the local streaming
+        // radius. Fog can hide its fill without erasing mountain silhouettes.
+        var horizonRequest = Resources.LoadAsync<GameObject>("TerrainSystem/Horizon/TerrainHorizon");
+        yield return horizonRequest;
+        if (horizonRequest.asset != null)
+            Instantiate((GameObject)horizonRequest.asset, Vector3.zero, Quaternion.identity, transform);
         StreamTerrain(spawnPoint, true);
-        while (loadedTerrainTiles.Count == 0 && pendingTerrainLoads.Count > 0)
+        // Do not spawn a controllable vehicle into an empty streaming bubble.
+        // The visible radius must be ready before the player can outrun it.
+        while (!AreVisibleTerrainTilesReady(spawnPoint) &&
+               (pendingTerrainLoads.Count > 0 || terrainLoadRoutine != null))
+            yield return null;
+        // Do not hand control to the vehicle while the rest of the initial
+        // preload ring is still instantiating. Starting the car here made the
+        // first few cell crossings compete with the startup queue and caused
+        // a repeating hitch that looked like a physics seam problem. The
+        // loading work remains budgeted across frames, so this is a short
+        // loading phase rather than one blocking frame.
+        while (pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0 ||
+               terrainLoadRoutine != null)
             yield return null;
         Physics.SyncTransforms();
         Debug.Log("FBX TERRAIN // loaded " + loadedTerrainTiles.Count + " nearby modeled blocks");
         yield return null;
     }
 
+    bool AreVisibleTerrainTilesReady(Vector3 position)
+    {
+        if (terrainIndex == null || terrainIndex.settings == null) return false;
+        TerrainChunkSettings settings = terrainIndex.settings;
+        Vector2Int center = settings.WorldToTile(position);
+        bool found = false;
+        for (int i = 0; i < terrainIndex.tiles.Count; i++)
+        {
+            TerrainTileRecord record = terrainIndex.tiles[i];
+            if (record == null || Mathf.Max(Mathf.Abs(record.coordinate.x - center.x),
+                                            Mathf.Abs(record.coordinate.y - center.y)) > settings.loadedRadius)
+                continue;
+            found = true;
+            GameObject tileObject;
+            if (!loadedTerrainTiles.TryGetValue(record.coordinate, out tileObject) || tileObject == null)
+                return false;
+            TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
+            if (tile != null && !tile.GrassBuildFinished) return false;
+        }
+        return found;
+    }
+
     void UpdateTerrainStreaming()
     {
         if (terrainIndex == null || terrainIndex.settings == null) return;
         Vector3 position = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
+        float visualDistance = terrainIndex.settings.GetVisualDistance();
+        Shader.SetGlobalVector("_VoyageTerrainView", new Vector4(position.x, position.z,
+            Mathf.Max(0f, visualDistance - terrainIndex.settings.tileSize), visualDistance));
         StreamTerrain(position, false);
     }
 
@@ -146,32 +206,71 @@ public sealed class DrivingCore : MonoBehaviour
         // gated by the cell change below.
         if (!force && hasStreamedCenter && center == streamedCenter)
         {
-            UpdateLoadedTerrainLods(position, settings, center);
-            return;
+            // Begin the next ring while the vehicle is still inside the
+            // current tile. This moves AssetBundle IO and prefab integration
+            // away from the exact boundary frame where the hitch is visible.
+            float localX = Mathf.Repeat(position.x - settings.worldOrigin.x, settings.tileSize);
+            float localZ = Mathf.Repeat(position.z - settings.worldOrigin.z, settings.tileSize);
+            float edge = Mathf.Min(Mathf.Min(localX, settings.tileSize - localX),
+                                   Mathf.Min(localZ, settings.tileSize - localZ));
+            if (edge > 224f || (hasPrefetchedCenter && prefetchedCenter == center))
+            {
+                UpdateLoadedTerrainLods(position, settings, center);
+                return;
+            }
+            prefetchedCenter = center;
+            hasPrefetchedCenter = true;
+        }
+        else if (!hasStreamedCenter || center != streamedCenter)
+        {
+            prefetchedCenter = center;
+            hasPrefetchedCenter = false;
         }
         streamedCenter = center;
         hasStreamedCenter = true;
 
-        int loadRadius = Mathf.Max(settings.loadedRadius, settings.preloadRadius);
+        int loadRadius = settings.GetPreloadRadius();
         int unloadRadius = Mathf.Max(loadRadius + 1, settings.unloadRadius);
-        HashSet<Vector2Int> wanted = new HashSet<Vector2Int>();
+        // The square preload radius is only an indexing convenience. Loading
+        // every corner of that square made a cell crossing instantiate dozens
+        // of tiles that could not contribute a pixel to the view. Keep a
+        // small one-tile safety margin, but reject tiles outside the actual
+        // view circle before they enter the streaming queue.
+        float preloadDistance = settings.GetVisualDistance() + settings.tileSize;
+        float preloadDistanceSq = preloadDistance * preloadDistance;
+        List<TerrainTileRecord> candidates = new List<TerrainTileRecord>();
         for (int y = center.y - loadRadius; y <= center.y + loadRadius; y++)
         for (int x = center.x - loadRadius; x <= center.x + loadRadius; x++)
-            wanted.Add(new Vector2Int(x, y));
-
-        List<TerrainTileRecord> candidates = new List<TerrainTileRecord>();
-        for (int i = 0; i < terrainIndex.tiles.Count; i++)
         {
-            TerrainTileRecord record = terrainIndex.tiles[i];
-            if (record == null || !wanted.Contains(record.coordinate) ||
+            TerrainTileRecord record;
+            if (!terrainIndex.TryGet(new Vector2Int(x, y), out record) || record == null ||
                 loadedTerrainTiles.ContainsKey(record.coordinate) ||
                 pendingTerrainCoordinates.Contains(record.coordinate)) continue;
+            if (record.bounds.SqrDistance(position) > preloadDistanceSq) continue;
             candidates.Add(record);
+        }
+        Vector3 travelDirection = Vector3.zero;
+        if (Player != null)
+        {
+            Rigidbody vehicleBody = Player.GetComponent<Rigidbody>();
+            if (vehicleBody != null) travelDirection = vehicleBody.linearVelocity;
+            if (travelDirection.sqrMagnitude < 4f) travelDirection = Player.transform.right;
+            travelDirection.y = 0f;
+            if (travelDirection.sqrMagnitude > 0.001f) travelDirection.Normalize();
         }
         candidates.Sort((a, b) =>
         {
             float da = (a.bounds.center - position).sqrMagnitude;
             float db = (b.bounds.center - position).sqrMagnitude;
+            if (settings.prioritizeForward && travelDirection.sqrMagnitude > 0.001f)
+            {
+                float aheadA = Vector3.Dot(a.bounds.center - position, travelDirection);
+                float aheadB = Vector3.Dot(b.bounds.center - position, travelDirection);
+                // Behind tiles are still loaded, but never delay the forward
+                // ring that the vehicle is about to enter.
+                da += Mathf.Max(0f, -aheadA) * settings.tileSize * 2f;
+                db += Mathf.Max(0f, -aheadB) * settings.tileSize * 2f;
+            }
             return da.CompareTo(db);
         });
         for (int i = 0; i < candidates.Count; i++)
@@ -179,9 +278,6 @@ public sealed class DrivingCore : MonoBehaviour
             pendingTerrainLoads.Enqueue(candidates[i]);
             pendingTerrainCoordinates.Add(candidates[i].coordinate);
         }
-        if (terrainLoadRoutine == null && pendingTerrainLoads.Count > 0)
-            terrainLoadRoutine = StartCoroutine(ProcessTerrainLoads(settings));
-
         UpdateLoadedTerrainLods(position, settings, center);
 
         List<Vector2Int> stale = new List<Vector2Int>();
@@ -193,56 +289,159 @@ public sealed class DrivingCore : MonoBehaviour
         for (int i = 0; i < stale.Count; i++)
         {
             GameObject tile = loadedTerrainTiles[stale[i]];
-            if (tile != null) Destroy(tile);
+            if (tile != null) pendingTerrainUnloads.Enqueue(tile);
             loadedTerrainTiles.Remove(stale[i]);
         }
+        if (terrainLoadRoutine == null && (pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0))
+            terrainLoadRoutine = StartCoroutine(ProcessTerrainLoads(settings));
     }
 
     IEnumerator ProcessTerrainLoads(TerrainChunkSettings settings)
     {
-        while (pendingTerrainLoads.Count > 0)
+        // Spread IO, initialization and destruction across frames instead
+        // of blocking the camera's frame when crossing a streaming cell.
+        yield return null;
+        while (pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0)
         {
+            // Forward terrain and its colliders must win the streaming budget.
+            // Destroying an old tile first can trigger MeshCollider broadphase
+            // work exactly at a boundary and make the vehicle hitch.
+            if (pendingTerrainUnloads.Count > 0 && pendingTerrainLoads.Count == 0)
+            {
+                while (!TryBeginTerrainWork()) yield return null;
+                Destroy(pendingTerrainUnloads.Dequeue());
+                yield return null;
+            }
+            if (pendingTerrainLoads.Count == 0) continue;
             TerrainTileRecord record = pendingTerrainLoads.Dequeue();
-            pendingTerrainCoordinates.Remove(record.coordinate);
-            Vector2Int currentCenter = settings.WorldToTile(Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f));
+            Vector3 viewer = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
+            Vector2Int currentCenter = settings.WorldToTile(viewer);
+            int loadRadius = settings.GetPreloadRadius();
             int distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
-            int loadRadius = Mathf.Max(settings.loadedRadius, settings.preloadRadius);
             if (distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
             {
-                GameObject prefab = Resources.Load<GameObject>(record.resourcePath);
-                if (prefab != null)
+                GameObject prefab = null;
+                yield return TerrainPrefabStore.LoadAsync(record.resourcePath, value => prefab = value);
+                // Recheck after IO: the player may already be in another cell.
+                viewer = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
+                currentCenter = settings.WorldToTile(viewer);
+                distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
+                if (prefab != null && distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
                 {
-                    // Instantiate one tile per frame. This prevents a camera
-                    // move from synchronously creating an entire ring of
-                    // terrain, colliders, grass buffers, and materials.
-                    GameObject tileObject = Instantiate(prefab, record.bounds.center, Quaternion.identity);
-                    tileObject.name = "FBX TERRAIN BLOCK " + record.coordinate;
-                    TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
-                    if (tile != null)
+                    // Unity's synchronous Instantiate still performs prefab
+                    // deserialization, hierarchy creation and Awake on the
+                    // streaming frame. InstantiateAsync moves the expensive
+                    // serialization work off the main thread; only the
+                    // completed object integration remains in the budgeted
+                    // section below.
+                    AsyncInstantiateOperation<GameObject> instantiate =
+                        Object.InstantiateAsync(prefab, record.bounds.center, Quaternion.identity);
+                    // Awake and hierarchy integration can still touch the
+                    // main thread. Keep that work below a small per-frame
+                    // budget so crossing a cell cannot consume a whole
+                    // render frame.
+                    // Keep hierarchy integration below a millisecond so a
+                    // prefetched tile cannot consume the whole frame while
+                    // the vehicle is still moving at speed.
+                    AsyncInstantiateOperation.SetIntegrationTimeMS(0.75f);
+                    yield return instantiate;
+                    while (!TryBeginTerrainWork()) yield return null;
+                    if (instantiate.isDone && instantiate.Result != null && instantiate.Result.Length > 0)
                     {
-                        Vector3 viewer = Player != null ? Player.transform.position : record.bounds.center;
-                        tile.Initialize(record, settings, false, viewer);
-                        tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
+                        using (InstantiateTileMarker.Auto())
+                        {
+                            GameObject tileObject = instantiate.Result[0];
+                            tileObject.name = "FBX TERRAIN BLOCK " + record.coordinate;
+                            TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
+                            if (tile != null)
+                            {
+                                tile.SetCollisionEnabled(false);
+                                tile.Initialize(record, settings, false, viewer);
+                                // WheelCollider vehicles can cross a tile seam in
+                                // a single physics step.  Do not leave a newly
+                                // integrated tile visible but non-colliding until
+                                // the throttled LOD scan reaches it: that creates
+                                // a brief drop/recontact impulse at the seam.
+                                if (tile.WantsCollision(viewer, settings))
+                                    tile.SetCollisionEnabled(true);
+                            }
+                            loadedTerrainTiles.Add(record.coordinate, tileObject);
+                        }
                     }
-                    loadedTerrainTiles.Add(record.coordinate, tileObject);
                 }
             }
-            Physics.SyncTransforms();
+            pendingTerrainCoordinates.Remove(record.coordinate);
             yield return null;
         }
         terrainLoadRoutine = null;
     }
 
+    void OnDestroy()
+    {
+        Shader.SetGlobalVector("_VoyageTerrainView", Vector4.zero);
+        foreach (GameObject tile in loadedTerrainTiles.Values)
+            if (tile != null) Destroy(tile);
+        while (pendingTerrainUnloads.Count > 0) Destroy(pendingTerrainUnloads.Dequeue());
+        if (Instance == this) Instance = null;
+    }
+
     void UpdateLoadedTerrainLods(Vector3 position, TerrainChunkSettings settings, Vector2Int center)
     {
+        // LOD transitions do not need render-frame precision. Scanning every
+        // loaded tile each frame competes with the vehicle and grass systems,
+        // especially while a new ring is being integrated. Updating on
+        // alternating frames halves that steady-state work; collision
+        // activation is handled separately by the prioritized work queue.
+        if ((Time.frameCount & 1) != 0) return;
+        TerrainTileRuntime nextActivation = null;
+        TerrainTileRuntime nextGrass = null;
+        float activationDistance = float.MaxValue;
+        float grassDistance = float.MaxValue;
+        // GrassFlow patch loading creates GPU buffers and uploads density
+        // textures. Do not do that for every preloaded terrain tile: the
+        // player cannot see grass beyond the authored fade band anyway.
+        float grassPreparationDistance = Mathf.Min(settings.grassFadeEnd + 32f, 180f);
+        float grassPreparationDistanceSq = grassPreparationDistance * grassPreparationDistance;
+        // GrassFlow patch assignment can upload a sizeable GPU buffer. Never
+        // schedule that upload while terrain IO/instantiation is still queued;
+        // doing both on a streaming boundary creates a visible catch-up hitch
+        // that feels like the vehicle moved backwards and forwards.
+        bool allowGrassPreparation = pendingTerrainLoads.Count == 0 && pendingTerrainUnloads.Count == 0;
         foreach (KeyValuePair<Vector2Int, GameObject> pair in loadedTerrainTiles)
         {
             TerrainTileRuntime tile = pair.Value == null ? null : pair.Value.GetComponent<TerrainTileRuntime>();
             if (tile == null) continue;
-            int distance = Mathf.Max(Mathf.Abs(pair.Key.x - center.x), Mathf.Abs(pair.Key.y - center.y));
-            tile.SetCollisionEnabled(settings.enableCollisionWhenLoaded && distance <= settings.collisionRadius);
-            tile.UpdateLod(position);
+            tile.UpdateVisualLod(position);
+            float distance = tile.Bounds.SqrDistance(position);
+            bool collisionWanted = tile.WantsCollision(position, settings);
+            if (collisionWanted && !tile.CollisionEnabled && distance < activationDistance)
+            {
+                nextActivation = tile;
+                activationDistance = distance;
+            }
+            if (allowGrassPreparation && collisionWanted && tile.NeedsGrassInitialization &&
+                distance <= grassPreparationDistanceSq && distance < grassDistance)
+            {
+                nextGrass = tile;
+                grassDistance = distance;
+            }
         }
+        // One expensive action across the loader and activation loop per frame.
+        // Near collision/grass takes priority over distant activation.
+        if (nextActivation != null && activationDistance <= grassDistance)
+        {
+            if (TryBeginTerrainWork())
+                using (ActivateCollisionMarker.Auto()) nextActivation.SetCollisionEnabled(true);
+        }
+        else if (nextGrass != null)
+        {
+            if (TryBeginTerrainWork())
+                using (InitializeGrassMarker.Auto()) nextGrass.InitializeGrass();
+        }
+        // Never disable an already-cooked static collider while it remains
+        // loaded. Removing it from PhysX broadphase at the collision radius
+        // creates the same periodic boundary spike as enabling a new tile;
+        // the unload queue removes the object once it is genuinely distant.
     }
 
     bool ReadKeyDown(KeyCode key)
@@ -267,6 +466,15 @@ public sealed class DrivingCore : MonoBehaviour
         Material material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
         material.name = name;
         material.color = color;
+        // Procedural fallback materials must remain readable when the key
+        // light is fully shadowed. This is still a Lit material, so realtime
+        // shadows continue to darken it instead of flattening the lighting.
+        if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", color);
+        if (material.HasProperty("_EmissionColor"))
+        {
+            material.SetColor("_EmissionColor", color * 0.32f);
+            material.EnableKeyword("_EMISSION");
+        }
         return material;
     }
 

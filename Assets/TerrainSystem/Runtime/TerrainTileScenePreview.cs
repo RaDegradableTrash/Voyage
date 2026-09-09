@@ -12,7 +12,10 @@ namespace Voyage.TerrainSystem
     {
         public TerrainTileIndex index;
         public TerrainChunkSettings settings;
-        public bool showGeneratedTiles = true;
+        // Loading thousands of prefab instances in the editor is intentionally
+        // opt-in. Runtime streaming remains unchanged and is the correct way to
+        // inspect the complete world at scale.
+        public bool showGeneratedTiles = false;
         [Min(0)] public int maxTiles = 0;
 
         private readonly Dictionary<Vector2Int, GameObject> instances = new Dictionary<Vector2Int, GameObject>();
@@ -32,7 +35,7 @@ namespace Voyage.TerrainSystem
         public void Sync()
         {
 #if UNITY_EDITOR
-            if (Application.isPlaying || syncing) return;
+            if (Application.isPlaying || syncing || UnityEditor.BuildPipeline.isBuildingPlayer) return;
             syncing = true;
             try
             {
@@ -53,7 +56,7 @@ namespace Voyage.TerrainSystem
                     wanted.Add(record.coordinate);
                     if (!instances.TryGetValue(record.coordinate, out GameObject instance) || instance == null)
                     {
-                        GameObject prefab = Resources.Load<GameObject>(record.resourcePath);
+                        GameObject prefab = TerrainPrefabStore.LoadInEditor(record.resourcePath);
                         if (prefab == null) continue;
                         instance = UnityEditor.PrefabUtility.InstantiatePrefab(prefab, previewRoot) as GameObject;
                         if (instance == null) continue;
@@ -110,6 +113,14 @@ namespace Voyage.TerrainSystem
             previewRoot = existing != null ? existing : new GameObject("__TerrainTileScenePreview").transform;
             previewRoot.SetParent(transform, false);
             previewRoot.gameObject.hideFlags = HideFlags.DontSaveInEditor | HideFlags.DontSaveInBuild;
+            // Domain reloads clear the runtime dictionary but leave the
+            // non-saved preview objects alive. Remove those orphaned children
+            // before rebuilding from the authoritative tile index.
+            if (instances.Count == 0)
+            {
+                for (int i = previewRoot.childCount - 1; i >= 0; i--)
+                    Object.DestroyImmediate(previewRoot.GetChild(i).gameObject);
+            }
         }
 #endif
     }

@@ -33,8 +33,10 @@ namespace Voyage.TerrainSystem
         public bool recalculateNormals = true;
 
         [Header("Baked grass")]
-        [Tooltip("Create one shared grass prototype during terrain baking; tile placement is generated on demand.")]
-        public bool bakeGrass = false;
+        [Tooltip("Bake deterministic per-tile grass placement so streaming never raycasts thousands of candidates at runtime.")]
+        public bool bakeGrass = true;
+        [Tooltip("Render saved GrassFlow brush patches; disable legacy runtime grass generation.")]
+        public bool usePaintedGrass;
         [Min(0.25f)] public float grassClusterSpacing = 0.34f;
         [Min(1)] public int grassBladesPerCluster = 18;
         [Min(0.05f)] public float grassClusterRadius = 0.70f;
@@ -90,6 +92,20 @@ namespace Voyage.TerrainSystem
         [Header("View-driven visual streaming")]
         [Min(0f)] public float visualDistanceOverride = 0f;
         [Min(0f)] public float visualTileMargin = 256f;
+
+        public float GetVisualDistance()
+        {
+            return visualDistanceOverride > 0f ? visualDistanceOverride :
+                Mathf.Max(tileSize * Mathf.Max(1, loadedRadius), grassFadeEnd + 40f);
+        }
+
+        public int GetPreloadRadius()
+        {
+            // Keep the complete visual circle plus an IO safety margin
+            // inside the loaded square, including at either edge of a cell.
+            return Mathf.Max(Mathf.Max(loadedRadius, preloadRadius),
+                Mathf.CeilToInt((GetVisualDistance() + visualTileMargin) / Mathf.Max(1f, tileSize)));
+        }
 
         public Vector2Int WorldToTile(Vector3 worldPosition)
         {

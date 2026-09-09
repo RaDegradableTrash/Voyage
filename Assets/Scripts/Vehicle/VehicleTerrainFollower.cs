@@ -5,6 +5,15 @@ using UnityEngine;
 [RequireComponent(typeof(Rigidbody))]
 public sealed class VehicleTerrainFollower : MonoBehaviour
 {
+    // Contact stability policy for the raycast fallback vehicle. Keeping the
+    // tolerances together makes the fallback predictable without spreading
+    // unexplained literals through the wheel solver.
+    const float TireSweepRadiusScale = 0.35f;
+    const float ContactColliderHysteresis = 0.12f;
+    const int MissedContactGraceSteps = 2;
+    const float MissedContactHeightMargin = 0.2f;
+    const float SuspensionTravelSmoothing = 0.5f;
+
     public enum VehicleState { Grounded, PartialGrounded, Airborne, Landing, Flipped, Stuck }
 
     [Header("Vehicle")]
@@ -64,6 +73,8 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
         public Vector3 groundNormal;
         [System.NonSerialized] public bool contactFresh;
         [System.NonSerialized] public bool landingContact;
+        [System.NonSerialized] public int missedContactFrames;
+        [System.NonSerialized] public Collider contactCollider;
     }
 
     readonly WheelData[] wheels = new WheelData[4];
@@ -304,12 +315,14 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
             wheel.tireForce = Vector3.zero;
 
             Vector3 castOrigin = origin + Vector3.up * groundDetectionDistance;
-            // Sweep a small tire area so a generated-mesh seam cannot make a
-            // wheel lose contact for one frame.
-            int hitCount = Physics.SphereCastNonAlloc(castOrigin, tireRadius * 0.35f,
+            // Sweep a small tire area so a narrow collider boundary cannot
+            // make a wheel lose contact for one fixed step.
+            int hitCount = Physics.SphereCastNonAlloc(castOrigin, tireRadius * TireSweepRadiusScale,
                 Vector3.down, raycastBuffer, castLength + groundDetectionDistance,
                 groundLayers, QueryTriggerInteraction.Ignore);
             float nearest = float.MaxValue;
+            float previousColliderDistance = float.MaxValue;
+            RaycastHit previousColliderHit = default(RaycastHit);
             for (int h = 0; h < hitCount; h++)
             {
                 RaycastHit hit = raycastBuffer[h];
@@ -319,6 +332,19 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                     nearest = hit.distance;
                     wheel.hit = hit;
                 }
+                if (hit.collider == wheel.contactCollider && hit.distance < previousColliderDistance)
+                {
+                    previousColliderDistance = hit.distance;
+                    previousColliderHit = hit;
+                }
+            }
+            // Adjacent streamed colliders can overlap by a few centimeters.
+            // Keep the previous contact while it is effectively as close as
+            // the new hit, preventing suspension force from alternating.
+            if (previousColliderDistance <= nearest + ContactColliderHysteresis)
+            {
+                nearest = previousColliderDistance;
+                wheel.hit = previousColliderHit;
             }
 
             Vector3 contactPoint;
@@ -334,6 +360,22 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                 found = TrySampleRuntimeTerrain(origin, out contactPoint, out normal);
             }
 
+            // Preserve a valid contact briefly while a streamed collider is
+            // being enabled. The extension check prevents this from keeping
+            // an airborne wheel grounded indefinitely.
+            if (!found && wasWheelGrounded && wheel.missedContactFrames < MissedContactGraceSteps)
+            {
+                float previousDistance = origin.y - wheel.contactPoint.y;
+                if (previousDistance - tireRadius <= suspensionLength + maxExtension + MissedContactHeightMargin)
+                {
+                    found = true;
+                    contactPoint = wheel.contactPoint;
+                    normal = wheel.groundNormal.sqrMagnitude > 0.01f ? wheel.groundNormal : Vector3.up;
+                    wheel.missedContactFrames++;
+                }
+            }
+            if (found) wheel.missedContactFrames = 0;
+
             if (found)
             {
                 float distance = origin.y - contactPoint.y;
@@ -345,7 +387,11 @@ public sealed class VehicleTerrainFollower : MonoBehaviour
                     wheel.landingContact = !wasWheelGrounded;
                     wheel.contactPoint = contactPoint;
                     wheel.groundNormal = normal;
-                    wheel.suspensionTravel = travel;
+                    // Smooth tiny height quantization changes so they do not
+                    // become a full spring-force impulse.
+                    wheel.suspensionTravel = wasWheelGrounded
+                        ? Mathf.Lerp(wheel.suspensionTravel, travel, SuspensionTravelSmoothing) : travel;
+                    wheel.contactCollider = nearest < float.MaxValue ? wheel.hit.collider : null;
                 }
             }
 

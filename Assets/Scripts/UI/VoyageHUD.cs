@@ -14,7 +14,9 @@ public sealed class VoyageHUD : MonoBehaviour
             style.normal.textColor = Color.white;
         }
         GUI.Label(new Rect(24f, 20f, 280f, 32f), Mathf.RoundToInt(core.HudSpeedKmh) + " KM/H", style);
-        GUI.Label(new Rect(24f, Screen.height - 34f, Screen.width - 48f, 24f), "WASD DRIVE   SHIFT BOOST   H LIGHTS   R RESET   P / ESC PAUSE", style);
+        GUI.Label(new Rect(24f, 52f, 280f, 32f), $"FUEL {FuelTank.SharedFuel:0.0} / {FuelTank.SharedCapacity:0}", style);
+        if (!VoyageCommandConsole.IsOpen)
+            GUI.Label(new Rect(24f, Screen.height - 34f, Screen.width - 48f, 24f), "WASD DRIVE   H LIGHTS   R RESET   P / ESC PAUSE   / COMMAND", style);
         if (!core.HudPaused) return;
         GUI.Box(new Rect(Screen.width * 0.5f - 150f, Screen.height * 0.5f - 48f, 300f, 96f), GUIContent.none);
         GUI.Label(new Rect(Screen.width * 0.5f - 100f, Screen.height * 0.5f - 18f, 200f, 28f), "PAUSED", style);

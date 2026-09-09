@@ -1,0 +1,22 @@
+#pragma kernel Stamp
+
+RWTexture2D<float4> _Field;
+float4 _StampA, _StampB, _StampDirection;
+float _StampRadius, _StampStrength;
+int _Resolution;
+int2 _PixelMin, _PixelMax;
+
+[numthreads(8,8,1)]
+void Stamp(uint3 thread : SV_DispatchThreadID)
+{
+    int2 pixel = _PixelMin + int2(thread.xy);
+    if (any(pixel >= _PixelMax)) return;
+    float2 uv = (float2(pixel) + 0.5) / _Resolution;
+    float2 ab = _StampB.xy - _StampA.xy;
+    float h = saturate(dot(uv-_StampA.xy,ab) / max(dot(ab,ab),1e-10));
+    float coverage = 1.0-smoothstep(0.35,1.0,distance(uv,_StampA.xy+ab*h) / max(_StampRadius,1e-6));
+    float pressure = coverage * _StampStrength;
+    float4 old = _Field[pixel];
+    if (pressure > old.b)
+        _Field[pixel] = float4(_StampDirection.xy * pressure, pressure, pressure);
+}

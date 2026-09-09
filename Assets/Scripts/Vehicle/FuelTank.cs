@@ -40,6 +40,17 @@ public class FuelTank : MonoBehaviour
         }
     }
 
+    public static float SharedCapacity => _sharedMaxCapacity;
+
+    /// <summary>Adds fuel once to the shared tank and returns the accepted amount.</summary>
+    public static float AddSharedFuel(float amount)
+    {
+        if (float.IsNaN(amount) || float.IsInfinity(amount) || amount <= 0f) return 0f;
+        float before = SharedFuel;
+        SharedFuel += amount;
+        return SharedFuel - before;
+    }
+
     public float currentFuel
     {
         get => _sharedFuel;
@@ -211,17 +222,6 @@ public class FuelTank : MonoBehaviour
     private void Update()
     {
         _currentRatio = Mathf.MoveTowards(_currentRatio, _targetRatio, Time.deltaTime * fillTransitionSpeed);
-
-        if (Input.GetKeyDown(KeyCode.Minus) || Input.GetKeyDown(KeyCode.KeypadMinus))
-        {
-            float amountToReduce = maxCapacity * 0.05f;
-            currentFuel -= amountToReduce;
-        }
-        if (Input.GetKeyDown(KeyCode.Equals) || Input.GetKeyDown(KeyCode.KeypadEquals))
-        {
-            float amountToAdd = maxCapacity * 0.05f;
-            currentFuel += amountToAdd;
-        }
 
         if (displayObject != null && displayObject.activeSelf && _proceduralMesh != null)
         {
@@ -560,11 +560,7 @@ public class FuelTank : MonoBehaviour
 
     public bool AddFuel(float amount)
     {
-        if (currentFuel >= maxCapacity)
-            return false;
-
-        currentFuel += amount;
-        return true;
+        return AddSharedFuel(amount) > 0f;
     }
 
     public void UpdateUI()
@@ -574,5 +570,3 @@ public class FuelTank : MonoBehaviour
         enabled = true;
     }
 }
-
-
