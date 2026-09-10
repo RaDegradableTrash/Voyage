@@ -80,6 +80,8 @@ namespace Voyage.TerrainSystem
         // scan/replay thousands of redundant points.
         const int HistoryCapacity = 16384;
         const float HistorySampleSpacing = 0.65f;
+        const int MaxFieldReplayQueue = 2048;
+        const int MaxFarReplayQueue = 4096;
         readonly ContactHistory[] contactHistory = new ContactHistory[HistoryCapacity];
         readonly Dictionary<Transform, Vector3> lastHistoryPosition = new Dictionary<Transform, Vector3>();
         int historyStart, historyCount;
@@ -794,6 +796,7 @@ namespace Voyage.TerrainSystem
                         if (preserved &&
                             Mathf.Abs(entry.from.x - previousCenter.x) < safeHalf && Mathf.Abs(entry.to.x - previousCenter.x) < safeHalf &&
                             Mathf.Abs(entry.from.z - previousCenter.z) < safeHalf && Mathf.Abs(entry.to.z - previousCenter.z) < safeHalf) continue;
+                        if (farReplay.Count >= MaxFarReplayQueue) farReplay.Dequeue();
                         farReplay.Enqueue(entry);
                     }
                 }
@@ -877,6 +880,7 @@ namespace Voyage.TerrainSystem
                         Mathf.Min(entry.from.z, entry.to.z) - entry.radius <= previousCenter.z + previousHalf)
                         continue;
                 }
+                if (historyReplay.Count >= MaxFieldReplayQueue) historyReplay.Dequeue();
                 historyReplay.Enqueue(entry);
             }
         }
