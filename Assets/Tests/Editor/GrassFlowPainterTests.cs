@@ -32,6 +32,26 @@ namespace Voyage.Tests.Editor
         }
 
         static ScriptableObject streamedResult;
+        [Test]
+        public void AssigningAuthoredPatchDoesNotTransferOwnershipToTile()
+        {
+            var patch = Resources.Load<ScriptableObject>("GrassFlow/Tiles/Grass_-1_-1");
+            Assert.That(patch, Is.Not.Null);
+            var host = new GameObject("Grass ownership test");
+            host.SetActive(false);
+            try
+            {
+                var tile = host.AddComponent(Find("Voyage.TerrainSystem.TerrainTileRuntime"));
+                Call(tile, "AssignGrassPatch", patch);
+                Assert.That(Get(tile, "generatedPatch"), Is.Null,
+                    "Borrowed patches must not be destroyed when their tile unloads.");
+                Object.DestroyImmediate(host);
+                Assert.That(patch != null, Is.True);
+                Assert.That((Object)Get(patch, "surface") != null, Is.True);
+                Assert.That((Object)Get(patch, "density") != null, Is.True);
+            }
+            finally { if (host != null) Object.DestroyImmediate(host); }
+        }
         static void ReceiveStreamed<T>(T value) { streamedResult = value as ScriptableObject; }
         [Test]
         public void UnpaintedFarTileBuildsGrassFromTransformedMesh()

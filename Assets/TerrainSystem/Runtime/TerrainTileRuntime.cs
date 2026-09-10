@@ -15,12 +15,19 @@ namespace Voyage.TerrainSystem
         private static PhysicsMaterial terrainContactMaterial;
         private static bool terrainShaderDiagnosticLogged;
         private int currentLod = -1;
+        static readonly Unity.Profiling.ProfilerMarker AwakeMarker = new Unity.Profiling.ProfilerMarker("Voyage.Terrain.Awake");
         private TerrainChunkSettings settings;
         private bool collisionStateKnown;
         private bool collisionState;
         private InteractiveGrassTile configuredGrass;
         private bool paintedGrassResolved;
         private GrassFlow.GrassFlowPatch generatedPatch;
+        // Runtime fallback patches are generated when an authored GrassFlow
+        // asset is missing. Keep them by tile coordinate so streaming the
+        // same area again does not repeat raycasts, texture uploads and GPU
+        // buffer creation after every unload/reload cycle.
+        private static readonly System.Collections.Generic.Dictionary<Vector2Int, GrassFlow.GrassFlowPatch> runtimePatchCache =
+            new System.Collections.Generic.Dictionary<Vector2Int, GrassFlow.GrassFlowPatch>();
         private MeshRenderer[][] lodRenderers;
         private MaterialPropertyBlock lodProperties;
         private int outgoingLod = -1;
@@ -60,6 +67,7 @@ namespace Voyage.TerrainSystem
 
         private void Awake()
         {
+            using var awakeScope = AwakeMarker.Auto();
             DisableGeneratedSkirts();
             EnsureCollisionCollider();
             // Bind a valid terrain shader before the streaming system selects
@@ -179,31 +187,66 @@ namespace Voyage.TerrainSystem
 
         private void OnDestroy()
         {
-            if (generatedPatch != null)
+            // Cached runtime fallback patches intentionally outlive streamed
+            // tile instances. Editor preview patches are not cached and must
+            // still be released with their tile.
+            if (generatedPatch != null && !runtimePatchCache.ContainsValue(generatedPatch))
             {
-                Destroy(generatedPatch.surface); Destroy(generatedPatch.density); Destroy(generatedPatch);
+                Destroy(generatedPatch.surface);
+                Destroy(generatedPatch.density);
+                Destroy(generatedPatch);
             }
         }
 
         private System.Collections.IEnumerator LoadPaintedGrass()
         {
+            GrassFlow.GrassFlowPatch cached;
+            if (runtimePatchCache.TryGetValue(coordinate, out cached) && cached != null)
+            {
+                InteractiveGrassTile legacyCached = GetComponent<InteractiveGrassTile>();
+                if (legacyCached != null) legacyCached.enabled = false;
+                AssignGrassPatch(cached);
+                yield break;
+            }
             var request = Resources.LoadAsync<GrassFlow.GrassFlowPatch>($"GrassFlow/Tiles/Grass_{coordinate.x}_{coordinate.y}");
             yield return request;
             var patch = request.asset as GrassFlow.GrassFlowPatch;
             if (patch != null)
             {
-                var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
-                if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
-                renderer.patch = patch;
+                InteractiveGrassTile legacy = GetComponent<InteractiveGrassTile>();
+                if (legacy != null) legacy.enabled = false;
+                AssignGrassPatch(patch);
             }
             else if (lodRoots[0] != null)
+            {
+                // Generated terrain already carries baked placement data for
+                // nearly every tile. Reuse that data when a painted patch is
+                // unavailable; constructing a GrassFlow renderer here would
+                // upload a new GPU field on every streamed tile boundary.
+                InteractiveGrassTile legacy = GetComponent<InteractiveGrassTile>();
+                if (legacy != null && ((legacy.bakedClusters != null && legacy.bakedClusters.Count > 0) || legacy.bakedMesh != null))
+                {
+                    legacy.enabled = true;
+                    legacy.Initialize(bounds);
+                    legacy.SetLod(currentLod);
+                    yield break;
+                }
                 yield return StreamedGrassSurface.Build(lodRoots[0].GetComponentsInChildren<MeshFilter>(true), bounds, value =>
                 {
-                    generatedPatch = value;
-                    var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
-                    if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
-                    renderer.patch = value;
+                    runtimePatchCache[coordinate] = value;
+                    AssignGrassPatch(value);
                 });
+            }
+        }
+
+        private void AssignGrassPatch(GrassFlow.GrassFlowPatch patch)
+        {
+            if (patch == null) return;
+            // Assignment borrows the patch; it does not transfer ownership.
+            // Authored Resources assets must never enter tile destruction.
+            var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
+            if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
+            renderer.patch = patch;
         }
 
         private int CalculateLod(Vector3 viewerPosition)
@@ -396,6 +439,7 @@ namespace Voyage.TerrainSystem
             bool changed = false;
             for (int i = 0; i < materials.Length; i++)
             {
+                if (materials[i] == grasslandFallbackMaterial) continue;
                 materials[i] = grasslandFallbackMaterial;
                 changed = true;
             }

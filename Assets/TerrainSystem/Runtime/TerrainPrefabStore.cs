@@ -12,6 +12,8 @@ namespace Voyage.TerrainSystem
         public const string BundleRelativePath = "VoyageTerrain/" + BundleName;
         static AssetBundle bundle;
         static AssetBundleCreateRequest opening;
+        static readonly System.Collections.Generic.Dictionary<string, GameObject> prefabCache =
+            new System.Collections.Generic.Dictionary<string, GameObject>();
 
         public static string AssetPath(string resourcePath) => PrefabFolder + "/" + Path.GetFileName(resourcePath) + ".prefab";
 
@@ -21,23 +23,26 @@ namespace Voyage.TerrainSystem
             if (bundle != null) bundle.Unload(false);
             bundle = null;
             opening = null;
+            prefabCache.Clear();
         }
 
 #if UNITY_EDITOR
+        public const string EditorBundleSessionKey = "Voyage.ValidatedTerrainBundle";
         public static GameObject LoadInEditor(string resourcePath) =>
             UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(AssetPath(resourcePath));
 #endif
 
         public static IEnumerator LoadAsync(string resourcePath, Action<GameObject> completed)
         {
-#if UNITY_EDITOR
-            // Painting and play mode use the editable source assets directly.
-            yield return null;
-            completed(LoadInEditor(resourcePath));
-#else
             if (bundle == null)
             {
+#if UNITY_EDITOR
+                // Validated before Play by VoyageTerrainPlayCache. Painting
+                // continues to use LoadInEditor; driving uses the player path.
+                string path = UnityEditor.SessionState.GetString(EditorBundleSessionKey, "");
+#else
                 string path = Path.Combine(Application.streamingAssetsPath, BundleRelativePath);
+#endif
                 if (!File.Exists(path))
                 {
                     Debug.LogError("Terrain package is missing: " + path);
@@ -54,12 +59,19 @@ namespace Voyage.TerrainSystem
                     yield break;
                 }
             }
-            var request = bundle.LoadAssetAsync<GameObject>(AssetPath(resourcePath));
+            string assetPath = AssetPath(resourcePath);
+            GameObject cached;
+            if (prefabCache.TryGetValue(assetPath, out cached) && cached != null)
+            {
+                completed(cached);
+                yield break;
+            }
+            var request = bundle.LoadAssetAsync<GameObject>(assetPath);
             yield return request;
             var prefab = request.asset as GameObject;
             if (prefab == null) Debug.LogError("Terrain tile is missing from package: " + resourcePath);
+            else prefabCache[assetPath] = prefab;
             completed(prefab);
-#endif
         }
     }
 }

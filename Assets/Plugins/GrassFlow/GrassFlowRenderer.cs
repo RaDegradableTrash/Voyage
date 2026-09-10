@@ -19,6 +19,7 @@ namespace GrassFlow
         int generate, cull, capacity, revision = -1;
         GrassFlowPatch.GrassStyle activeStyle;
         static int preparationFrame = -1;
+        static readonly Unity.Profiling.ProfilerMarker PrepareMarker = new Unity.Profiling.ProfilerMarker("Voyage.Grass.Prepare");
         public bool Ready => source != null;
 
         sealed class CameraBuffers
@@ -45,6 +46,7 @@ namespace GrassFlow
         // Avoid several megabytes of allocation/upload in beginCameraRendering.
         public bool PrepareForCamera(Camera camera)
         {
+            using var prepareScope = PrepareMarker.Auto();
             if (patch == null || camera == null) return false;
             bool ready = source != null && capacity == patch.Capacity && activeStyle == patch.style && revision == patch.revision && cameras.ContainsKey(camera);
             if (ready) return true;

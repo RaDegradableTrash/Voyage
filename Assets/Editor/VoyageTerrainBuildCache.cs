@@ -16,6 +16,13 @@ public sealed class VoyageTerrainBuildCache : BuildPlayerProcessor
     public override int callbackOrder => -1000;
     static string CacheDirectory(BuildTarget target) => "Library/VoyageTerrainBuildCache/" + target;
 
+    public static string PrepareForEditorPlay()
+    {
+        BuildTarget target = EditorUserBuildSettings.activeBuildTarget;
+        Ensure(target);
+        return Path.GetFullPath(Path.Combine(CacheDirectory(target), TerrainPrefabStore.BundleName));
+    }
+
     public static void Ensure(BuildTarget target)
     {
         var timer = Stopwatch.StartNew();
