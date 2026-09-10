@@ -185,8 +185,15 @@ namespace Voyage.TerrainSystem
 
         private void OnDestroy()
         {
-            // Cached fallback patches intentionally outlive streamed tile
-            // instances and are reused by coordinate on the next load.
+            // Cached runtime fallback patches intentionally outlive streamed
+            // tile instances. Editor preview patches are not cached and must
+            // still be released with their tile.
+            if (generatedPatch != null && !runtimePatchCache.ContainsValue(generatedPatch))
+            {
+                Destroy(generatedPatch.surface);
+                Destroy(generatedPatch.density);
+                Destroy(generatedPatch);
+            }
         }
 
         private System.Collections.IEnumerator LoadPaintedGrass()
@@ -194,6 +201,8 @@ namespace Voyage.TerrainSystem
             GrassFlow.GrassFlowPatch cached;
             if (runtimePatchCache.TryGetValue(coordinate, out cached) && cached != null)
             {
+                InteractiveGrassTile legacyCached = GetComponent<InteractiveGrassTile>();
+                if (legacyCached != null) legacyCached.enabled = false;
                 AssignGrassPatch(cached);
                 yield break;
             }
@@ -202,15 +211,30 @@ namespace Voyage.TerrainSystem
             var patch = request.asset as GrassFlow.GrassFlowPatch;
             if (patch != null)
             {
+                InteractiveGrassTile legacy = GetComponent<InteractiveGrassTile>();
+                if (legacy != null) legacy.enabled = false;
                 AssignGrassPatch(patch);
             }
             else if (lodRoots[0] != null)
+            {
+                // Generated terrain already carries baked placement data for
+                // nearly every tile. Reuse that data when a painted patch is
+                // unavailable; constructing a GrassFlow renderer here would
+                // upload a new GPU field on every streamed tile boundary.
+                InteractiveGrassTile legacy = GetComponent<InteractiveGrassTile>();
+                if (legacy != null && ((legacy.bakedClusters != null && legacy.bakedClusters.Count > 0) || legacy.bakedMesh != null))
+                {
+                    legacy.enabled = true;
+                    legacy.Initialize(bounds);
+                    legacy.SetLod(currentLod);
+                    yield break;
+                }
                 yield return StreamedGrassSurface.Build(lodRoots[0].GetComponentsInChildren<MeshFilter>(true), bounds, value =>
                 {
-                    generatedPatch = value;
                     runtimePatchCache[coordinate] = value;
                     AssignGrassPatch(value);
                 });
+            }
         }
 
         private void AssignGrassPatch(GrassFlow.GrassFlowPatch patch)
