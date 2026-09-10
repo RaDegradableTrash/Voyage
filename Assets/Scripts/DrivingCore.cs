@@ -46,6 +46,7 @@ public sealed class DrivingCore : MonoBehaviour
     bool hasPrefetchedCenter;
     int terrainWorkFrame = -1;
     static readonly ProfilerMarker InstantiateTileMarker = new ProfilerMarker("Voyage.Terrain.Instantiate");
+    static readonly ProfilerMarker UnloadTileMarker = new ProfilerMarker("Voyage.Terrain.Unload");
     static readonly ProfilerMarker ActivateCollisionMarker = new ProfilerMarker("Voyage.Terrain.ActivateCollision");
     static readonly ProfilerMarker InitializeGrassMarker = new ProfilerMarker("Voyage.Terrain.InitializeGrass");
 
@@ -337,10 +338,17 @@ public sealed class DrivingCore : MonoBehaviour
             // Forward terrain and its colliders must win the streaming budget.
             // Destroying an old tile first can trigger MeshCollider broadphase
             // work exactly at a boundary and make the vehicle hitch.
-            if (pendingTerrainUnloads.Count > 0 && pendingPriorityTerrainLoads.Count == 0 && pendingTerrainLoads.Count == 0)
+            // A continuously moving vehicle can keep the load queues non-empty
+            // indefinitely. Do not let stale tiles accumulate until the queue
+            // drains: retire one old tile every few frames while preserving a
+            // strict priority for forward terrain.
+            bool unloadSlot = (Time.frameCount & 3) == 0;
+            if (pendingTerrainUnloads.Count > 0 &&
+                ((pendingPriorityTerrainLoads.Count == 0 && pendingTerrainLoads.Count == 0) || unloadSlot))
             {
                 while (!TryBeginTerrainWork()) yield return null;
-                Destroy(pendingTerrainUnloads.Dequeue());
+                using (UnloadTileMarker.Auto())
+                    Destroy(pendingTerrainUnloads.Dequeue());
                 yield return null;
             }
             if (pendingPriorityTerrainLoads.Count == 0 && pendingTerrainLoads.Count == 0) continue;
