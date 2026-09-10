@@ -240,7 +240,8 @@ namespace Voyage.TerrainSystem
         private void AssignGrassPatch(GrassFlow.GrassFlowPatch patch)
         {
             if (patch == null) return;
-            generatedPatch = patch;
+            // Assignment borrows the patch; it does not transfer ownership.
+            // Authored Resources assets must never enter tile destruction.
             var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
             if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
             renderer.patch = patch;
