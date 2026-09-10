@@ -765,8 +765,14 @@ namespace Voyage.TerrainSystem
             const float recenterDistance = FarWorldSize * 0.5f - 550f;
             if (!hasFarCenter || (target - farCenter).sqrMagnitude > recenterDistance * recenterDistance)
             {
+                bool hadFarCenter = hasFarCenter;
                 Vector3 previousCenter = farCenter;
-                bool preserved = hasFarCenter && farReplay.Count == 0;
+                // Replay entries use world-space coordinates, so an
+                // unfinished queue remains valid after the far field scrolls.
+                // Clearing it here caused a fast vehicle to repeatedly
+                // requeue the entire contact history before the old replay
+                // could drain.
+                bool preserved = hadFarCenter;
                 if (hasFarCenter)
                 {
                     ScrollField(farField, farScratch, new Vector2(target.x - farCenter.x, target.z - farCenter.z) / FarWorldSize);
@@ -774,7 +780,7 @@ namespace Voyage.TerrainSystem
                 }
                 farCenter = target;
                 hasFarCenter = true;
-                farReplay.Clear();
+                if (!hadFarCenter) farReplay.Clear();
                 for (int i = 0; i < historyCount; i++)
                 {
                     ContactHistory entry = contactHistory[(historyStart + i) % HistoryCapacity];
