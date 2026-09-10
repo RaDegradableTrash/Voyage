@@ -33,6 +33,10 @@ public sealed class DrivingCore : MonoBehaviour
     GrassInteractionSystem grassInteraction;
     readonly Dictionary<Vector2Int, GameObject> loadedTerrainTiles = new Dictionary<Vector2Int, GameObject>();
     readonly Queue<TerrainTileRecord> pendingTerrainLoads = new Queue<TerrainTileRecord>();
+    // Forward lookahead tiles must not wait behind the rest of the preload ring.
+    // Keeping a separate queue avoids reordering or rebuilding the normal queue
+    // while the vehicle is moving through a cell.
+    readonly Queue<TerrainTileRecord> pendingPriorityTerrainLoads = new Queue<TerrainTileRecord>();
     readonly HashSet<Vector2Int> pendingTerrainCoordinates = new HashSet<Vector2Int>();
     readonly Queue<GameObject> pendingTerrainUnloads = new Queue<GameObject>();
     Coroutine terrainLoadRoutine;
@@ -148,7 +152,7 @@ public sealed class DrivingCore : MonoBehaviour
         // Do not spawn a controllable vehicle into an empty streaming bubble.
         // The visible radius must be ready before the player can outrun it.
         while (!AreVisibleTerrainTilesReady(spawnPoint) &&
-               (pendingTerrainLoads.Count > 0 || terrainLoadRoutine != null))
+               (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0 || terrainLoadRoutine != null))
             yield return null;
         // Do not hand control to the vehicle while the rest of the initial
         // preload ring is still instantiating. Starting the car here made the
@@ -156,7 +160,7 @@ public sealed class DrivingCore : MonoBehaviour
         // a repeating hitch that looked like a physics seam problem. The
         // loading work remains budgeted across frames, so this is a short
         // loading phase rather than one blocking frame.
-        while (pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0 ||
+        while (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0 ||
                terrainLoadRoutine != null)
             yield return null;
         Physics.SyncTransforms();
@@ -226,10 +230,10 @@ public sealed class DrivingCore : MonoBehaviour
                     else
                         lookAhead.y += direction.z >= 0f ? 1 : -1;
                 }
-                QueueTerrainCandidates(position, settings, lookAhead);
+                QueueTerrainCandidates(position, settings, lookAhead, true);
                 prefetchedCenter = center;
                 hasPrefetchedCenter = true;
-                if (terrainLoadRoutine == null && pendingTerrainLoads.Count > 0)
+                if (terrainLoadRoutine == null && (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0))
                     terrainLoadRoutine = StartCoroutine(ProcessTerrainLoads(settings));
             }
             if (hasPrefetchedCenter && prefetchedCenter == center)
@@ -247,7 +251,7 @@ public sealed class DrivingCore : MonoBehaviour
         hasStreamedCenter = true;
 
         int unloadRadius = Mathf.Max(settings.GetPreloadRadius() + 1, settings.unloadRadius);
-        QueueTerrainCandidates(position, settings, center);
+        QueueTerrainCandidates(position, settings, center, false);
         UpdateLoadedTerrainLods(position, settings, center);
 
         List<Vector2Int> stale = new List<Vector2Int>();
@@ -262,7 +266,7 @@ public sealed class DrivingCore : MonoBehaviour
             if (tile != null) pendingTerrainUnloads.Enqueue(tile);
             loadedTerrainTiles.Remove(stale[i]);
         }
-        if (terrainLoadRoutine == null && (pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0))
+        if (terrainLoadRoutine == null && (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0))
             terrainLoadRoutine = StartCoroutine(ProcessTerrainLoads(settings));
     }
 
@@ -283,7 +287,7 @@ public sealed class DrivingCore : MonoBehaviour
         return direction.sqrMagnitude > 0.001f ? direction.normalized : Vector3.zero;
     }
 
-    void QueueTerrainCandidates(Vector3 position, TerrainChunkSettings settings, Vector2Int center)
+    void QueueTerrainCandidates(Vector3 position, TerrainChunkSettings settings, Vector2Int center, bool priority)
     {
         // The square preload radius is only an indexing convenience. Reject
         // corners outside the actual view circle before they enter the queue.
@@ -317,7 +321,8 @@ public sealed class DrivingCore : MonoBehaviour
         });
         for (int i = 0; i < candidates.Count; i++)
         {
-            pendingTerrainLoads.Enqueue(candidates[i]);
+            if (priority) pendingPriorityTerrainLoads.Enqueue(candidates[i]);
+            else pendingTerrainLoads.Enqueue(candidates[i]);
             pendingTerrainCoordinates.Add(candidates[i].coordinate);
         }
     }
@@ -327,19 +332,21 @@ public sealed class DrivingCore : MonoBehaviour
         // Spread IO, initialization and destruction across frames instead
         // of blocking the camera's frame when crossing a streaming cell.
         yield return null;
-        while (pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0)
+        while (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0)
         {
             // Forward terrain and its colliders must win the streaming budget.
             // Destroying an old tile first can trigger MeshCollider broadphase
             // work exactly at a boundary and make the vehicle hitch.
-            if (pendingTerrainUnloads.Count > 0 && pendingTerrainLoads.Count == 0)
+            if (pendingTerrainUnloads.Count > 0 && pendingPriorityTerrainLoads.Count == 0 && pendingTerrainLoads.Count == 0)
             {
                 while (!TryBeginTerrainWork()) yield return null;
                 Destroy(pendingTerrainUnloads.Dequeue());
                 yield return null;
             }
-            if (pendingTerrainLoads.Count == 0) continue;
-            TerrainTileRecord record = pendingTerrainLoads.Dequeue();
+            if (pendingPriorityTerrainLoads.Count == 0 && pendingTerrainLoads.Count == 0) continue;
+            TerrainTileRecord record = pendingPriorityTerrainLoads.Count > 0
+                ? pendingPriorityTerrainLoads.Dequeue()
+                : pendingTerrainLoads.Dequeue();
             Vector3 viewer = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
             Vector2Int currentCenter = settings.WorldToTile(viewer);
             int loadRadius = settings.GetPreloadRadius();
@@ -432,7 +439,7 @@ public sealed class DrivingCore : MonoBehaviour
         // schedule that upload while terrain IO/instantiation is still queued;
         // doing both on a streaming boundary creates a visible catch-up hitch
         // that feels like the vehicle moved backwards and forwards.
-        bool allowGrassPreparation = pendingTerrainLoads.Count == 0 && pendingTerrainUnloads.Count == 0;
+        bool allowGrassPreparation = pendingPriorityTerrainLoads.Count == 0 && pendingTerrainLoads.Count == 0 && pendingTerrainUnloads.Count == 0;
         foreach (KeyValuePair<Vector2Int, GameObject> pair in loadedTerrainTiles)
         {
             TerrainTileRuntime tile = pair.Value == null ? null : pair.Value.GetComponent<TerrainTileRuntime>();
