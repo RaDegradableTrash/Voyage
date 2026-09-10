@@ -23,6 +23,16 @@ all hardware or player builds; separate GC and initial grass preparation spikes
 remain. Captures are stored locally in Logs/boundary-capture-cold.csv and
 Logs/boundary-capture-bundle.csv.
 
+A subsequent 180-second physical drive covered 7.43 km and 34 cell transitions
+(44,640 samples; Logs/boundary-capture-bundle-long.csv). Boundary-frame p99 was
+6.72 / 6.57 / 6.83 ms for 10–60 / 60–120 / 120–180 seconds respectively.
+Loaded tiles peaked at 121, pending loads at 12 and pending unloads at 12;
+the end-of-run queues were empty. The last interval included a 24.18 ms frame
+with an 8.24 ms GC.Collect marker and no terrain loading, activation or
+destruction work. Thus synchronous first-visit terrain stalls are removed in
+this test, but occasional GC stalls are still present. A repeated Play entry
+validated all 9,792 cached tiles in 0.30 seconds without rebuilding the bundle.
+
 Before building the player, the build command checks prefab dependency hashes,
 Unity version, target platform and graphics settings. It rebuilds the LZ4 terrain
 package only when those inputs change. The reusable package and fingerprint live
