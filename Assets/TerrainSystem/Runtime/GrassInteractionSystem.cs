@@ -74,8 +74,14 @@ namespace Voyage.TerrainSystem
         static readonly Unity.Profiling.ProfilerMarker ContactUpdate = new Unity.Profiling.ProfilerMarker("Voyage.Grass.ContactUpdate");
         // Bounded world-space event history survives movement of the GPU
         // window. Entries expire when their bend is below visible precision.
-        const int HistoryCapacity = 65536;
+        // A contact history entry is only needed when a wheel has moved far
+        // enough to change the visible bend field. Recording every render
+        // frame filled the old 65k ring quickly and made every field scroll
+        // scan/replay thousands of redundant points.
+        const int HistoryCapacity = 16384;
+        const float HistorySampleSpacing = 0.65f;
         readonly ContactHistory[] contactHistory = new ContactHistory[HistoryCapacity];
+        readonly Dictionary<Transform, Vector3> lastHistoryPosition = new Dictionary<Transform, Vector3>();
         int historyStart, historyCount;
         readonly Queue<ContactHistory> historyReplay = new Queue<ContactHistory>();
         struct ContactHistory
@@ -365,6 +371,7 @@ namespace Voyage.TerrainSystem
                 if (wheel == null || (wheel != root && wheel.IsChildOf(root)))
                 {
                     if (permanentTrackStore != null) permanentTrackStore.ForgetSource(wheel);
+                    if (wheel != null) lastHistoryPosition.Remove(wheel);
                     wheelStates.RemoveAt(i);
                 }
             }
@@ -451,6 +458,7 @@ namespace Voyage.TerrainSystem
                 if (state.wheel == null)
                 {
                     if (permanentTrackStore != null) permanentTrackStore.ForgetSource(state.wheel);
+                    if (state.wheel != null) lastHistoryPosition.Remove(state.wheel);
                     wheelStates.RemoveAt(i);
                     continue;
                 }
@@ -462,6 +470,7 @@ namespace Voyage.TerrainSystem
                 if (collider == null && state.terrainFollower == null)
                 {
                     if (permanentTrackStore != null) permanentTrackStore.ForgetSource(state.wheel);
+                    lastHistoryPosition.Remove(state.wheel);
                     wheelStates.RemoveAt(i);
                     continue;
                 }
@@ -739,7 +748,7 @@ namespace Voyage.TerrainSystem
             if (maxX < fieldCenter.x - halfWorld || minX > fieldCenter.x + halfWorld ||
                 maxZ < fieldCenter.z - halfWorld || minZ > fieldCenter.z + halfWorld) return;
             ApplyContact(field, scratch, a, b, dir, radius, strength, false);
-            RememberContact(from, to, dir, radius, strength);
+            RememberContact(from, to, dir, radius, strength, source);
             StampFar(from, to, dir, radius, strength);
             if (recordPermanentTracks && permanentTrackStore != null)
             {
@@ -810,8 +819,19 @@ namespace Voyage.TerrainSystem
             ApplyContact(farField, farScratch, a, b, direction, radius, strength / Mathf.Max(FarRecovery, 0.001f), false, true);
         }
 
-        void RememberContact(Vector3 from, Vector3 to, Vector2 direction, float radius, float strength)
+        void RememberContact(Vector3 from, Vector3 to, Vector2 direction, float radius, float strength, Transform source)
         {
+            // ContactUpdate can run for six wheels every frame. Keep enough
+            // samples for a continuous replay path, but do not enqueue
+            // sub-pixel movements that only make future boundary scans more
+            // expensive.
+            if (source != null && lastHistoryPosition.TryGetValue(source, out Vector3 previous))
+            {
+                Vector2 delta = new Vector2(to.x - previous.x, to.z - previous.z);
+                if (delta.sqrMagnitude < HistorySampleSpacing * HistorySampleSpacing)
+                    return;
+            }
+            if (source != null) lastHistoryPosition[source] = to;
             while (historyCount > 0 && Time.time - contactHistory[historyStart].time > 6.22f / decayPerSecond)
             {
                 historyStart = (historyStart + 1) % HistoryCapacity;
