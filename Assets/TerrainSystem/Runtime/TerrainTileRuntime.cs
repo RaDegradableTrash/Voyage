@@ -15,6 +15,7 @@ namespace Voyage.TerrainSystem
         private static PhysicsMaterial terrainContactMaterial;
         private static bool terrainShaderDiagnosticLogged;
         private int currentLod = -1;
+        static readonly Unity.Profiling.ProfilerMarker AwakeMarker = new Unity.Profiling.ProfilerMarker("Voyage.Terrain.Awake");
         private TerrainChunkSettings settings;
         private bool collisionStateKnown;
         private bool collisionState;
@@ -66,6 +67,7 @@ namespace Voyage.TerrainSystem
 
         private void Awake()
         {
+            using var awakeScope = AwakeMarker.Auto();
             DisableGeneratedSkirts();
             EnsureCollisionCollider();
             // Bind a valid terrain shader before the streaming system selects

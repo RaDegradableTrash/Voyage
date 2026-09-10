@@ -12,6 +12,8 @@ namespace Voyage.TerrainSystem
         public const string BundleRelativePath = "VoyageTerrain/" + BundleName;
         static AssetBundle bundle;
         static AssetBundleCreateRequest opening;
+        static readonly Unity.Profiling.ProfilerMarker EditorLoadMarker =
+            new Unity.Profiling.ProfilerMarker("Voyage.Terrain.EditorAssetLoad");
         static readonly System.Collections.Generic.Dictionary<string, GameObject> prefabCache =
             new System.Collections.Generic.Dictionary<string, GameObject>();
 
@@ -43,7 +45,7 @@ namespace Voyage.TerrainSystem
                 yield break;
             }
             yield return null;
-            editorCached = LoadInEditor(resourcePath);
+            using (EditorLoadMarker.Auto()) editorCached = LoadInEditor(resourcePath);
             if (editorCached != null) prefabCache[editorPath] = editorCached;
             completed(editorCached);
 #else
