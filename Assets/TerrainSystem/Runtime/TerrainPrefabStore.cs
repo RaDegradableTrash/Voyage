@@ -12,8 +12,6 @@ namespace Voyage.TerrainSystem
         public const string BundleRelativePath = "VoyageTerrain/" + BundleName;
         static AssetBundle bundle;
         static AssetBundleCreateRequest opening;
-        static readonly Unity.Profiling.ProfilerMarker EditorLoadMarker =
-            new Unity.Profiling.ProfilerMarker("Voyage.Terrain.EditorAssetLoad");
         static readonly System.Collections.Generic.Dictionary<string, GameObject> prefabCache =
             new System.Collections.Generic.Dictionary<string, GameObject>();
 
@@ -29,29 +27,22 @@ namespace Voyage.TerrainSystem
         }
 
 #if UNITY_EDITOR
+        public const string EditorBundleSessionKey = "Voyage.ValidatedTerrainBundle";
         public static GameObject LoadInEditor(string resourcePath) =>
             UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(AssetPath(resourcePath));
 #endif
 
         public static IEnumerator LoadAsync(string resourcePath, Action<GameObject> completed)
         {
-#if UNITY_EDITOR
-            // Painting and play mode use the editable source assets directly.
-            string editorPath = AssetPath(resourcePath);
-            GameObject editorCached;
-            if (prefabCache.TryGetValue(editorPath, out editorCached) && editorCached != null)
-            {
-                completed(editorCached);
-                yield break;
-            }
-            yield return null;
-            using (EditorLoadMarker.Auto()) editorCached = LoadInEditor(resourcePath);
-            if (editorCached != null) prefabCache[editorPath] = editorCached;
-            completed(editorCached);
-#else
             if (bundle == null)
             {
+#if UNITY_EDITOR
+                // Validated before Play by VoyageTerrainPlayCache. Painting
+                // continues to use LoadInEditor; driving uses the player path.
+                string path = UnityEditor.SessionState.GetString(EditorBundleSessionKey, "");
+#else
                 string path = Path.Combine(Application.streamingAssetsPath, BundleRelativePath);
+#endif
                 if (!File.Exists(path))
                 {
                     Debug.LogError("Terrain package is missing: " + path);
@@ -81,7 +72,6 @@ namespace Voyage.TerrainSystem
             if (prefab == null) Debug.LogError("Terrain tile is missing from package: " + resourcePath);
             else prefabCache[assetPath] = prefab;
             completed(prefab);
-#endif
         }
     }
 }
