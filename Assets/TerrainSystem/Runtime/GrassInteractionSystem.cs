@@ -433,7 +433,7 @@ namespace Voyage.TerrainSystem
                     {
                         Clear();
                     }
-                    QueueHistoryReplay();
+                    QueueHistoryReplay(previousFieldCenter, wasInitialized);
                     BeginPermanentFieldRebuild(previousFieldCenter, wasInitialized && previousRebuildComplete);
                     for (int i = 0; i < wheelStates.Count; i++) wheelStates[i].valid = false;
                     hasFieldCenter = true;
@@ -846,7 +846,7 @@ namespace Voyage.TerrainSystem
             { from = from, to = to, direction = direction, radius = radius, strength = strength, time = Time.time };
         }
 
-        void QueueHistoryReplay()
+        void QueueHistoryReplay(Vector3 previousCenter, bool onlyNewArea)
         {
             historyReplay.Clear();
             float half = worldSize * 0.5f;
@@ -858,6 +858,19 @@ namespace Voyage.TerrainSystem
                     Mathf.Min(entry.from.x, entry.to.x) - entry.radius > fieldCenter.x + half ||
                     Mathf.Max(entry.from.z, entry.to.z) + entry.radius < fieldCenter.z - half ||
                     Mathf.Min(entry.from.z, entry.to.z) - entry.radius > fieldCenter.z + half) continue;
+                // ScrollField already preserved the old window. Replaying
+                // entries that were inside it duplicates every tire stamp on
+                // each 40m re-anchor. Only the newly exposed strip needs
+                // reconstruction from history.
+                if (onlyNewArea)
+                {
+                    float previousHalf = worldSize * 0.5f;
+                    if (Mathf.Max(entry.from.x, entry.to.x) + entry.radius >= previousCenter.x - previousHalf &&
+                        Mathf.Min(entry.from.x, entry.to.x) - entry.radius <= previousCenter.x + previousHalf &&
+                        Mathf.Max(entry.from.z, entry.to.z) + entry.radius >= previousCenter.z - previousHalf &&
+                        Mathf.Min(entry.from.z, entry.to.z) - entry.radius <= previousCenter.z + previousHalf)
+                        continue;
+                }
                 historyReplay.Enqueue(entry);
             }
         }
