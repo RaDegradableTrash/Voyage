@@ -396,6 +396,7 @@ namespace Voyage.TerrainSystem
             bool changed = false;
             for (int i = 0; i < materials.Length; i++)
             {
+                if (materials[i] == grasslandFallbackMaterial) continue;
                 materials[i] = grasslandFallbackMaterial;
                 changed = true;
             }
