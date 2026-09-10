@@ -273,7 +273,11 @@ public sealed class DrivingCore : MonoBehaviour
         {
             Rigidbody vehicleBody = Player.GetComponent<Rigidbody>();
             if (vehicleBody != null) direction = vehicleBody.linearVelocity;
-            if (direction.sqrMagnitude < 4f) direction = Player.transform.right;
+            if (direction.sqrMagnitude < 4f)
+            {
+                CarControl car = Player.GetComponent<CarControl>();
+                direction = car != null ? car.DriveForward : Player.transform.right;
+            }
         }
         direction.y = 0f;
         return direction.sqrMagnitude > 0.001f ? direction.normalized : Vector3.zero;
