@@ -21,6 +21,12 @@ namespace Voyage.TerrainSystem
         private InteractiveGrassTile configuredGrass;
         private bool paintedGrassResolved;
         private GrassFlow.GrassFlowPatch generatedPatch;
+        // Runtime fallback patches are generated when an authored GrassFlow
+        // asset is missing. Keep them by tile coordinate so streaming the
+        // same area again does not repeat raycasts, texture uploads and GPU
+        // buffer creation after every unload/reload cycle.
+        private static readonly System.Collections.Generic.Dictionary<Vector2Int, GrassFlow.GrassFlowPatch> runtimePatchCache =
+            new System.Collections.Generic.Dictionary<Vector2Int, GrassFlow.GrassFlowPatch>();
         private MeshRenderer[][] lodRenderers;
         private MaterialPropertyBlock lodProperties;
         private int outgoingLod = -1;
@@ -179,31 +185,41 @@ namespace Voyage.TerrainSystem
 
         private void OnDestroy()
         {
-            if (generatedPatch != null)
-            {
-                Destroy(generatedPatch.surface); Destroy(generatedPatch.density); Destroy(generatedPatch);
-            }
+            // Cached fallback patches intentionally outlive streamed tile
+            // instances and are reused by coordinate on the next load.
         }
 
         private System.Collections.IEnumerator LoadPaintedGrass()
         {
+            GrassFlow.GrassFlowPatch cached;
+            if (runtimePatchCache.TryGetValue(coordinate, out cached) && cached != null)
+            {
+                AssignGrassPatch(cached);
+                yield break;
+            }
             var request = Resources.LoadAsync<GrassFlow.GrassFlowPatch>($"GrassFlow/Tiles/Grass_{coordinate.x}_{coordinate.y}");
             yield return request;
             var patch = request.asset as GrassFlow.GrassFlowPatch;
             if (patch != null)
             {
-                var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
-                if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
-                renderer.patch = patch;
+                AssignGrassPatch(patch);
             }
             else if (lodRoots[0] != null)
                 yield return StreamedGrassSurface.Build(lodRoots[0].GetComponentsInChildren<MeshFilter>(true), bounds, value =>
                 {
                     generatedPatch = value;
-                    var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
-                    if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
-                    renderer.patch = value;
+                    runtimePatchCache[coordinate] = value;
+                    AssignGrassPatch(value);
                 });
+        }
+
+        private void AssignGrassPatch(GrassFlow.GrassFlowPatch patch)
+        {
+            if (patch == null) return;
+            generatedPatch = patch;
+            var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
+            if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
+            renderer.patch = patch;
         }
 
         private int CalculateLod(Vector3 viewerPosition)
