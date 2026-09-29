@@ -12,6 +12,8 @@ GameObject:
   - component: {fileID: 6042690290085218625}
   - component: {fileID: 6002195728401164003}
   - component: {fileID: 5473607763612991548}
+  - component: {fileID: 5473607763612991549}
+  - component: {fileID: 5473607763612991550}
   m_Layer: 0
   m_Name: Scene_VOYAGE____LIGHTING_SYSTEMS
   m_TagString: Untagged
@@ -66,7 +68,7 @@ MonoBehaviour:
   nightAmbientIntensity: 0.1
   dayReflectionIntensity: 0.28
   nightReflectionIntensity: 0.015
-  daySkyColor: {r: 0.42, g: 0.52, b: 0.62, a: 1}
+  daySkyColor: {r: 0.18, g: 0.36, b: 0.56, a: 1}
   horizonSkyColor: {r: 0.82, g: 0.34, b: 0.22, a: 1}
   nightSkyColor: {r: 0.018, g: 0.028, b: 0.06, a: 1}
   manageOtherDirectionalLights: 1
@@ -109,3 +111,45 @@ MonoBehaviour:
   nightAmbient: {r: 0.025, g: 0.035, b: 0.08, a: 1}
   dayLight: 1
   nightLight: 0.08
+--- !u!114 &5473607763612991549
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 3527493407245156033}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4d7d5e1a7b2c4aa9b1e3f0c5d6e7a8b9, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Voyage.Wind::WindSystem
+  direction: {x: 0.86, y: 0.28}
+  speed: 1
+  force: 0.42
+  gustStrength: 0.28
+  gustPeriod: 7
+  heightShear: 0.35
+  heightReference: 500
+--- !u!114 &5473607763612991550
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 3527493407245156033}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5c622885a7dc45058c8da77d469143aa, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Voyage.Environment::SeaLevelWaterSystem
+  seaLevel: -600
+  waterShader: {fileID: 4800000, guid: 097de029f9bd456482fb4a0f187e4d8a, type: 3}
+  renderRadius: 1000000
+  reflectedCloudHeights: {x: 180, y: 980}
+  reflectedCloudNoiseScale: 0.00125
+  reflectedCloudCoverage: 0.64
+  reflectedCloudDensity: 1.6
+  collisionInteractionRadius: 64
+  collisionTriggerDepth: 4
+  rippleDamping: 0.992
+  collisionStampInterval: 0.14

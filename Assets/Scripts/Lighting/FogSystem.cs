@@ -97,9 +97,10 @@ namespace Voyage.Lighting
             CurrentColor = Color.Lerp(baseColor, horizon, horizonWeight);
             float authoredStart = Mathf.Lerp(nightStart, dayStart, daylight);
             float authoredEnd = Mathf.Lerp(nightEnd, dayEnd, daylight);
-            // Keep old serialized profiles from collapsing visibility to a few hundred metres.
-            authoredStart = Mathf.Max(authoredStart, 240f);
-            authoredEnd = Mathf.Max(authoredEnd, 1800f);
+            // Keep the nearby driving view clear and spread mountain haze over
+            // a much longer distance so silhouettes remain readable.
+            authoredStart = Mathf.Max(authoredStart, 1200f);
+            authoredEnd = Mathf.Max(authoredEnd, 20000f);
             CurrentStartDistance = Mathf.Lerp(authoredEnd, authoredStart, contribution);
             CurrentEndDistance = Mathf.Lerp(100000f, authoredEnd, contribution);
             bool fogActive = enableFog && contribution > .001f;

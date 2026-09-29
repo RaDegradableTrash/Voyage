@@ -48,7 +48,7 @@ namespace Voyage.Lighting
         [Range(0f, 1f)] public float nightAmbientIntensity = .10f;
         [Range(0f, 1f)] public float dayReflectionIntensity = .28f;
         [Range(0f, 1f)] public float nightReflectionIntensity = .015f;
-        public Color daySkyColor = new Color(.42f, .52f, .62f);
+        public Color daySkyColor = new Color(.18f, .36f, .56f);
         public Color horizonSkyColor = new Color(.82f, .34f, .22f);
         public Color nightSkyColor = new Color(.018f, .028f, .06f);
         public bool manageOtherDirectionalLights = true;
@@ -111,7 +111,7 @@ namespace Voyage.Lighting
         {
             if (sun == null)
             {
-                Light[] found = FindObjectsByType<Light>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+                Light[] found = FindObjectsByType<Light>(FindObjectsInactive.Include);
                 for (int i = 0; i < found.Length; i++)
                     if (found[i].type == LightType.Directional && found[i].name.IndexOf("Sun", StringComparison.OrdinalIgnoreCase) >= 0) { sun = found[i]; break; }
                 if (sun == null) for (int i = 0; i < found.Length; i++) if (found[i].type == LightType.Directional) { sun = found[i]; break; }
@@ -120,8 +120,12 @@ namespace Voyage.Lighting
             if (moon == null) moon = CreateLight("Voyage Moon", moonColor);
             Configure(sun, sunShadowStrength);
             Configure(moon, moonShadowStrength);
+            // QualitySettings overrides the PC URP asset at runtime and was
+            // limiting directional shadows to 180 m. Keep mountain shadows
+            // visible across the authored terrain horizon.
+            QualitySettings.shadowDistance = Mathf.Max(QualitySettings.shadowDistance, 500f);
             if (manageOtherDirectionalLights)
-                foreach (Light light in FindObjectsByType<Light>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                foreach (Light light in FindObjectsByType<Light>(FindObjectsInactive.Include))
                     if (light.type == LightType.Directional && light != sun && light != moon && light.enabled) { light.enabled = false; if (!disabledDirectionalLights.Contains(light)) disabledDirectionalLights.Add(light); }
         }
 
@@ -159,7 +163,10 @@ namespace Voyage.Lighting
             // Cementery: attenuate direct lighting by elevation independently from
             // the sky/ambient blend, keeping dawn and dusk free of sudden light jumps.
             float elevation = Mathf.Clamp01(height / .75f);
-            float sunValue = daySunIntensity * elevation * elevation;
+            // Retain direct warm light while the sun approaches the horizon;
+            // an elevation-squared curve made dusk go flat before sunset.
+            float sunValue = daySunIntensity * Mathf.Lerp(.32f, 1f, Mathf.Sqrt(elevation))
+                * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-.12f, .08f, height));
             float moonValue = moonIntensity * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0f, .18f, moonDirection.y));
             float ambient = Mathf.Lerp(nightAmbientIntensity, dayAmbientIntensity, day);
             float reflection = Mathf.Lerp(nightReflectionIntensity, dayReflectionIntensity, day);
@@ -191,7 +198,7 @@ namespace Voyage.Lighting
             Color nightGrass = new Color(.46f, .54f, .72f, 1f);
             Color dayGrass = new Color(1f, .94f, .80f, 1f);
             Shader.SetGlobalColor(GrassEnvironmentColorId, Color.Lerp(nightGrass, dayGrass, day));
-            Shader.SetGlobalFloat(GrassEnvironmentLightId, Mathf.Lerp(.48f, 1f, day));
+            Shader.SetGlobalFloat(GrassEnvironmentLightId, 1f);
         }
 
         void EnsureSkybox()
@@ -212,7 +219,7 @@ namespace Voyage.Lighting
 
         static void ConfigureCameras()
         {
-            Camera[] cameras = FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            Camera[] cameras = FindObjectsByType<Camera>(FindObjectsInactive.Include);
             for (int i = 0; i < cameras.Length; i++)
             {
                 Camera camera = cameras[i];
@@ -226,7 +233,7 @@ namespace Voyage.Lighting
 
         static void EnsureCamera()
         {
-            if (FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None).Length > 0) return;
+            if (FindObjectsByType<Camera>(FindObjectsInactive.Include).Length > 0) return;
             GameObject go = new GameObject("Voyage Runtime Camera");
             go.tag = "MainCamera";
             go.transform.SetPositionAndRotation(new Vector3(0f, 4f, -10f), Quaternion.identity);
@@ -248,7 +255,7 @@ namespace Voyage.Lighting
             color = Color.Lerp(color, horizonSkyColor, horizonGlow * .45f);
             if (managedCameras == null || Time.unscaledTime >= cameraRefreshTime)
             {
-                managedCameras = FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+                managedCameras = FindObjectsByType<Camera>(FindObjectsInactive.Include);
                 cameraRefreshTime = Time.unscaledTime + 2f;
             }
             foreach (Camera camera in managedCameras)
@@ -265,14 +272,16 @@ namespace Voyage.Lighting
         {
             if (runtimeSkybox == null) return;
             Color skyColor = Color.Lerp(nightSkyColor, daySkyColor, day);
-            skyColor = Color.Lerp(skyColor, horizonSkyColor, sunset * .58f);
+            // Sunset warms the horizon; the upper sky keeps a cool twilight
+            // gradient instead of turning the entire dome orange.
+            skyColor = Color.Lerp(skyColor, new Color(.13f, .18f, .30f), sunset * .75f);
             Color groundColor = Color.Lerp(new Color(.075f, .055f, .025f), new Color(.32f, .34f, .35f), day);
             groundColor = Color.Lerp(groundColor, new Color(.48f, .22f, .13f), sunset * .35f);
             if (runtimeSkybox.HasProperty("_SkyTint")) runtimeSkybox.SetColor("_SkyTint", skyColor);
-            if (runtimeSkybox.HasProperty("_HorizonTint")) runtimeSkybox.SetColor("_HorizonTint", Color.Lerp(Color.Lerp(nightSkyColor, new Color(.65f,.74f,.80f),day),horizonSkyColor,sunset*.65f));
+            if (runtimeSkybox.HasProperty("_HorizonTint")) runtimeSkybox.SetColor("_HorizonTint", Color.Lerp(Color.Lerp(nightSkyColor, new Color(.24f,.42f,.62f),day),horizonSkyColor,sunset*.65f));
             if (runtimeSkybox.HasProperty("_SunColor")) runtimeSkybox.SetColor("_SunColor",Color.Lerp(new Color(1f,.96f,.82f),new Color(1f,.36f,.16f),sunset));
             if (runtimeSkybox.HasProperty("_GroundColor")) runtimeSkybox.SetColor("_GroundColor", groundColor);
-            if (runtimeSkybox.HasProperty("_Exposure")) runtimeSkybox.SetFloat("_Exposure", Mathf.Lerp(.08f, .78f, day) + sunset * .08f);
+            if (runtimeSkybox.HasProperty("_Exposure")) runtimeSkybox.SetFloat("_Exposure", Mathf.Lerp(.08f, -.25f, day) + sunset * .08f);
             if (runtimeSkybox.HasProperty(SkySunDirectionId)) runtimeSkybox.SetVector(SkySunDirectionId, new Vector4(sunDirection.x, sunDirection.y, sunDirection.z, 0f));
             if (runtimeSkybox.HasProperty(SkyMoonDirectionId)) runtimeSkybox.SetVector(SkyMoonDirectionId, new Vector4((-sunDirection).x, (-sunDirection).y, (-sunDirection).z, 0f));
             RenderSettings.skybox = runtimeSkybox;
