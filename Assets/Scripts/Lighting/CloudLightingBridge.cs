@@ -10,6 +10,7 @@ namespace Voyage.Lighting
         static readonly int SunColorId = Shader.PropertyToID("_VoyageCloudSunColor");
         static readonly int AmbientColorId = Shader.PropertyToID("_VoyageCloudAmbientColor");
         static readonly int LightId = Shader.PropertyToID("_VoyageCloudLight");
+        static readonly int TwilightId = Shader.PropertyToID("_VoyageCloudTwilight");
 
         public Color dayAmbient = new Color(.42f, .52f, .62f);
         public Color nightAmbient = new Color(.025f, .035f, .08f);
@@ -26,7 +27,12 @@ namespace Voyage.Lighting
 
         void Update()
         {
-            if (dayNight == null) Subscribe();
+            if (dayNight != DayNightSystem.Instance)
+            {
+                Subscribe();
+                Publish(dayNight != null ? dayNight.Snapshot : default);
+            }
+            else if (dayNight == null) Publish(default);
         }
 
         void OnDisable()
@@ -37,6 +43,7 @@ namespace Voyage.Lighting
             Shader.SetGlobalColor(SunColorId, Color.white);
             Shader.SetGlobalColor(AmbientColorId, nightAmbient);
             Shader.SetGlobalFloat(LightId, 0f);
+            Shader.SetGlobalVector(TwilightId, Vector4.zero);
         }
 
         void Subscribe()
@@ -50,14 +57,25 @@ namespace Voyage.Lighting
 
         void Publish(LightingSnapshot snapshot)
         {
-            float daylight = DayNightSystem.EvaluateDaylight(snapshot.sunHeight);
             Light sun = dayNight != null ? dayNight.sun : RenderSettings.sun;
-            Vector3 direction = sun != null ? -sun.transform.forward : Vector3.up;
-            Color sunColor = sun != null ? sun.color : Color.white;
+            float sunHeight = dayNight != null ? snapshot.sunHeight :
+                (sun != null ? -sun.transform.forward.y : -1f);
+            float daylight = DayNightSystem.EvaluateDaylight(sunHeight);
+            Light moon = dayNight != null ? dayNight.moon : null;
+            float sunlight = sun != null && sun.enabled ? sun.intensity * dayLight : 0f;
+            float moonlight = moon != null && moon.enabled ? moon.intensity * nightLight : 0f;
+            bool useSun = sun != null && sunlight >= moonlight;
+            Light key = useSun ? sun : moon;
+            Vector3 direction = key != null ? -key.transform.forward : Vector3.up;
+            Color sunColor = key != null ? key.color : Color.white;
             Shader.SetGlobalVector(SunDirectionId, new Vector4(direction.x, direction.y, direction.z, 0f));
             Shader.SetGlobalColor(SunColorId, sunColor);
             Shader.SetGlobalColor(AmbientColorId, Color.Lerp(nightAmbient, dayAmbient, daylight));
-            Shader.SetGlobalFloat(LightId, Mathf.Lerp(nightLight, dayLight, daylight));
+            Shader.SetGlobalFloat(LightId, Mathf.Max(sunlight, moonlight));
+            float twilight = (1f - Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(.03f, .35f, sunHeight)))
+                * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-.18f, .02f, sunHeight));
+            Color twilightColor = sun != null ? sun.color : new Color(1f, .36f, .16f);
+            Shader.SetGlobalVector(TwilightId, new Vector4(twilightColor.r, twilightColor.g, twilightColor.b, twilight));
 
         }
     }

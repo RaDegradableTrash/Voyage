@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.Scripting;
+using Voyage.Environment;
 
 namespace Voyage.Lighting
 {
@@ -16,7 +17,7 @@ namespace Voyage.Lighting
         static void EnsureInstalled()
         {
             GameObject root = GameObject.Find("VOYAGE // LIGHTING SYSTEMS");
-            DayNightSystem[] systems = Object.FindObjectsByType<DayNightSystem>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            DayNightSystem[] systems = Object.FindObjectsByType<DayNightSystem>(FindObjectsInactive.Include);
             if (root == null && systems.Length > 0) root = systems[0].gameObject;
             if (root == null)
             {
@@ -29,6 +30,8 @@ namespace Voyage.Lighting
             if (root.GetComponent<DayNightSystem>() == null) root.AddComponent<DayNightSystem>();
             if (root.GetComponent<FogSystem>() == null) root.AddComponent<FogSystem>();
             if (root.GetComponent<CloudLightingBridge>() == null) root.AddComponent<CloudLightingBridge>();
+            if (root.GetComponent<Voyage.Wind.WindSystem>() == null) root.AddComponent<Voyage.Wind.WindSystem>();
+            if (root.GetComponent<SeaLevelWaterSystem>() == null) root.AddComponent<SeaLevelWaterSystem>();
         }
     }
 }
