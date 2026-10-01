@@ -20,9 +20,28 @@ public class FollowCamera : MonoBehaviour
     public float wheelZoomStep = 0.0015f;
     public float zoomSmooth = 12f;
     public float defaultYaw = 0f;
-    public float defaultPitch = 34f;
-    public float minPitch = -20f;
-    public float maxPitch = 60f;
+    public float defaultPitch = 65f;
+
+    [Header("On-foot overhead view")]
+    public float onFootPitch = 68f;
+
+    [Header("Vehicle tracking")]
+    [Tooltip("How far ahead of the vehicle root the chase camera looks.")]
+    public float vehicleFocusForward = 3.2f;
+    [Tooltip("Additional height of the vehicle focus point.")]
+    public float vehicleFocusHeight = 1.9f;
+    [Tooltip("Seconds of forward motion used to create a subtle delayed follow.")]
+    public float vehicleTrackingLead = 0.14f;
+    [Tooltip("How quickly the inertial tracking offset settles.")]
+    public float vehicleTrackingSmooth = 1.67f;
+    [Tooltip("How quickly the camera position catches up to the vehicle.")]
+    public float vehiclePivotFollowSpeed = 1.6f;
+    [Tooltip("How quickly the camera heading catches up while the vehicle is turning.")]
+    public float vehicleTurnFollowSpeed = 1.17f;
+    [Tooltip("How quickly the camera heading catches up while driving straight.")]
+    public float vehicleStraightFollowSpeed = 2.33f;
+    [Tooltip("Vehicle turn rate in degrees per second that reaches the maximum camera lag.")]
+    public float vehicleTurnRateForMaxLag = 90f;
 
     [Header("Look")]
     public float mouseSensitivity = 0.11f;
@@ -51,10 +70,18 @@ public class FollowCamera : MonoBehaviour
     float desiredPitch;
     float zoom = 1f;
     float zoomTarget = 1f;
+    Vector3 smoothedPivot;
+    Vector3 smoothedCameraPivot;
+    bool pivotInitialized;
+    bool vehicleTarget;
+    Vector3 vehicleTrackingOffset;
+    Vector3 smoothedVehicleForward;
+    Vector3 previousVehicleForward;
+    bool vehicleHeadingInitialized;
     Camera cameraComponent;
-    PlayerCar targetCar;
     float baseFov = 67f;
     bool reportedPose;
+    float currentCollisionDistance = -1f;
     readonly RaycastHit[] cameraCollisionHits = new RaycastHit[32];
 
     public bool HoodView { get { return hoodView; } }
@@ -67,9 +94,7 @@ public class FollowCamera : MonoBehaviour
         targetHeight = 1.05f;
         maxDistance = Mathf.Max(maxDistance, 160f);
         defaultYaw = 0f;
-        defaultPitch = 34f;
-        minPitch = -20f;
-        maxPitch = 60f;
+        defaultPitch = 65f;
         autoRecenter = false;
         zoom = 1f;
         zoomTarget = 1f;
@@ -79,15 +104,17 @@ public class FollowCamera : MonoBehaviour
     public void SetOnFoot(bool value)
     {
         onFoot = value;
-        if (onFoot) ReleaseCursor();
-        else ResetOrbitIfNeeded();
+        ResetOrbitIfNeeded();
+        UpdateCursorState();
     }
 
     public void SetTarget(Transform value)
     {
         target = value;
-        targetCar = target != null ? target.GetComponent<PlayerCar>() : null;
-        if (target != null && target.GetComponent<ReferenceVehicleRuntimeBinder>() != null)
+        vehicleTarget = target != null && (target.GetComponent<ReferenceVehicleRuntimeBinder>() != null
+            || target.GetComponent<CarControl>() != null
+            || target.GetComponent<PlayerCar>() != null);
+        if (vehicleTarget)
         {
             // FollowCamera runs in LateUpdate while the RV1.0 is moved by
             // WheelColliders in FixedUpdate. Interpolation prevents the
@@ -103,8 +130,22 @@ public class FollowCamera : MonoBehaviour
             targetHeight = 2.35f;
             minDistance = 8f;
             maxDistance = 200f;
-            defaultPitch = 24f;
+            defaultPitch = 65f;
         }
+        else if (onFoot)
+        {
+            distance = 6.5f;
+            minDistance = 1.5f;
+            maxDistance = 14f;
+            zoom = zoomTarget = 1f;
+        }
+        currentCollisionDistance = -1f;
+        pivotInitialized = false;
+        smoothedCameraPivot = Vector3.zero;
+        vehicleTrackingOffset = Vector3.zero;
+        vehicleHeadingInitialized = false;
+        smoothedVehicleForward = Vector3.forward;
+        previousVehicleForward = Vector3.forward;
         ResetOrbitIfNeeded();
         if (target != null && !onFoot)
             if (diagnosticLogging) Debug.Log("CAMERA SYSTEM // original FollowCamera active on " + name + " target=" + target.name);
@@ -158,19 +199,19 @@ public class FollowCamera : MonoBehaviour
     {
         if (target == null) return;
         desiredYaw = defaultYaw;
-        desiredPitch = Mathf.Clamp(defaultPitch, minPitch, maxPitch);
+        desiredPitch = onFoot ? onFootPitch : defaultPitch;
         currentYaw = desiredYaw;
         currentPitch = desiredPitch;
     }
 
-    bool DrivingActive()
+    bool LookActive()
     {
-        return !onFoot && hadFocus && Time.timeScale > 0.001f && target != null;
+        return hadFocus && Time.timeScale > 0.001f && target != null;
     }
 
     void UpdateCursorState()
     {
-        bool shouldOwn = DrivingActive() && !VoyageCommandConsole.IsOpen;
+        bool shouldOwn = LookActive() && !VoyageCommandConsole.IsOpen;
         if (shouldOwn)
         {
             Cursor.lockState = CursorLockMode.Locked;
@@ -190,6 +231,28 @@ public class FollowCamera : MonoBehaviour
         cursorOwned = false;
     }
 
+    Vector3 SmoothVehicleHeading(Vector3 vehicleForward, float deltaTime)
+    {
+        if (!vehicleHeadingInitialized)
+        {
+            smoothedVehicleForward = vehicleForward;
+            previousVehicleForward = vehicleForward;
+            vehicleHeadingInitialized = true;
+        }
+
+        deltaTime = Mathf.Max(0.001f, deltaTime);
+        float turnRate = Vector3.Angle(previousVehicleForward, vehicleForward) / deltaTime;
+        previousVehicleForward = vehicleForward;
+        float turnAmount = Mathf.InverseLerp(5f, Mathf.Max(5f, vehicleTurnRateForMaxLag), turnRate);
+        float headingFollowSpeed = Mathf.Lerp(
+            Mathf.Max(0.01f, vehicleStraightFollowSpeed),
+            Mathf.Max(0.01f, vehicleTurnFollowSpeed),
+            turnAmount);
+        float headingBlend = 1f - Mathf.Exp(-headingFollowSpeed * deltaTime);
+        smoothedVehicleForward = Vector3.Slerp(smoothedVehicleForward, vehicleForward, headingBlend).normalized;
+        return smoothedVehicleForward;
+    }
+
     void LateUpdate()
     {
         if (target == null)
@@ -202,15 +265,83 @@ public class FollowCamera : MonoBehaviour
         UpdateCursorState();
         if (!VoyageCommandConsole.IsOpen) ReadLookInput();
 
-        float vehicleSpeedMix = 0f;
-        if (targetCar == null) targetCar = target.GetComponent<PlayerCar>();
-        if (targetCar != null) vehicleSpeedMix = Mathf.Clamp01(targetCar.speedKmh / 100f);
 
-        Vector3 pivot = target.position + Vector3.up * (onFoot ? 1.1f : (hoodView ? 0.85f : targetHeight));
-        float actualDistance = (onFoot ? 6.5f : (hoodView ? 1.8f : distance)) * zoom;
+        Vector3 rawPivot;
+        Vector3 rawCameraPivot;
+        Vector3 cameraReferenceForward = Vector3.forward;
+        if (vehicleTarget && !onFoot)
+        {
+            Vector3 vehicleForward = target.forward;
+            CarControl car = target.GetComponent<CarControl>();
+            if (car != null && car.DriveForward.sqrMagnitude > 0.001f)
+                vehicleForward = car.DriveForward;
+            else
+            {
+                VehicleTerrainFollower follower = target.GetComponent<VehicleTerrainFollower>();
+                if (follower != null && follower.ForwardDirection.sqrMagnitude > 0.001f)
+                    vehicleForward = follower.ForwardDirection;
+                else if (target.GetComponent<PlayerCar>() != null)
+                    vehicleForward = target.right;
+            }
+            vehicleForward = Vector3.ProjectOnPlane(vehicleForward, Vector3.up);
+            if (vehicleForward.sqrMagnitude < 0.001f) vehicleForward = Vector3.forward;
+            vehicleForward.Normalize();
+            cameraReferenceForward = SmoothVehicleHeading(vehicleForward, Time.unscaledDeltaTime);
+
+            Rigidbody body = target.GetComponent<Rigidbody>();
+            Vector3 velocity = body != null ? Vector3.ProjectOnPlane(body.linearVelocity, Vector3.up) : Vector3.zero;
+            Vector3 desiredTrackingOffset = velocity * Mathf.Max(0f, vehicleTrackingLead);
+            float trackingBlend = 1f - Mathf.Exp(-Mathf.Max(0.01f, vehicleTrackingSmooth) * Time.unscaledDeltaTime);
+            vehicleTrackingOffset = Vector3.Lerp(vehicleTrackingOffset, desiredTrackingOffset, trackingBlend);
+
+            // RV1.0's authored forward axis is exposed by CarControl.DriveForward.
+            // Looking ahead of the root keeps the camera on the bonnet/road
+            // direction instead of framing the rear body and spare tyre.
+            rawCameraPivot = target.position
+                + vehicleTrackingOffset
+                + Vector3.up * targetHeight;
+            rawPivot = target.position
+                + cameraReferenceForward * vehicleFocusForward
+                + vehicleTrackingOffset
+                + Vector3.up * vehicleFocusHeight;
+        }
+        else
+        {
+            rawPivot = target.position + Vector3.up * (onFoot ? 1.1f : (hoodView ? 0.85f : targetHeight));
+            rawCameraPivot = rawPivot;
+        }
+        if (!pivotInitialized)
+        {
+            smoothedPivot = rawPivot;
+            smoothedCameraPivot = rawCameraPivot;
+            pivotInitialized = true;
+        }
+        // Filter suspension and steering impulses before using the vehicle
+        // position for both the camera orbit and its look direction. A simple
+        // exponential filter avoids SmoothDamp overshoot when a WheelCollider
+        // corrects its contact at a streamed tile seam.
+        float pivotFollowSpeed = onFoot ? 24f : (vehicleTarget ? Mathf.Max(0.01f, vehiclePivotFollowSpeed) : 6f);
+        float pivotBlend = 1f - Mathf.Exp(-pivotFollowSpeed * Time.unscaledDeltaTime);
+        Vector3 pivot = Vector3.Lerp(smoothedPivot, rawPivot, pivotBlend);
+        Vector3 cameraPivot = Vector3.Lerp(smoothedCameraPivot, rawCameraPivot, pivotBlend);
+        smoothedPivot = pivot;
+        smoothedCameraPivot = cameraPivot;
+        float actualDistance = (onFoot ? distance : (hoodView ? 1.8f : distance)) * zoom;
         Quaternion orbit = Quaternion.Euler(currentPitch, currentYaw, 0f);
-        Vector3 desiredPosition = pivot + orbit * Vector3.back * actualDistance;
-        desiredPosition = ResolveCollision(pivot, desiredPosition);
+        if (vehicleTarget && !onFoot)
+        {
+            // Keep the zero-yaw chase position behind the vehicle's current
+            // heading instead of behind a fixed world axis. Mouse yaw remains
+            // a relative orbit around that heading.
+            Quaternion vehicleHeading = Quaternion.LookRotation(cameraReferenceForward, Vector3.up);
+            orbit = vehicleHeading * orbit;
+        }
+        Vector3 desiredPosition = cameraPivot + orbit * Vector3.back * actualDistance;
+        // Vehicle and walking cameras both remain outside colliders. The
+        // collision distance is smoothed in ResolveCollision so streamed
+        // terrain seams cannot create an instant zoom, while the vehicle
+        // camera still respects ground and solid world geometry.
+        desiredPosition = ResolveCollision(cameraPivot, desiredPosition);
 
         if (!reportedPose)
         {
@@ -219,7 +350,18 @@ public class FollowCamera : MonoBehaviour
         }
 
         float followBlend = 1f - Mathf.Exp(-followDamping * Time.unscaledDeltaTime);
-        transform.position = Vector3.Lerp(transform.position, desiredPosition, followBlend);
+        if (vehicleTarget)
+        {
+            // The vehicle anchor is already delayed and filtered above. Apply
+            // the collision-safe result directly so a camera that was pushed
+            // into the ground cannot remain there while a second Lerp catches
+            // up over several frames.
+            transform.position = desiredPosition;
+        }
+        else
+        {
+            transform.position = Vector3.Lerp(transform.position, desiredPosition, followBlend);
+        }
 
         Quaternion lookRotation = Quaternion.LookRotation(pivot - transform.position, Vector3.up);
         float rotationBlend = 1f - Mathf.Exp(-rotationDamping * Time.unscaledDeltaTime);
@@ -233,20 +375,28 @@ public class FollowCamera : MonoBehaviour
             shakeStrength = Mathf.MoveTowards(shakeStrength, 0f, Time.unscaledDeltaTime * 1.8f);
         }
 
+        // Follow smoothing and camera shake happen after the first orbit cast.
+        // Re-check the final pose so neither can leave the camera inside terrain.
+        Vector3 beforeCollisionCorrection = transform.position;
+        transform.position = ResolveCollision(cameraPivot, transform.position);
+        if ((transform.position - beforeCollisionCorrection).sqrMagnitude > 0.000001f)
+            transform.rotation = Quaternion.LookRotation(pivot - transform.position, Vector3.up);
+
         if (cameraComponent != null)
         {
-            float targetFov = onFoot ? baseFov : baseFov + vehicleSpeedMix * 5f;
+            // Keep vehicle framing fixed. Speed-dependent FOV makes the
+            // camera appear to zoom whenever steering changes forward speed.
+            float targetFov = baseFov;
             cameraComponent.fieldOfView = Mathf.Lerp(cameraComponent.fieldOfView, targetFov, 1f - Mathf.Exp(-4f * Time.unscaledDeltaTime));
         }
-        // Smoothing and shake can cross a slope even when the desired orbit is safe.
-        transform.position = ResolveCollision(pivot, transform.position);
     }
 
     void ReadLookInput()
     {
+        if (!LookActive() || VoyageCommandConsole.IsOpen || VoyageCommandConsole.ConsumedInputThisFrame) return;
+
         Vector2 look = Vector2.zero;
-        bool freeMouseLook = onFoot && Mouse.current != null && Mouse.current.rightButton.isPressed;
-        if ((DrivingActive() || freeMouseLook) && Mouse.current != null)
+        if (Mouse.current != null)
             look += Mouse.current.delta.ReadValue() * mouseSensitivity;
 
         if (Gamepad.current != null)
@@ -255,7 +405,8 @@ public class FollowCamera : MonoBehaviour
         if (look.sqrMagnitude > 0.000001f)
         {
             desiredYaw = Mathf.Repeat(desiredYaw + look.x, 360f);
-            desiredPitch = Mathf.Clamp(desiredPitch + (invertY ? look.y : -look.y), minPitch, maxPitch);
+            float pitchDelta = invertY ? look.y : -look.y;
+            desiredPitch += pitchDelta;
         }
 
         if (autoRecenter && look.sqrMagnitude < 0.000001f && !onFoot)
@@ -264,7 +415,6 @@ public class FollowCamera : MonoBehaviour
         currentYaw = Mathf.LerpAngle(currentYaw, desiredYaw, 1f - Mathf.Exp(-rotationDamping * Time.unscaledDeltaTime));
         currentPitch = Mathf.Lerp(currentPitch, desiredPitch, 1f - Mathf.Exp(-rotationDamping * Time.unscaledDeltaTime));
 
-        if (!onFoot)
         {
             float scroll = Mouse.current != null ? Mouse.current.scroll.ReadValue().y : 0f;
             float legacyScroll = Input.mouseScrollDelta.y;
@@ -312,9 +462,9 @@ public class FollowCamera : MonoBehaviour
         float nearest = length;
         for (int i = 0; i < hitCount; i++)
         {
-            Transform hitTransform = cameraCollisionHits[i].collider != null ? cameraCollisionHits[i].collider.transform : null;
+            Collider hitCollider = cameraCollisionHits[i].collider;
+            Transform hitTransform = hitCollider != null ? hitCollider.transform : null;
             if (hitTransform == target || (hitTransform != null && hitTransform.IsChildOf(target))) continue;
-
             nearest = Mathf.Min(nearest, cameraCollisionHits[i].distance);
         }
 
@@ -322,10 +472,26 @@ public class FollowCamera : MonoBehaviour
         if (hitCount == cameraCollisionHits.Length)
         {
             foreach (var hit in Physics.SphereCastAll(pivot, radius, ray / length, length, cameraCollisionLayers, QueryTriggerInteraction.Ignore))
-                if (hit.transform != target && !hit.transform.IsChildOf(target)) nearest = Mathf.Min(nearest, hit.distance);
+                if (hit.transform != target && !hit.transform.IsChildOf(target))
+                    nearest = Mathf.Min(nearest, hit.distance);
         }
-        // Pull in immediately; LateUpdate already smooths outward recovery.
-        float safeDistance = nearest < length ? Mathf.Max(0f, nearest - cameraCollisionPadding) : length;
+        float targetDistance = nearest < length ? Mathf.Max(0.05f, nearest - cameraCollisionPadding) : length;
+        if (currentCollisionDistance < 0f || targetDistance < currentCollisionDistance)
+        {
+            // Move inward immediately. Interpolating this side of the
+            // correction lets a fast mouse pitch carry the camera through the
+            // ground for several frames before it catches up.
+            currentCollisionDistance = targetDistance;
+        }
+        else
+        {
+            // Recover outward smoothly after the view is clear.
+            const float response = 8f;
+            currentCollisionDistance = Mathf.Lerp(currentCollisionDistance, targetDistance,
+                1f - Mathf.Exp(-response * Time.unscaledDeltaTime));
+        }
+        float safeDistance = currentCollisionDistance;
         return pivot + ray.normalized * safeDistance;
     }
+
 }

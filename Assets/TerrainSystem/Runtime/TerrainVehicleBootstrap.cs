@@ -35,7 +35,11 @@ namespace Voyage.TerrainSystem
             Time.fixedDeltaTime = 1f / 120f;
             Time.maximumDeltaTime = 0.1f;
 
-            if (source == null) source = Resources.Load<TerrainSourceAsset>("TerrainSystem/TerrainSource");
+            if (source == null)
+            {
+                TerrainTileIndex index = Resources.Load<TerrainTileIndex>("TerrainSystem/TerrainTileIndex");
+                if (index != null) source = index.source;
+            }
             if (!spawnOnStart) yield break;
 
             // Terrain collision is streamed asynchronously. Do not drop the
@@ -60,7 +64,9 @@ namespace Voyage.TerrainSystem
                 return;
             }
 
-            Vector3 spawnBase = source != null ? source.sourceBounds.center : transform.position;
+            Vector3 spawnBase = source != null
+                ? source.GetRuntimePosition(source.sourceBounds.center)
+                : transform.position;
             Vector3 spawn = spawnBase + new Vector3(spawnOffset.x, vehicleSpawnHeight, spawnOffset.z);
             RaycastHit groundHit;
             if (TryFindSpawnGround(out groundHit))
@@ -130,9 +136,13 @@ namespace Voyage.TerrainSystem
 
         private bool TryFindSpawnGround(out RaycastHit hit)
         {
-            Vector3 center = source != null ? source.sourceBounds.center : transform.position;
-            Vector3 origin = center + Vector3.up * 1000f;
-            return Physics.Raycast(origin, Vector3.down, out hit, 2000f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore);
+            Vector3 center = source != null
+                ? source.GetRuntimePosition(source.sourceBounds.center)
+                : transform.position;
+            float verticalRange = source != null ? source.sourceBounds.extents.y + 100f : 1100f;
+            Vector3 origin = center + Vector3.up * verticalRange;
+            return Physics.Raycast(origin, Vector3.down, out hit, verticalRange * 2f,
+                Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore);
         }
 
         private static Material CreateMaterial(Color color)

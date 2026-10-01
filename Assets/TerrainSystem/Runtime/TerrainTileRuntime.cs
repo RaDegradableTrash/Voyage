@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.Rendering;
+using Voyage.Wind;
 
 namespace Voyage.TerrainSystem
 {
@@ -22,10 +23,12 @@ namespace Voyage.TerrainSystem
         private InteractiveGrassTile configuredGrass;
         private bool paintedGrassResolved;
         private GrassFlow.GrassFlowPatch generatedPatch;
+        private GrassFlow.GrassFlowPatch alignedPaintedPatch;
+        private float runtimeVerticalOffset;
         // Runtime fallback patches are generated when an authored GrassFlow
         // asset is missing. Keep them by tile coordinate so streaming the
-        // same area again does not repeat raycasts, texture uploads and GPU
-        // buffer creation after every unload/reload cycle.
+        // same area again does not repeat coverage rasterization and texture
+        // uploads. Renderer-owned GPU buffers are released on tile unload.
         private static readonly System.Collections.Generic.Dictionary<Vector2Int, GrassFlow.GrassFlowPatch> runtimePatchCache =
             new System.Collections.Generic.Dictionary<Vector2Int, GrassFlow.GrassFlowPatch>();
         private MeshRenderer[][] lodRenderers;
@@ -97,6 +100,11 @@ namespace Voyage.TerrainSystem
         {
             coordinate = record.coordinate;
             bounds = record.bounds;
+            // Baked GrassFlow patches store their Y bounds in world space.
+            // Keep culling and grass on the same translated datum as the tile
+            // without changing the authored patch asset or its paint data.
+            runtimeVerticalOffset = transform.position.y - record.bounds.center.y;
+            bounds.center += Vector3.up * runtimeVerticalOffset;
             settings = chunkSettings;
             hlod = useHlod;
             // The baked LOD0 edges are already snapped to shared heights. Do
@@ -167,18 +175,12 @@ namespace Voyage.TerrainSystem
                 }
                 var patch = Resources.Load<GrassFlow.GrassFlowPatch>($"GrassFlow/Tiles/Grass_{coordinate.x}_{coordinate.y}");
                 if (patch != null)
-                {
-                    var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
-                    if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
-                    renderer.patch = patch;
-                }
+                    AssignGrassPatch(patch, true);
                 else if (Application.isPlaying && lodRoots[0] != null)
                     StartCoroutine(StreamedGrassSurface.Build(lodRoots[0].GetComponentsInChildren<MeshFilter>(true), bounds, value =>
                     {
                         generatedPatch = value;
-                        var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
-                        if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
-                        renderer.patch = value;
+                        AssignGrassPatch(value, false);
                     }));
                 return;
             }
@@ -196,6 +198,7 @@ namespace Voyage.TerrainSystem
                 Destroy(generatedPatch.density);
                 Destroy(generatedPatch);
             }
+            if (alignedPaintedPatch != null) Destroy(alignedPaintedPatch);
         }
 
         private System.Collections.IEnumerator LoadPaintedGrass()
@@ -205,7 +208,7 @@ namespace Voyage.TerrainSystem
             {
                 InteractiveGrassTile legacyCached = GetComponent<InteractiveGrassTile>();
                 if (legacyCached != null) legacyCached.enabled = false;
-                AssignGrassPatch(cached);
+                AssignGrassPatch(cached, false);
                 yield break;
             }
             var request = Resources.LoadAsync<GrassFlow.GrassFlowPatch>($"GrassFlow/Tiles/Grass_{coordinate.x}_{coordinate.y}");
@@ -215,14 +218,12 @@ namespace Voyage.TerrainSystem
             {
                 InteractiveGrassTile legacy = GetComponent<InteractiveGrassTile>();
                 if (legacy != null) legacy.enabled = false;
-                AssignGrassPatch(patch);
+                AssignGrassPatch(patch, true);
             }
             else if (lodRoots[0] != null)
             {
-                // Generated terrain already carries baked placement data for
-                // nearly every tile. Reuse that data when a painted patch is
-                // unavailable; constructing a GrassFlow renderer here would
-                // upload a new GPU field on every streamed tile boundary.
+                // Retain legacy baked placement where it actually exists.
+                // Other tiles use the current mesh-rooted GrassFlow path.
                 InteractiveGrassTile legacy = GetComponent<InteractiveGrassTile>();
                 if (legacy != null && ((legacy.bakedClusters != null && legacy.bakedClusters.Count > 0) || legacy.bakedMesh != null))
                 {
@@ -234,19 +235,29 @@ namespace Voyage.TerrainSystem
                 yield return StreamedGrassSurface.Build(lodRoots[0].GetComponentsInChildren<MeshFilter>(true), bounds, value =>
                 {
                     runtimePatchCache[coordinate] = value;
-                    AssignGrassPatch(value);
+                    AssignGrassPatch(value, false);
                 });
             }
         }
 
-        private void AssignGrassPatch(GrassFlow.GrassFlowPatch patch)
+        private void AssignGrassPatch(GrassFlow.GrassFlowPatch patch, bool alignAuthoredWorldBounds)
         {
             if (patch == null) return;
             // Assignment borrows the patch; it does not transfer ownership.
             // Authored Resources assets must never enter tile destruction.
             var renderer = GetComponent<GrassFlow.GrassFlowRenderer>();
             if (renderer == null) renderer = gameObject.AddComponent<GrassFlow.GrassFlowRenderer>();
-            renderer.patch = patch;
+            GrassFlow.GrassFlowPatch assignedPatch = patch;
+            if (alignAuthoredWorldBounds && Mathf.Abs(runtimeVerticalOffset) > 0.0001f)
+            {
+                alignedPaintedPatch = Instantiate(patch);
+                alignedPaintedPatch.name = patch.name + " (Runtime Terrain Alignment)";
+                Bounds alignedBounds = alignedPaintedPatch.bounds;
+                alignedBounds.center += Vector3.up * runtimeVerticalOffset;
+                alignedPaintedPatch.bounds = alignedBounds;
+                assignedPatch = alignedPaintedPatch;
+            }
+            renderer.patch = assignedPatch;
         }
 
         private int CalculateLod(Vector3 viewerPosition)
@@ -272,9 +283,11 @@ namespace Voyage.TerrainSystem
             }
             if (settings != null)
             {
-                Shader.SetGlobalVector("_VoyageGrassWind", new Vector4(
-                    settings.grassWindDirection.x, settings.grassWindDirection.y,
-                    settings.grassWindSpeed, settings.grassWindGust));
+                Vector4 wind = WindSystem.Instance != null
+                    ? WindSystem.Instance.GrassWindVector
+                    : new Vector4(settings.grassWindDirection.x, settings.grassWindDirection.y,
+                        settings.grassWindSpeed, settings.grassWindGust);
+                Shader.SetGlobalVector("_VoyageGrassWind", wind);
                 grass.baseColor = settings.grassBaseColor;
                 grass.rootColor = settings.grassRootColor;
                 grass.shadowColor = settings.grassShadowColor;
@@ -350,8 +363,11 @@ namespace Voyage.TerrainSystem
             // Configure before assigning a mesh, otherwise Unity cooks it once
             // with default flags and again after switching to the worker's flags.
             meshCollider.enabled = false;
-            meshCollider.convex = false;
-            meshCollider.isTrigger = false;
+            bool changeCooking = meshCollider.convex || meshCollider.cookingOptions != CollisionCookingOptions;
+            Mesh existingMesh = meshCollider.sharedMesh;
+            if (changeCooking) meshCollider.sharedMesh = null;
+            if (meshCollider.convex) meshCollider.convex = false;
+            if (meshCollider.isTrigger) meshCollider.isTrigger = false;
             if (terrainContactMaterial == null)
             {
                 terrainContactMaterial = new PhysicsMaterial("Voyage Terrain Contact")
@@ -369,11 +385,12 @@ namespace Voyage.TerrainSystem
             meshCollider.contactOffset = 0.04f;
             if (meshCollider.cookingOptions != CollisionCookingOptions)
                 meshCollider.cookingOptions = CollisionCookingOptions;
+            if (changeCooking) meshCollider.sharedMesh = existingMesh;
             Transform lod0 = transform.Find("LOD0");
             MeshFilter filter = lod0 == null ? null : lod0.GetComponent<MeshFilter>();
-            // Always synchronize with LOD0. This prevents old/generated prefabs
-            // from accidentally using a simplified visual mesh for physics.
-            if (filter != null && filter.sharedMesh != null && meshCollider.sharedMesh != filter.sharedMesh)
+            // Keep the dedicated, prepared collision mesh. LOD0 is only a
+            // fallback for legacy prefabs with no collision mesh assigned.
+            if (filter != null && filter.sharedMesh != null && meshCollider.sharedMesh == null)
             {
                 meshCollider.sharedMesh = null;
                 meshCollider.sharedMesh = filter.sharedMesh;

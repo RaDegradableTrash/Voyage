@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Voyage.TerrainSystem
 {
@@ -67,6 +68,7 @@ namespace Voyage.TerrainSystem
         readonly Queue<ContactHistory> farReplay = new Queue<ContactHistory>();
         RenderTexture permanentField;
         RenderTexture permanentScratch;
+        RenderTextureFormat fieldFormat = RenderTextureFormat.ARGBHalf;
         Material decayMaterial;
         Material stampMaterial;
         ComputeShader contactCompute;
@@ -244,7 +246,18 @@ namespace Voyage.TerrainSystem
         {
             if (initialized) return;
             OnValidate();
-            if (SystemInfo.supportsComputeShaders) contactCompute = Resources.Load<ComputeShader>("TerrainSystem/GrassContact");
+            // Batch/headless Editors expose a Null graphics device, and some
+            // GPUs cannot use half-float render textures for random writes.
+            // Do not create an invalid UAV here: LateUpdate would otherwise
+            // blit into it every frame and flood the Console during startup.
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) return;
+
+            fieldFormat = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBHalf)
+                ? RenderTextureFormat.ARGBHalf
+                : RenderTextureFormat.ARGB32;
+            bool supportsRandomWrite = SystemInfo.SupportsRandomWriteOnRenderTextureFormat(fieldFormat);
+            if (SystemInfo.supportsComputeShaders && supportsRandomWrite)
+                contactCompute = Resources.Load<ComputeShader>("TerrainSystem/GrassContact");
             field = CreateField("Grass Interaction Field");
             scratch = CreateField("Grass Interaction Scratch");
             farField = CreateField("Grass Distant History", FarResolution);
@@ -443,6 +456,7 @@ namespace Voyage.TerrainSystem
             }
             fieldCenter.y = 0f;
             decayMaterial.SetFloat("_Decay", Mathf.Exp(-decayPerSecond * Time.deltaTime));
+            decayMaterial.SetFloat("_DamageDelta", Time.deltaTime);
             Graphics.Blit(field, scratch, decayMaterial);
             Swap();
             UpdateFarField();
@@ -683,9 +697,9 @@ namespace Voyage.TerrainSystem
 
         bool IsOutsideField(Vector3 position, float radius)
         {
-            float halfWorld = worldSize * 0.5f + Mathf.Max(0f, radius);
-            return Mathf.Abs(position.x - fieldCenter.x) > halfWorld ||
-                   Mathf.Abs(position.z - fieldCenter.z) > halfWorld;
+            float halfWorld = FarWorldSize * 0.5f + Mathf.Max(0f, radius);
+            return Mathf.Abs(position.x - farCenter.x) > halfWorld ||
+                   Mathf.Abs(position.z - farCenter.z) > halfWorld;
         }
 
         void QueueSegment(Vector3 from, Vector3 to, float radius, Transform source)
@@ -747,12 +761,12 @@ namespace Voyage.TerrainSystem
             float minZ = Mathf.Min(from.z, to.z) - margin;
             float maxZ = Mathf.Max(from.z, to.z) + margin;
             float halfWorld = worldSize * 0.5f;
-            if (maxX < fieldCenter.x - halfWorld || minX > fieldCenter.x + halfWorld ||
-                maxZ < fieldCenter.z - halfWorld || minZ > fieldCenter.z + halfWorld) return;
-            ApplyContact(field, scratch, a, b, dir, radius, strength, false);
+            bool insideNear = !(maxX < fieldCenter.x - halfWorld || minX > fieldCenter.x + halfWorld ||
+                maxZ < fieldCenter.z - halfWorld || minZ > fieldCenter.z + halfWorld);
+            if (insideNear) ApplyContact(field, scratch, a, b, dir, radius, strength, false);
             RememberContact(from, to, dir, radius, strength, source);
             StampFar(from, to, dir, radius, strength);
-            if (recordPermanentTracks && permanentTrackStore != null)
+            if (insideNear && recordPermanentTracks && permanentTrackStore != null)
             {
                 StampInto(permanentField, permanentScratch, a, b, dir, radius, strength);
                 SwapPermanent();
@@ -807,6 +821,7 @@ namespace Voyage.TerrainSystem
             if (Time.time - farDecayTime >= 0.1f)
             {
                 decayMaterial.SetFloat("_Decay", FarRecovery);
+                decayMaterial.SetFloat("_DamageDelta", Time.time-farDecayTime);
                 Graphics.Blit(farField, farScratch, decayMaterial);
                 SwapFar();
                 farDecayTime = Time.time;
@@ -816,16 +831,16 @@ namespace Voyage.TerrainSystem
             {
                 ContactHistory entry = farReplay.Dequeue();
                 float strength = entry.strength * Mathf.Exp(-decayPerSecond * (Time.time - entry.time));
-                if (strength >= 0.002f) StampFar(entry.from, entry.to, entry.direction, entry.radius, strength);
+                if (strength >= 0.002f) StampFar(entry.from, entry.to, entry.direction, entry.radius, strength, ReplayDamage(entry));
             }
         }
 
-        void StampFar(Vector3 from, Vector3 to, Vector2 direction, float radius, float strength)
+        void StampFar(Vector3 from, Vector3 to, Vector2 direction, float radius, float strength, float damage = 0f)
         {
             Vector2 origin = new Vector2(farCenter.x, farCenter.z) - Vector2.one * FarWorldSize * 0.5f;
             Vector2 a = (new Vector2(from.x, from.z) - origin) / FarWorldSize;
             Vector2 b = (new Vector2(to.x, to.z) - origin) / FarWorldSize;
-            ApplyContact(farField, farScratch, a, b, direction, radius, strength / Mathf.Max(FarRecovery, 0.001f), false, true);
+            ApplyContact(farField, farScratch, a, b, direction, radius, strength / Mathf.Max(FarRecovery, 0.001f), false, true, damage);
         }
 
         void RememberContact(Vector3 from, Vector3 to, Vector2 direction, float radius, float strength, Transform source)
@@ -896,12 +911,19 @@ namespace Voyage.TerrainSystem
                 if (strength < 0.002f) continue;
                 Vector2 a = (new Vector2(entry.from.x, entry.from.z) - origin) / worldSize;
                 Vector2 b = (new Vector2(entry.to.x, entry.to.z) - origin) / worldSize;
-                ApplyContact(field, scratch, a, b, entry.direction, entry.radius, strength, false);
+                ApplyContact(field, scratch, a, b, entry.direction, entry.radius, strength, false, false, ReplayDamage(entry));
             }
         }
 
+        float ReplayDamage(ContactHistory entry)
+        {
+            float age = Mathf.Max(0f, Time.time-entry.time);
+            float pressure = entry.strength * Mathf.Exp(-decayPerSecond*age);
+            return Mathf.SmoothStep(0f,1f,Mathf.InverseLerp(.3f,.65f,pressure)) * (1f-Mathf.Exp(-10f*age));
+        }
+
         void ApplyContact(RenderTexture source, RenderTexture destination, Vector2 a, Vector2 b,
-            Vector2 direction, float radius, float strength, bool permanent, bool far = false)
+            Vector2 direction, float radius, float strength, bool permanent, bool far = false, float damage = 0f)
         {
             int resolution = source.width;
             float size = far ? FarWorldSize : worldSize;
@@ -919,6 +941,7 @@ namespace Voyage.TerrainSystem
                 contactCompute.SetVector("_StampDirection", new Vector4(direction.x, direction.y, 0, 0));
                 contactCompute.SetFloat("_StampRadius", uvRadius);
                 contactCompute.SetFloat("_StampStrength", strength);
+                contactCompute.SetFloat("_StampDamage", damage);
                 contactCompute.SetInt("_Resolution", resolution);
                 stampPixelMin[0] = minX; stampPixelMin[1] = minY;
                 contactCompute.SetInts("_PixelMin", stampPixelMin);
@@ -928,12 +951,12 @@ namespace Voyage.TerrainSystem
             }
             else
             {
-                StampInto(source, destination, a, b, direction, radius, strength, size);
+                StampInto(source, destination, a, b, direction, radius, strength, size, damage);
                 if (far) SwapFar(); else if (permanent) SwapPermanent(); else Swap();
             }
         }
 
-        void StampInto(RenderTexture source, RenderTexture destination, Vector2 a, Vector2 b, Vector2 dir, float radius, float strength, float size = 0f)
+        void StampInto(RenderTexture source, RenderTexture destination, Vector2 a, Vector2 b, Vector2 dir, float radius, float strength, float size = 0f, float damage = 0f)
         {
             stampMaterial.SetVector("_StampA", new Vector4(a.x, a.y, 0f, 0f));
             stampMaterial.SetVector("_StampB", new Vector4(b.x, b.y, 0f, 0f));
@@ -943,6 +966,7 @@ namespace Voyage.TerrainSystem
             // grass instead of a nearly invisible one-pixel line.
             stampMaterial.SetFloat("_StampRadius", Mathf.Max(radius / (size > 0 ? size : worldSize), 1f / source.width));
             stampMaterial.SetFloat("_StampStrength", strength);
+            stampMaterial.SetFloat("_StampDamage", damage);
             Graphics.Blit(source, destination, stampMaterial);
         }
 
@@ -978,7 +1002,7 @@ namespace Voyage.TerrainSystem
                 Vector3 p = GetWheelAnchor(wheel);
                 GUILayout.Label($"Wheel {i}: {wheel.debugState}  anchor=({p.x:0.0}, {p.y:0.0}, {p.z:0.0})  pressed={wheel.pressingThisFrame}");
             }
-            InteractiveGrassTile[] tiles = FindObjectsByType<InteractiveGrassTile>(FindObjectsSortMode.None);
+            InteractiveGrassTile[] tiles = FindObjectsByType<InteractiveGrassTile>();
             GUILayout.Label($"Visible tile states: {tiles.Length}");
             for (int i = 0; i < tiles.Length && i < 18; i++)
                 GUILayout.Label($"Tile {tiles[i].tileCoordinate}: {tiles[i].DebugState}  nearest={tiles[i].DebugNearestWheelDistance:0.0}m  pressing wheels={tiles[i].DebugPressingWheelCount}");
@@ -1072,9 +1096,15 @@ namespace Voyage.TerrainSystem
         RenderTexture CreateField(string name, int size = 0)
         {
             if (size <= 0) size = resolution;
-            var result = new RenderTexture(size, size, 0, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear)
+            if (!SystemInfo.SupportsRenderTextureFormat(fieldFormat)) return null;
+            var result = new RenderTexture(size, size, 0, fieldFormat, RenderTextureReadWrite.Linear)
             { name = name, filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp, useMipMap = false, autoGenerateMips = false, enableRandomWrite = contactCompute != null };
-            result.Create();
+            if (!result.Create() || !result.IsCreated())
+            {
+                result.Release();
+                Destroy(result);
+                return null;
+            }
             return result;
         }
 

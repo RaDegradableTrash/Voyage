@@ -5,7 +5,7 @@ Shader "Hidden/Voyage/GrassInteractionStamp"
         #pragma vertex vert
         #pragma fragment frag
         #include "UnityCG.cginc"
-        sampler2D _MainTex; float4 _StampA,_StampB,_StampDirection; float _StampRadius,_StampStrength;
+        sampler2D _MainTex; float4 _StampA,_StampB,_StampDirection; float _StampRadius,_StampStrength,_StampDamage;
         struct A { float4 p:POSITION; float2 uv:TEXCOORD0; }; struct V { float4 p:SV_POSITION; float2 uv:TEXCOORD0; };
         V vert(A i){V o;o.p=UnityObjectToClipPos(i.p);o.uv=i.uv;return o;}
         half4 frag(V i):SV_Target
@@ -17,7 +17,7 @@ Shader "Hidden/Voyage/GrassInteractionStamp"
             float pressure = coverage * _StampStrength;
             // Max pressure is invariant under frame rate and repeated axles.
             if (pressure <= old.b) return old;
-            return half4(_StampDirection.xy * pressure, pressure, pressure);
+            return half4(_StampDirection.xy * pressure, pressure, max(old.a,_StampDamage*coverage));
         }
         ENDCG } }
 }

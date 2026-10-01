@@ -30,6 +30,8 @@ Shader "Voyage/Terrain/Stylized"
             CBUFFER_END
         float4 _VoyageTerrainView;
         float _VoyageContourDepthPass;
+        float4 _VoyageAtmosphereColor;
+        float4 _VoyageAtmosphereRange;
         void ClipTerrainCoverage(float2 pixel, float3 world)
         {
             // Contours describe solid geometry, never the individual pixels of
@@ -106,6 +108,14 @@ Shader "Voyage/Terrain/Stylized"
                 half3 color = VoyageGroundAlbedo(input.positionWS);
                 color = VoyageSurfaceLight(color,input.positionWS,normalWS);
                 color = MixFog(color, input.fogFactor);
+                // The persistent horizon mesh uses the same grassland surface
+                // shader. Give that distant layer extra aerial perspective so
+                // mountains separate from the meadow before global fog becomes
+                // strong, while the nearer streamed terrain keeps its colors.
+                float horizonDistance = distance(input.positionWS, _WorldSpaceCameraPos);
+                float horizonFade = saturate(_Horizon) * smoothstep(5000.0, 11000.0, horizonDistance);
+                float atmosphereWeight = horizonFade * .07 * saturate(_VoyageAtmosphereRange.z);
+                color = lerp(color, _VoyageAtmosphereColor.rgb, atmosphereWeight);
                 return half4(color, 1.0h);
             }
             ENDHLSL
@@ -123,6 +133,69 @@ Shader "Voyage/Terrain/Stylized"
             struct DepthVaryings { float4 positionCS:SV_POSITION; float3 world:TEXCOORD0; };
             DepthVaryings DepthVert(float3 positionOS:POSITION) { DepthVaryings o; o.world=TransformObjectToWorld(positionOS); o.positionCS=TransformWorldToHClip(o.world); return o; }
             half4 DepthFrag(DepthVaryings i):SV_Target { ClipTerrainCoverage(i.positionCS.xy,i.world); return 0; }
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "ShadowCaster"
+            Tags { "LightMode"="ShadowCaster" }
+            ZWrite On
+            ZTest LEqual
+            ColorMask 0
+            HLSLPROGRAM
+            #pragma vertex ShadowVert
+            #pragma fragment ShadowFrag
+            #pragma multi_compile_vertex _ _CASTING_PUNCTUAL_LIGHT_SHADOW
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
+
+            float3 _LightDirection;
+            float3 _LightPosition;
+
+            struct ShadowAttributes
+            {
+                float4 positionOS : POSITION;
+                float3 normalOS : NORMAL;
+            };
+            struct ShadowVaryings
+            {
+                float4 positionCS : SV_POSITION;
+                float3 positionWS : TEXCOORD0;
+            };
+
+            ShadowVaryings ShadowVert(ShadowAttributes input)
+            {
+                ShadowVaryings output;
+                float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
+                float3 normalWS = TransformObjectToWorldNormal(input.normalOS);
+                float3 lightDirectionWS;
+                #if defined(_CASTING_PUNCTUAL_LIGHT_SHADOW)
+                    lightDirectionWS = normalize(_LightPosition - positionWS);
+                #else
+                    lightDirectionWS = _LightDirection;
+                #endif
+                positionWS = ApplyShadowBias(positionWS, normalWS, lightDirectionWS);
+                output.positionWS = positionWS;
+                output.positionCS = TransformWorldToHClip(positionWS);
+                #if UNITY_REVERSED_Z
+                    output.positionCS.z = min(output.positionCS.z, output.positionCS.w * UNITY_NEAR_CLIP_VALUE);
+                #else
+                    output.positionCS.z = max(output.positionCS.z, output.positionCS.w * UNITY_NEAR_CLIP_VALUE);
+                #endif
+                return output;
+            }
+
+            half4 ShadowFrag(ShadowVaryings input) : SV_Target
+            {
+                // Keep LOD cross-fade coverage consistent with the visible
+                // pass, but never apply the gameplay camera's view-distance
+                // clip to a shadow camera. Distant mountains must still cast
+                // shadows onto the visible plain.
+                float threshold = frac(52.9829189 * frac(dot(floor(input.positionCS.xy), float2(.06711056, .00583715))));
+                clip(_TerrainLodOutgoing > .5 ? threshold - _TerrainLodProgress - .00001 : _TerrainLodProgress - threshold);
+                return 0;
+            }
             ENDHLSL
         }
     }

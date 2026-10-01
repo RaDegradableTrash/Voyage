@@ -4,6 +4,7 @@ using System.IO;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using Voyage.TerrainSystem;
 
 [InitializeOnLoad]
 public static class PrefabBootstrap
@@ -21,6 +22,8 @@ public static class PrefabBootstrap
     {
         if (EditorApplication.isPlayingOrWillChangePlaymode || Application.isPlaying || BuildPipeline.isBuildingPlayer) return;
         EditorApplication.delayCall -= EnsurePrefabs;
+        if (!HasMissingRequiredPrefabs()) return;
+
         const string folder = "Assets/Resources/Prefabs";
         if (!AssetDatabase.IsValidFolder("Assets/Resources")) AssetDatabase.CreateFolder("Assets", "Resources");
         if (!AssetDatabase.IsValidFolder(folder)) AssetDatabase.CreateFolder("Assets/Resources", "Prefabs");
@@ -32,8 +35,63 @@ public static class PrefabBootstrap
         CreateTerrainPrefab();
         CreateVehicleManualPrefab();
         CreateGameRootPrefab();
+        AssetDatabase.SaveAssets();
+        // Refresh only when this bootstrap actually generated a missing asset.
+        // Running a forced synchronous refresh on every Editor launch needlessly
+        // rescans the project's 80k+ assets and stalls the main thread.
+        AssetDatabase.Refresh();
+    }
+
+    static bool HasMissingRequiredPrefabs()
+    {
+        string[] required =
+        {
+            "Assets/Resources/Prefabs/Cube.prefab",
+            "Assets/Resources/Prefabs/Cylinder.prefab",
+            "Assets/Resources/Prefabs/Sphere.prefab",
+            "Assets/Resources/Prefabs/Capsule.prefab",
+            "Assets/Resources/Prefabs/PlayerCar.prefab",
+            "Assets/Resources/Prefabs/TerrainTile.prefab",
+            "Assets/Resources/Prefabs/GameRoot.prefab"
+        };
+        for (int i = 0; i < required.Length; i++)
+            if (!File.Exists(required[i])) return true;
+
+        // This optional prefab can only be generated when its source FBX exists.
+        return File.Exists("Assets/Vehicle.fbx") &&
+               !File.Exists("Assets/Resources/Prefabs/VehicleManual.prefab");
+    }
+
+    // Scene conversion is explicit: a domain reload must not capture streamed
+    // terrain or save unrelated scene edits.
+    [MenuItem("NightRunner/Convert Scene Roots to Prefabs")]
+    public static void ConvertSceneRootsToPrefabs()
+    {
+        if (EditorApplication.isPlayingOrWillChangePlaymode || Application.isPlaying || BuildPipeline.isBuildingPlayer) return;
+        EnsurePrefabs();
         ConvertOpenSceneRoots();
         EnsureGameRootInScene();
+    }
+
+    [MenuItem("NightRunner/Clean Missing Scripts in Vehicle Prefabs")]
+    public static void CleanMissingScriptsInVehiclePrefabs()
+    {
+        string[] paths =
+        {
+            "Assets/Resources/Prefabs/RV1.0.prefab",
+            "Assets/ReferenceVehicle/RV1.0.prefab"
+        };
+        for (int i = 0; i < paths.Length; i++)
+        {
+            if (!File.Exists(paths[i])) continue;
+            GameObject root = PrefabUtility.LoadPrefabContents(paths[i]);
+            int removed = 0;
+            foreach (var transform in root.GetComponentsInChildren<Transform>(true))
+                removed += GameObjectUtility.RemoveMonoBehavioursWithMissingScript(transform.gameObject);
+            PrefabUtility.SaveAsPrefabAsset(root, paths[i]);
+            PrefabUtility.UnloadPrefabContents(root);
+            Debug.Log("Removed " + removed + " missing script component(s) from " + paths[i]);
+        }
         AssetDatabase.SaveAssets();
         AssetDatabase.Refresh();
     }
@@ -276,12 +334,19 @@ public static class PrefabBootstrap
         foreach (var root in scene.GetRootGameObjects())
         {
             if (PrefabUtility.IsPartOfPrefabInstance(root)) continue;
+            if (root.GetComponent<TerrainTileRuntime>() != null) continue;
+            bool missingScript = false;
+            foreach (var child in root.GetComponentsInChildren<Transform>(true))
+                missingScript |= GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(child.gameObject) > 0;
+            if (missingScript)
+            {
+                Debug.LogWarning("Cannot convert '" + root.name + "': restore its missing scripts first.", root);
+                continue;
+            }
             string safeName = SanitizeAssetName(root.name);
             string path = "Assets/Resources/Prefabs/Scene_" + safeName + ".prefab";
             if (!File.Exists(path)) PrefabUtility.SaveAsPrefabAssetAndConnect(root, path, InteractionMode.AutomatedAction);
         }
-        EditorSceneManager.MarkSceneDirty(scene);
-        EditorSceneManager.SaveScene(scene);
     }
 
     static void EnsureGameRootInScene()
@@ -298,7 +363,6 @@ public static class PrefabBootstrap
         var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab, scene);
         instance.name = "VOYAGE // GAME ROOT";
         EditorSceneManager.MarkSceneDirty(scene);
-        EditorSceneManager.SaveScene(scene);
     }
 
     static string SanitizeAssetName(string value)

@@ -10,7 +10,7 @@ namespace Voyage.Tests.Editor
 {
     public sealed class GrassFlowPainterTests
     {
-        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
         static Type Find(string name)
         {
             foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies()) { var type = assembly.GetType(name); if (type != null) return type; }
@@ -75,6 +75,53 @@ namespace Voyage.Tests.Editor
                 Assert.That(((Texture2D)Get(streamedResult,"density")).GetPixel(64,64).r, Is.GreaterThan(.5f));
             }
             finally { if(streamedResult!=null) DeletePatch(streamedResult); Object.DestroyImmediate(host); Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
+        public void RuntimeGrassHeightComesFromOwningTileMeshNotOverheadCollider()
+        {
+            var host = new GameObject("Runtime grass terrain");
+            var blocker = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var mesh = Surface();
+            streamedResult = null;
+            try
+            {
+                host.transform.position = new Vector3(2048, 25, 2048);
+                var filter = host.AddComponent<MeshFilter>();
+                filter.sharedMesh = mesh;
+                blocker.transform.position = new Vector3(2056, 45, 2056);
+                blocker.transform.localScale = new Vector3(3, 1, 3);
+
+                var patchType = Find("GrassFlow.GrassFlowPatch");
+                var callbackMethod = typeof(GrassFlowPainterTests)
+                    .GetMethod("ReceiveStreamed", BindingFlags.Static | BindingFlags.NonPublic)
+                    .MakeGenericMethod(patchType);
+                var callback = Delegate.CreateDelegate(typeof(Action<>).MakeGenericType(patchType), callbackMethod);
+                var builder = Find("Voyage.TerrainSystem.StreamedGrassSurface");
+                var routine = (System.Collections.IEnumerator)builder
+                    .GetMethod("BuildRuntimeSampled", Flags)
+                    .Invoke(null, new object[]
+                    {
+                        new[] { filter },
+                        new Bounds(new Vector3(2056, 25, 2056), new Vector3(16, 10, 16)),
+                        callback
+                    });
+                while (routine.MoveNext()) { }
+
+                Assert.That(streamedResult, Is.Not.Null);
+                var surface = (Texture2D)Get(streamedResult, "surface");
+                var patchBounds = (Bounds)Get(streamedResult, "bounds");
+                float sampledWorldHeight = patchBounds.min.y + surface.GetPixel(32, 32).r * patchBounds.size.y;
+                Assert.That(sampledWorldHeight, Is.EqualTo(25f).Within(.05f),
+                    "Grass roots must follow their terrain mesh, even when another collider is directly above it.");
+            }
+            finally
+            {
+                if (streamedResult != null) DeletePatch(streamedResult);
+                Object.DestroyImmediate(blocker);
+                Object.DestroyImmediate(host);
+                Object.DestroyImmediate(mesh);
+            }
         }
 
         [Test]

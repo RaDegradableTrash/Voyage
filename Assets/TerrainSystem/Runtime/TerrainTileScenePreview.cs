@@ -68,7 +68,9 @@ namespace Voyage.TerrainSystem
                     instance.transform.SetParent(previewRoot, false);
                     // BuildMesh stores vertices relative to the tile center, so the
                     // prefab root supplies the tile's world-space translation.
-                    instance.transform.position = record.bounds.center;
+                    instance.transform.position = index.source != null
+                        ? index.source.GetRuntimePosition(record.bounds.center)
+                        : record.bounds.center;
                     instance.transform.rotation = Quaternion.identity;
                     instance.transform.localScale = Vector3.one;
                     TerrainTileRuntime runtime = instance.GetComponent<TerrainTileRuntime>();

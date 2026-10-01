@@ -5,8 +5,11 @@ Shader "Hidden/Voyage/GrassInteractionDecay"
         #pragma vertex vert
         #pragma fragment frag
         #include "UnityCG.cginc"
-        sampler2D _MainTex; float _Decay;
+        sampler2D _MainTex; float _Decay, _DamageDelta;
         struct A { float4 p:POSITION; float2 uv:TEXCOORD0; }; struct V { float4 p:SV_POSITION; float2 uv:TEXCOORD0; };
-        V vert(A i){V o;o.p=UnityObjectToClipPos(i.p);o.uv=i.uv;return o;} half4 frag(V i):SV_Target { return tex2D(_MainTex,i.uv) * _Decay; }
+        V vert(A i){V o;o.p=UnityObjectToClipPos(i.p);o.uv=i.uv;return o;} half4 frag(V i):SV_Target { float4 state = tex2D(_MainTex,i.uv);
+            float target = smoothstep(.3,.65,state.b);
+            state.a = lerp(state.a,target,1-exp(-max(0,_DamageDelta)*10));
+            return float4(state.rgb*_Decay,state.a*_Decay); }
 ENDCG } }
 }

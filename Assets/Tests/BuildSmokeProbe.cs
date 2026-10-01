@@ -20,7 +20,7 @@ namespace Voyage.Tests
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Install()
         {
-            if (Application.isEditor || !Environment.GetCommandLineArgs().Contains("-voyage-validate")) return;
+            if (Application.isEditor || !System.Environment.GetCommandLineArgs().Contains("-voyage-validate")) return;
             Application.runInBackground = true;
             DontDestroyOnLoad(new GameObject("Build verification").AddComponent<BuildSmokeProbe>().gameObject);
         }
@@ -33,7 +33,7 @@ namespace Voyage.Tests
         {
             directory = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Validation"));
             Directory.CreateDirectory(directory);
-            foreach (var tracks in FindObjectsByType<GrassPermanentTrackStore>(FindObjectsSortMode.None))
+            foreach (var tracks in FindObjectsByType<GrassPermanentTrackStore>())
                 tracks.fileName = Path.Combine(directory, "grass-tracks.json");
             float until = Time.realtimeSinceStartup + 120;
             while ((DrivingCore.Instance == null || DrivingCore.Instance.Player == null) && Time.realtimeSinceStartup < until) yield return null;
@@ -49,7 +49,7 @@ namespace Voyage.Tests
                 yield return new WaitForSecondsRealtime(5);
                 Check("Spawn ground collision", Physics.RaycastAll(car.transform.position + Vector3.up * 5, Vector3.down, 100)
                     .Any(h => h.collider.GetComponentInParent<TerrainTileRuntime>() != null));
-                Check("Spawn grass ready", FindObjectsByType<GrassFlowRenderer>(FindObjectsSortMode.None).Any(g => g.Ready));
+                Check("Spawn grass ready", FindObjectsByType<GrassFlowRenderer>().Any(g => g.Ready));
                 var day = DayNightSystem.Instance;
                 Check("Day/night bootstrap", day != null);
                 if (day != null) { day.advanceTime = false; day.SetTime(12); }
@@ -72,7 +72,7 @@ namespace Voyage.Tests
                     TerrainTileRuntime tile = null;
                     while (Time.realtimeSinceStartup < until)
                     {
-                        tile = FindObjectsByType<TerrainTileRuntime>(FindObjectsSortMode.None).FirstOrDefault(t => t.Coordinate == far.coordinate && t.CollisionEnabled);
+                        tile = FindObjectsByType<TerrainTileRuntime>().FirstOrDefault(t => t.Coordinate == far.coordinate && t.CollisionEnabled);
                         if (tile != null) break;
                         yield return null;
                     }

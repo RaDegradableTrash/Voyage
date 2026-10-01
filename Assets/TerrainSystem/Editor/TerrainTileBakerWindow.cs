@@ -188,7 +188,7 @@ namespace Voyage.TerrainSystem.Editor
 
         private void EnsureScenePreview()
         {
-            TerrainTileScenePreview[] previews = FindObjectsByType<TerrainTileScenePreview>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            TerrainTileScenePreview[] previews = FindObjectsByType<TerrainTileScenePreview>(FindObjectsInactive.Include);
             TerrainTileScenePreview preview = previews.Length > 0 ? previews[0] : null;
             for (int i = 1; i < previews.Length; i++)
                 if (previews[i] != null) Undo.DestroyObjectImmediate(previews[i].gameObject);

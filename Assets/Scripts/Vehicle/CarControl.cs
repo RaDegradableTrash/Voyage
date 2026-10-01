@@ -3,7 +3,7 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using TMPro;
 
-[RequireComponent(typeof(AudioSource))]
+[RequireComponent(typeof(AudioSource), typeof(Rigidbody))]
 public class CarControl : MonoBehaviour
 {
     public enum GearMode
@@ -44,11 +44,10 @@ public class CarControl : MonoBehaviour
     [SerializeField] private float driveMaxSpeedKmh = 160f;
     [SerializeField] private float reverseMaxSpeedKmh = 30f;
     [SerializeField] private float sixLockSwitchMaxWheelRpm = 0.01f;
-    [SerializeField] private float speedLimiterBrake = 0.2f;
     [SerializeField] private WheelControl[] sixLockWheels = new WheelControl[6];
 
-    public float motorTorque = 35000;
-    public float brakeTorque = 400000;
+    public float motorTorque = 70000;
+    public float brakeTorque = 150000;
     public float eBrakeTorque = 10000000f;
     public float steeringRange = 30;
     public float steeringRangeAtMaxSpeed = 10;
@@ -61,7 +60,7 @@ public class CarControl : MonoBehaviour
     [SerializeField] private float engineMinRpm = 500f;
     [SerializeField] private float upshiftRpm = 2200f;
     [SerializeField] private float downshiftRpm = 1200f;
-    [SerializeField] private float shiftDuration = 0.5f;
+    [SerializeField] private float shiftDuration = 0.25f;
 
     private int currentTransmissionGear = 0;
     private float shiftTimer = 0f;
@@ -100,11 +99,14 @@ public class CarControl : MonoBehaviour
     [SerializeField] private Vector3 steeringWheelLocalAxis = new Vector3(0, 0, 1);
     [SerializeField] private float steeringWheelMaxTurn = 540f;
     [SerializeField] private bool invertSteeringWheel = false;
-    [SerializeField] private float steeringResponseSpeed = 45f;
+    [SerializeField] private float steeringResponseSpeed = 75f;
     [SerializeField] private float steeringReturnSpeed = 120f;
     [SerializeField] private float steeringReturnMinSpeedKmh = 1f;
-    [SerializeField] private float innerSteerAngle = 37f;
-    [SerializeField] private float outerSteerAngle = 25f;
+    [SerializeField, Min(0f)] private float steeringReleaseYawDamping = 4f;
+    [Tooltip("Damps takeoff pitch momentum only while all wheels are airborne (per second).")]
+    [SerializeField, Min(0f)] private float airbornePitchDamping = 4f;
+    [SerializeField] private float innerSteerAngle = 42f;
+    [SerializeField] private float outerSteerAngle = 32f;
     [SerializeField] private float l6ThrottleRise = 0.4f;
     [SerializeField] private float l6ThrottleFall = 0.8f;
     [SerializeField] private AnimationCurve l6TorqueBySpeed = new AnimationCurve(
@@ -122,14 +124,19 @@ public class CarControl : MonoBehaviour
     private Quaternion steeringWheelInitialLocalRotation;
     [SerializeField] private AnimationCurve steeringLimitBySpeed = new AnimationCurve(
         new Keyframe(0f, 1f),
-        new Keyframe(30f, 0.27f),
-        new Keyframe(60f, 0.11f),
-        new Keyframe(80f, 0.065f),
-        new Keyframe(100f, 0.045f),
-        new Keyframe(120f, 0.0335f),
-        new Keyframe(140f, 0.0205f),
-        new Keyframe(160f, 0.0205f)
+        new Keyframe(30f, 0.85f),
+        new Keyframe(60f, 0.68f),
+        new Keyframe(90f, 0.52f),
+        new Keyframe(120f, 0.4f),
+        new Keyframe(160f, 0.32f)
     );
+    [Header("Braking & Drift")]
+    [SerializeField, Range(0.1f, 1f)] private float driftRearGripMultiplier = 0.25f;
+    [SerializeField] private float driftSteerThreshold = 0.35f;
+    [SerializeField] private float driftStartSpeedKmh = 18f;
+    [SerializeField] private float driftFullSpeedKmh = 55f;
+    [SerializeField] private float driftGripEngageSpeed = 8f;
+    [SerializeField] private float driftGripRecoverySpeed = 3.5f;
 
     // ========== 引擎声音参数 ==========
     [Header("Engine Audio")]
@@ -145,8 +152,13 @@ public class CarControl : MonoBehaviour
     [Range(0f, 0.3f)] public float cylinderImbalance = 0.15f;
 
     WheelControl[] wheels;
+    private WheelFrictionCurve[] originalSidewaysFriction;
     Rigidbody rigidBody;
+    Vector3 authoredCenterOfMass;
+    bool groundedCenterOfMassApplied;
     private float currentSteerAngle;
+    private bool steeringInputHeld;
+    private float currentDriftAmount;
     private float currentSpeedKmh;
     public float CurrentSpeedKmh => currentSpeedKmh;
     private float l6ThrottleCurrent;
@@ -161,6 +173,9 @@ public class CarControl : MonoBehaviour
     private volatile bool engineSoundRequested;
     // Owned by the audio thread: keep oscillator phase through the release tail.
     private float engineAudioEnvelope;
+    // Smoothed level used to keep the synthesized carrier perceptually steady
+    // while RPM harmonics and deterministic noise change phase.
+    private float engineAudioSignalLevel = 0.18f;
     private float engineAudioRpm;
     private float engineAudioLoad;
     private float audioReleaseStep;
@@ -174,11 +189,11 @@ public class CarControl : MonoBehaviour
     private double turboPhase;
     private double samplingRate = 48000;
     private AudioSource engineAudioSource;
+    private VehicleEngineAudio dedicatedEngineAudio;
     private AudioClip engineCarrier;
     private uint noiseSeed = 123456789u;
     
     // 动能回收相关
-    private float lastFrameVelocity = 0f;
     private Vector3 lastFramePosition;
     // The reference RV's nose is local -Z; normalized physics wheels roll
     // along local +Z, hence the negative drive torque below.
@@ -334,32 +349,41 @@ public class CarControl : MonoBehaviour
 
         if (startProcedure == null)
         {
-            startProcedure = FindObjectOfType<StartProcedure>();
+            startProcedure = FindAnyObjectByType<StartProcedure>();
         }
 
-        rigidBody.centerOfMass += Vector3.up * centreOfGravityOffset;
-
         wheels = GetComponentsInChildren<WheelControl>();
+        CacheOriginalSidewaysFriction();
+        // Keep the authored center of mass while airborne. The lowered arcade
+        // center is applied only while a wheel is grounded; otherwise an
+        // airborne vehicle rotates around an artificial point below its body.
+        authoredCenterOfMass = rigidBody.centerOfMass;
+        groundedCenterOfMassApplied = false;
         BuildSixLockWheelSet();
         
         // 初始化 AudioSource
         samplingRate = Mathf.Max(8000, AudioSettings.outputSampleRate);
-        AudioSource audioSource = GetComponent<AudioSource>();
-        engineAudioSource = audioSource;
-        if (audioSource != null)
+        AudioSource legacyAudioSource = GetComponent<AudioSource>();
+        if (legacyAudioSource != null)
         {
-            audioSource.playOnAwake = false;
-            audioSource.loop = true;
-            audioSource.spatialBlend = 0f;
-            // A dedicated looping carrier keeps the DSP callback alive independent of
-            // imported clip gaps, clip completion and source virtualization.
-            engineCarrier = AudioClip.Create("Continuous engine DSP carrier", 48000, 1, 48000, false);
-            audioSource.clip = engineCarrier;
-            audioSource.priority = 0;
-            audioSource.volume = 1f;
-            audioSource.pitch = 1f;
-            audioSource.dopplerLevel = 0f;
-            audioSource.Play();
+            // This prefab carried an old AudioLowPassFilter with a serialized
+            // custom curve. It attenuates the synthesized carrier differently
+            // as RPM changes, which is heard as a slow, irregular volume pump.
+            // Engine tone is generated after this source and needs a stable
+            // full-band path; environmental filtering belongs on the mixer.
+            legacyAudioSource.Stop();
+            legacyAudioSource.enabled = false;
+        }
+        GameObject audioObject = new GameObject("ENGINE AUDIO DSP");
+        audioObject.transform.SetParent(transform, false);
+        dedicatedEngineAudio = audioObject.AddComponent<VehicleEngineAudio>();
+        engineAudioSource = dedicatedEngineAudio.Source;
+        AudioSource[] embeddedAudioSources = GetComponentsInChildren<AudioSource>(true);
+        for (int i = 0; i < embeddedAudioSources.Length; i++)
+        {
+            if (embeddedAudioSources[i] == engineAudioSource) continue;
+            embeddedAudioSources[i].Stop();
+            embeddedAudioSources[i].enabled = false;
         }
         
         samplingRate = AudioSettings.outputSampleRate;
@@ -397,6 +421,116 @@ public class CarControl : MonoBehaviour
             }
         }
 
+    }
+
+    private void CacheOriginalSidewaysFriction()
+    {
+        originalSidewaysFriction = new WheelFrictionCurve[wheels.Length];
+        for (int i = 0; i < wheels.Length; i++)
+        {
+            WheelControl wheel = wheels[i];
+            WheelCollider collider = wheel != null ? wheel.WheelCollider : null;
+            if (collider == null && wheel != null) collider = wheel.GetComponent<WheelCollider>();
+            if (collider == null) continue;
+
+            if (wheel.WheelCollider == null) wheel.BindCollider(collider);
+            originalSidewaysFriction[i] = collider.sidewaysFriction;
+        }
+    }
+
+    private void ApplyDriftGrip(float driftAmount)
+    {
+        if (wheels == null || originalSidewaysFriction == null) return;
+
+        int count = Mathf.Min(wheels.Length, originalSidewaysFriction.Length);
+        for (int i = 0; i < count; i++)
+        {
+            WheelControl wheel = wheels[i];
+            if (wheel == null || wheel.WheelCollider == null) continue;
+
+            WheelFrictionCurve friction = originalSidewaysFriction[i];
+            bool rearWheel = !wheel.isFrontLeft && !wheel.isFrontRight;
+            float gripMultiplier = rearWheel
+                ? Mathf.Lerp(1f, driftRearGripMultiplier, driftAmount)
+                : 1f;
+            friction.stiffness *= gripMultiplier;
+            wheel.WheelCollider.sidewaysFriction = friction;
+        }
+    }
+
+    void FixedUpdate()
+    {
+        if (rigidBody == null || wheels == null || wheels.Length == 0) return;
+
+        bool grounded = false;
+        for (int i = 0; i < wheels.Length; i++)
+        {
+            WheelControl wheel = wheels[i];
+            if (wheel != null && wheel.WheelCollider != null && wheel.WheelCollider.isGrounded)
+            {
+                grounded = true;
+                break;
+            }
+        }
+
+        SetGroundedCenterOfMass(grounded);
+        ApplySteeringReleaseYawDamping(grounded);
+        ApplyAirbornePitchDamping(grounded);
+    }
+
+    void ApplyAirbornePitchDamping(bool grounded)
+    {
+        if (grounded || rigidBody == null || rigidBody.isKinematic || airbornePitchDamping <= 0f) return;
+
+        // Restoring the center of mass does not remove the pitch momentum
+        // from the last suspension contact. With the RV's low angular drag,
+        // that momentum otherwise keeps lifting the nose throughout a jump.
+        // Use the physics pose (not the interpolated render transform), and
+        // leave yaw, roll and ballistic motion alone. Do not snap to level:
+        // the launch slope should still determine the airborne attitude.
+        Vector3 pitchAxis = rigidBody.rotation * Vector3.right;
+        Vector3 pitchVelocity = Vector3.Project(rigidBody.angularVelocity, pitchAxis);
+        float decay = 1f - Mathf.Exp(-airbornePitchDamping * Time.fixedDeltaTime);
+        rigidBody.angularVelocity -= pitchVelocity * decay;
+    }
+
+    void ApplySteeringReleaseYawDamping(bool grounded)
+    {
+        if (!grounded || rigidBody == null || steeringInputHeld || currentDriftAmount > 0.05f) return;
+
+        // As the wheel returns to center, progressively remove yaw momentum.
+        // WheelColliders can otherwise keep the chassis circling after the
+        // driver lets go, especially after a long, high-speed turn.
+        float maxSteerAngle = Mathf.Max(1f, Mathf.Max(innerSteerAngle, outerSteerAngle));
+        float steeringRelease = 1f - Mathf.Clamp01(Mathf.Abs(currentSteerAngle) / maxSteerAngle);
+        if (steeringReleaseYawDamping <= 0f) return;
+
+        Vector3 yawAxis = transform.up;
+        Vector3 yawVelocity = Vector3.Project(rigidBody.angularVelocity, yawAxis);
+        float dampingBlend = Mathf.Lerp(0.35f, 1f, steeringRelease);
+        float decay = 1f - Mathf.Exp(-steeringReleaseYawDamping * dampingBlend * Time.fixedDeltaTime);
+        rigidBody.angularVelocity -= yawVelocity * decay;
+    }
+
+    float GetSteeringReturnSpeed(float displaySpeed)
+    {
+        float speedFactor = Mathf.Clamp01(steeringReturnBySpeed.Evaluate(
+            Mathf.Max(displaySpeed, steeringReturnMinSpeedKmh)));
+        // The authored curve reaches zero at a standstill, leaving the front
+        // wheels pointed forever if the player releases A/D at low speed.
+        return steeringReturnSpeed * Mathf.Lerp(0.6f, 1f, speedFactor);
+    }
+
+    void SetGroundedCenterOfMass(bool grounded)
+    {
+        if (rigidBody == null || grounded == groundedCenterOfMassApplied) return;
+        groundedCenterOfMassApplied = grounded;
+        rigidBody.centerOfMass = grounded
+            ? authoredCenterOfMass + Vector3.up * centreOfGravityOffset
+            : authoredCenterOfMass;
+        // Rebuild rotational inertia around the newly selected center. The
+        // order matters when restoring the authored airborne center.
+        rigidBody.ResetInertiaTensor();
     }
 
     void Update()
@@ -463,7 +597,11 @@ public class CarControl : MonoBehaviour
 
         float currentMotorTorque = Mathf.Lerp(requestedMotorTorque, 0, speedFactorMotor);
 
-        float steeringLimitMultiplier = Mathf.Clamp01(steeringLimitBySpeed.Evaluate(displaySpeed));
+        // Steering uses physical road speed, independent of the UI display
+        // multiplier. Using displaySpeed here made steering collapse to a few
+        // degrees at normal driving speeds, especially with half-scale HUD.
+        float physicalSpeedKmh = Mathf.Abs(forwardSpeed) * 3.6f;
+        float steeringLimitMultiplier = Mathf.Clamp01(steeringLimitBySpeed.Evaluate(physicalSpeedKmh));
         bool steeringLocked = currentGear == GearMode.Park;
         float outerMaxAngle = outerSteerAngle * steeringLimitMultiplier;
         float innerMaxAngle = innerSteerAngle * steeringLimitMultiplier;
@@ -521,6 +659,18 @@ public class CarControl : MonoBehaviour
                 }
                 break;
         }
+
+        float brakingForDrift = isHandBraking ? 1f : brakeInput;
+        float steeringForDrift = Mathf.InverseLerp(driftSteerThreshold, 0.9f, Mathf.Abs(hInputRaw));
+        float speedForDrift = Mathf.InverseLerp(driftStartSpeedKmh, driftFullSpeedKmh, physicalSpeedKmh);
+        float targetDriftAmount = currentGear == GearMode.Park
+            ? 0f
+            : brakingForDrift * steeringForDrift * speedForDrift;
+        float driftTransitionSpeed = targetDriftAmount > currentDriftAmount
+            ? driftGripEngageSpeed
+            : driftGripRecoverySpeed;
+        currentDriftAmount = Mathf.MoveTowards(currentDriftAmount, targetDriftAmount, driftTransitionSpeed * Time.deltaTime);
+        ApplyDriftGrip(currentDriftAmount);
 
         if (!wantsForward) l6ThrottleCurrent = 0f;
         float appliedThrottleInput = throttleInput;
@@ -638,14 +788,15 @@ public class CarControl : MonoBehaviour
         UpdateRpmDisplay(smoothEngineRpm);
 
         bool steerInputActive = Mathf.Abs(hInputRaw) > 0.01f;
+        steeringInputHeld = steerInputActive;
         float targetSteerAngle = hInputRaw * currentMaxWheelSteerAngle;
         if (!steeringLocked && steerInputActive)
         {
             currentSteerAngle = Mathf.MoveTowards(currentSteerAngle, targetSteerAngle, steeringResponseSpeed * Time.deltaTime);
         }
-        else if (!steeringLocked && displaySpeed > steeringReturnMinSpeedKmh)
+        else if (!steeringLocked)
         {
-            float returnSpeed = steeringReturnSpeed * Mathf.Clamp01(steeringReturnBySpeed.Evaluate(displaySpeed));
+            float returnSpeed = GetSteeringReturnSpeed(displaySpeed);
             currentSteerAngle = Mathf.MoveTowards(currentSteerAngle, 0f, returnSpeed * Time.deltaTime);
         }
 
@@ -691,7 +842,11 @@ public class CarControl : MonoBehaviour
             }
             else
             {
-                wheel.WheelCollider.brakeTorque = brakeInput * brakeTorque;
+                bool frontWheel = wheel.isFrontLeft || wheel.isFrontRight;
+                float driftBrakeBias = frontWheel
+                    ? Mathf.Lerp(1f, 0.9f, currentDriftAmount)
+                    : Mathf.Lerp(1f, 1.25f, currentDriftAmount);
+                wheel.WheelCollider.brakeTorque = brakeInput * brakeTorque * driftBrakeBias;
                 bool isSixLock = IsSixLockGear(currentGear);
                 bool allowSixLockDrive = isSixLock && (sixLockWheelSet.Count == 0 || sixLockWheelSet.Contains(wheel));
                 bool isMotorized = isSixLock ? allowSixLockDrive : wheel.motorized;
@@ -718,7 +873,13 @@ public class CarControl : MonoBehaviour
             steeringWheel.localRotation = steeringWheelInitialLocalRotation * Quaternion.AngleAxis(targetAngle, steeringWheelLocalAxis);
         }
 
-        engineSoundRequested = inputAllowed && accelerator > .01f && engineOn && electricalPowerOn && FuelTank.SharedFuel > 0f;
+        // Keep the existing gameplay contract: releasing the pedal releases
+        // the engine demand, while the dedicated loop itself handles the
+        // release smoothly instead of restarting an AudioSource.
+        engineSoundRequested = inputAllowed && accelerator > .01f
+            && engineOn && electricalPowerOn && FuelTank.SharedFuel > 0f;
+        if (dedicatedEngineAudio != null)
+            dedicatedEngineAudio.SetState(engineSoundRequested, smoothEngineRpm, engineLoad);
     }
 
     private void UpdateSpeedDisplay(float displaySpeed)
@@ -964,7 +1125,6 @@ if (!isBraking)
         {
             if (audioPausedByGame) engineAudioSource.UnPause();
             audioPausedByGame = false;
-            if (!engineAudioSource.isPlaying) engineAudioSource.Play();
         }
     }
     void OnDisable()
@@ -1101,18 +1261,29 @@ if (!isBraking)
             float loadPulse = Mathf.Sin(phaseAngle * 4f) * engineAudioLoad * 0.2f;
             signal += loadPulse;
             
-            float volumeEnvelope = Mathf.Lerp(0.65f, 1.0f, rpmRatio);
-            volumeEnvelope += engineAudioLoad * 0.2f;
-            volumeEnvelope = Mathf.Clamp01(volumeEnvelope);
-            
             float filteredSignal = signal;
             if (rpmRatio < 0.3f)
             {
                 filteredSignal = signal * 0.7f + mechNoise * 0.3f;
             }
+
+            // Keep a stable fundamental underneath the detail layers. At
+            // certain RPM/phase combinations the exhaust, intake and pulse
+            // layers cancel one another almost completely, creating the
+            // remaining audible swell even after level compensation.
+            filteredSignal = filteredSignal * 0.72f + Mathf.Sin(phaseAngle) * 0.28f;
+
+            // The raw harmonics can cancel as RPM changes, which sounds like
+            // the engine is repeatedly fading even with a steady throttle.
+            // Apply a gentle peak follower and bounded compensation so RPM
+            // changes alter timbre without turning the engine on and off.
+            float measuredLevel = Mathf.Abs(filteredSignal);
+            engineAudioSignalLevel = Mathf.Lerp(engineAudioSignalLevel, measuredLevel, 0.004f);
+            float levelCompensation = Mathf.Clamp(0.22f / Mathf.Max(0.08f, engineAudioSignalLevel), 0.72f, 1.65f);
+            filteredSignal *= levelCompensation;
             
             float releaseGain = engineAudioEnvelope * engineAudioEnvelope * (3f - 2f * engineAudioEnvelope);
-            float finalSample = filteredSignal * vol * volumeEnvelope * releaseGain;
+            float finalSample = filteredSignal * vol * releaseGain;
             finalSample = Mathf.Clamp(finalSample, -0.95f, 0.95f);
             
             for (int ch = 0; ch < channels; ch++)

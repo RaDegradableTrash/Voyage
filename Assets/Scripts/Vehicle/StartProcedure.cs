@@ -20,7 +20,7 @@ public class StartProcedure : MonoBehaviour
     {
         if (carControl == null)
         {
-            carControl = FindObjectOfType<CarControl>();
+            carControl = FindAnyObjectByType<CarControl>();
         }
 
         if (carControl != null)

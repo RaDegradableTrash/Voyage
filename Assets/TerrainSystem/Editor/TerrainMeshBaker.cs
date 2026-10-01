@@ -318,6 +318,7 @@ namespace Voyage.TerrainSystem.Editor
             DeleteGeneratedAsset(lodFolder + tileName + "_LOD1.asset");
             DeleteGeneratedAsset(lodFolder + tileName + "_LOD2.asset");
             DeleteGeneratedAsset(lodFolder + tileName + "_LOD3.asset");
+            DeleteGeneratedAsset(lodFolder + tileName + "_Collision.asset");
             DeleteGeneratedAsset(lodFolder + tileName + "_Skirt0.asset");
             DeleteGeneratedAsset(lodFolder + tileName + "_Skirt1.asset");
             DeleteGeneratedAsset(lodFolder + tileName + "_Skirt2.asset");
@@ -379,13 +380,21 @@ namespace Voyage.TerrainSystem.Editor
             GameObject collisionRoot = new GameObject("Collision");
             collisionRoot.transform.SetParent(prefabRoot.transform, false);
             MeshCollider collision = collisionRoot.AddComponent<MeshCollider>();
-            collision.sharedMesh = lod0;
-            collision.convex = false;
-            collision.isTrigger = false;
-            collision.cookingOptions = MeshColliderCookingOptions.EnableMeshCleaning |
-                                        MeshColliderCookingOptions.WeldColocatedVertices |
-                                        MeshColliderCookingOptions.CookForFasterSimulation;
             collision.enabled = false;
+            collision.cookingOptions = TerrainTileRuntime.CollisionCookingOptions;
+            var collisionData = TerrainCollisionPreparation.Subdivide(lod0.vertices, lod0.triangles,
+                TerrainCollisionPreparation.MaximumEdgeLength);
+            Mesh collisionMesh = lod0;
+            if (collisionData.changed)
+            {
+                collisionMesh = new Mesh { name = tileName + "_Collision",
+                    indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+                collisionMesh.vertices = collisionData.vertices;
+                collisionMesh.triangles = collisionData.triangles;
+                collisionMesh.RecalculateBounds();
+                AssetDatabase.CreateAsset(collisionMesh, lodFolder + tileName + "_Collision.asset");
+            }
+            collision.sharedMesh = collisionMesh;
             SerializedObject serialized = new SerializedObject(runtime);
             SerializedProperty rootsProperty = serialized.FindProperty("lodRoots");
             rootsProperty.arraySize = roots.Count;
