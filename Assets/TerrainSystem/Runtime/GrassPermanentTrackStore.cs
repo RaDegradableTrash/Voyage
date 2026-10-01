@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading.Tasks;
 using UnityEngine;
+using Unity.Profiling;
 
 namespace Voyage.TerrainSystem
 {
@@ -9,6 +11,9 @@ namespace Voyage.TerrainSystem
     [DisallowMultipleComponent]
     public sealed class GrassPermanentTrackStore : MonoBehaviour
     {
+        static readonly ProfilerMarker SaveMarker = new ProfilerMarker("Voyage.GrassTracks.Save");
+        static readonly ProfilerMarker JsonMarker = new ProfilerMarker("Voyage.GrassTracks.Serialize");
+        static readonly ProfilerMarker WriteMarker = new ProfilerMarker("Voyage.GrassTracks.Write");
         [Serializable]
         public struct TrackSample
         {
@@ -33,6 +38,8 @@ namespace Voyage.TerrainSystem
         readonly Dictionary<Transform, Vector3> lastRecordedBySource = new Dictionary<Transform, Vector3>();
         bool dirty;
         float nextSaveTime;
+        Task<Exception> pendingSave;
+        readonly SaveData snapshot = new SaveData();
 
         public IReadOnlyList<TrackSample> Samples => samples;
 
@@ -76,7 +83,7 @@ namespace Voyage.TerrainSystem
                 if (source != null) lastRecordedBySource[source] = position;
                 recorded = true;
             }
-            while (samples.Count > maxSamples) samples.RemoveAt(0);
+            if (samples.Count > maxSamples) samples.RemoveRange(0, samples.Count - maxSamples);
             if (recorded) dirty = true;
         }
 
@@ -101,7 +108,8 @@ namespace Voyage.TerrainSystem
 
         void Update()
         {
-            if (dirty && Time.unscaledTime >= nextSaveTime) Save();
+            CompletePendingSave(false);
+            if (dirty && pendingSave == null && Time.unscaledTime >= nextSaveTime) BeginSave();
         }
 
         void OnApplicationPause(bool pause)
@@ -123,29 +131,70 @@ namespace Voyage.TerrainSystem
             Save();
         }
 
+        // The worker owns an isolated snapshot until completion. Only one writer
+        // can use the temporary file; live wheel samples remain on the main thread.
+        void BeginSave()
+        {
+            if (!dirty || pendingSave != null) return;
+            using var saveScope = SaveMarker.Auto();
+            string path = Path.Combine(Application.persistentDataPath, fileName);
+            snapshot.samples.Clear();
+            snapshot.samples.AddRange(samples);
+            pendingSave = Task.Run(() => WriteSnapshot(path, snapshot));
+            dirty = false;
+            nextSaveTime = Time.unscaledTime + saveInterval;
+        }
+
+        void CompletePendingSave(bool wait)
+        {
+            if (pendingSave == null || (!wait && !pendingSave.IsCompleted)) return;
+            Exception error = pendingSave.GetAwaiter().GetResult();
+            pendingSave = null;
+            if (error != null)
+            {
+                dirty = true;
+                Debug.LogWarning("Grass tracks could not be saved: " + error.Message);
+                nextSaveTime = Time.unscaledTime + saveInterval;
+            }
+        }
+
+        // Lifecycle flushes wait for the snapshot, then persist any newer samples.
+        // Normal driving never waits for serialization or disk I/O.
         void Save()
         {
+            CompletePendingSave(true);
             if (!dirty) return;
+            using var saveScope = SaveMarker.Auto();
+            Exception error = WriteSnapshot(Path.Combine(Application.persistentDataPath, fileName),
+                new SaveData { samples = samples });
+            if (error == null) dirty = false;
+            else Debug.LogWarning("Grass tracks could not be saved: " + error.Message);
+            nextSaveTime = Time.unscaledTime + saveInterval;
+        }
+
+        static Exception WriteSnapshot(string path, SaveData data)
+        {
+            string temporary = path + ".tmp";
             try
             {
-                string path = Path.Combine(Application.persistentDataPath, fileName);
-                string temporary = path + ".tmp";
-                File.WriteAllText(temporary, JsonUtility.ToJson(new SaveData { samples = samples }));
-                if (File.Exists(path)) File.Replace(temporary, path, null);
-                else File.Move(temporary, path);
-                dirty = false;
-                nextSaveTime = Time.unscaledTime + saveInterval;
+                string json;
+                using (JsonMarker.Auto()) json = JsonUtility.ToJson(data);
+                using (WriteMarker.Auto())
+                {
+                    File.WriteAllText(temporary, json);
+                    if (File.Exists(path)) File.Replace(temporary, path, null);
+                    else File.Move(temporary, path);
+                }
+                return null;
             }
             catch (Exception exception)
             {
-                Debug.LogWarning("Grass tracks could not be saved: " + exception.Message);
                 try
                 {
-                    string temporary = Path.Combine(Application.persistentDataPath, fileName + ".tmp");
                     if (File.Exists(temporary)) File.Delete(temporary);
                 }
                 catch { }
-                nextSaveTime = Time.unscaledTime + saveInterval;
+                return exception;
             }
         }
 
@@ -157,7 +206,7 @@ namespace Voyage.TerrainSystem
                 if (!File.Exists(path)) return;
                 SaveData data = JsonUtility.FromJson<SaveData>(File.ReadAllText(path));
                 if (data != null && data.samples != null) samples.AddRange(data.samples);
-                while (samples.Count > maxSamples) samples.RemoveAt(0);
+                if (samples.Count > maxSamples) samples.RemoveRange(0, samples.Count - maxSamples);
             }
             catch (Exception exception)
             {

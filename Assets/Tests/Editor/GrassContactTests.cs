@@ -111,11 +111,11 @@ namespace Voyage.Tests.Editor
             Color original = Sample(-5, -5);
             Call(system, "Clear");
             Set("fieldCenter", new Vector3(500, 0, 500));
-            Call(system, "QueueHistoryReplay");
+            Call(system, "QueueHistoryReplay", Vector3.zero, false);
             Call(system, "ProcessHistoryReplay");
             Assert.That(Sample(-5, -5).b, Is.LessThan(.001f));
             Set("fieldCenter", Vector3.zero);
-            Call(system, "QueueHistoryReplay");
+            Call(system, "QueueHistoryReplay", Vector3.zero, false);
             Call(system, "ProcessHistoryReplay");
             Assert.That(Sample(-5, -5).b, Is.EqualTo(original.b).Within(.005f));
         }
@@ -131,11 +131,63 @@ namespace Voyage.Tests.Editor
             entry.GetType().GetField("time").SetValue(entry, Time.time - 10f);
             history.SetValue(entry, 0);
             Call(system, "Clear");
-            Call(system, "QueueHistoryReplay");
+            Call(system, "QueueHistoryReplay", Vector3.zero, false);
             Call(system, "ProcessHistoryReplay");
             Color restored = Sample(-5, -5);
             Assert.That(restored.b, Is.EqualTo(original.b * Mathf.Exp(-.6f)).Within(.004f));
             Assert.That(restored.r, Is.EqualTo(restored.b).Within(.003f));
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public void StrongCollisionGraduallyBrownsButEmptyFieldDoesNot(bool compute)
+        {
+            Create(compute);
+            var vehicle = new GameObject("Heavy contact");
+            var decay = new Material(Shader.Find("Hidden/Voyage/GrassInteractionDecay"));
+            try
+            {
+                vehicle.AddComponent<Rigidbody>().mass=3000;
+                Call(system,"Stamp",new Vector3(-7,0,-5),new Vector3(-3,0,-5),1f,12f,vehicle.transform);
+                Assert.That(Sample(-5,-5).a,Is.LessThan(.001f),"Damage must fade in, not jump at contact.");
+                decay.SetFloat("_Decay",1f); decay.SetFloat("_DamageDelta",.1f);
+                var scratch=(RenderTexture)system.GetType().GetField("scratch",Flags).GetValue(system);
+                Graphics.Blit(Field,scratch,decay); Call(system,"Swap");
+                float first=Sample(-5,-5).a;
+                Assert.That(first,Is.GreaterThan(.3f).And.LessThan(.8f));
+                scratch=(RenderTexture)system.GetType().GetField("scratch",Flags).GetValue(system);
+                Graphics.Blit(Field,scratch,decay); Call(system,"Swap");
+                Assert.That(Sample(-5,-5).a,Is.GreaterThan(first));
+                Assert.That(Sample(5,5).a,Is.LessThan(.001f));
+            }
+            finally { Object.DestroyImmediate(vehicle); Object.DestroyImmediate(decay); }
+        }
+
+        [Test]
+        public void RemoteObjectCanPressAndBrownGrassWithoutEnteringNearWindow()
+        {
+            Create(true);
+            var vehicle=new GameObject("Remote heavy object");
+            var decay=new Material(Shader.Find("Hidden/Voyage/GrassInteractionDecay"));
+            var pixels=new Texture2D(1,1,TextureFormat.RGBAFloat,false,true);
+            RenderTexture previous=RenderTexture.active;
+            try
+            {
+                vehicle.AddComponent<Rigidbody>().mass=3000;
+                Call(system,"Stamp",new Vector3(195,0,0),new Vector3(205,0,0),3f,12f,vehicle.transform);
+                var far=(RenderTexture)system.GetType().GetProperty("FarField").GetValue(system);
+                var scratch=(RenderTexture)system.GetType().GetField("farScratch",Flags).GetValue(system);
+                decay.SetFloat("_Decay",1);decay.SetFloat("_DamageDelta",.3f);
+                Graphics.Blit(far,scratch,decay);Call(system,"SwapFar");
+                far=(RenderTexture)system.GetType().GetProperty("FarField").GetValue(system);
+                RenderTexture.active=far;
+                pixels.ReadPixels(new Rect((int)((200f/1200+.5f)*far.width),far.height/2,1,1),0,0);pixels.Apply();
+                Color contact=pixels.GetPixel(0,0);
+                Assert.That(contact.b,Is.GreaterThan(.8f));
+                Assert.That(contact.a,Is.GreaterThan(.8f),"A remote heavy object must leave the same brown impression.");
+                Assert.That(Sample(0,0).b,Is.LessThan(.001f),"Remote contact must not wrap into the near map.");
+            }
+            finally { RenderTexture.active=previous;Object.DestroyImmediate(vehicle);Object.DestroyImmediate(decay);Object.DestroyImmediate(pixels); }
         }
 
         [Test]

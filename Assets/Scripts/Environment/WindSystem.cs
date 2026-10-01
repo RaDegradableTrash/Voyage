@@ -42,6 +42,7 @@ namespace Voyage.Wind
         {
             if (Instance != null && Instance != this) { enabled = false; return; }
             Instance = this;
+            if (GetComponent<WindPresentation>() == null) gameObject.AddComponent<WindPresentation>();
             Publish();
         }
 

@@ -130,7 +130,10 @@ namespace Voyage.TerrainSystem
             meshFilter = child.AddComponent<MeshFilter>();
             meshRenderer = child.AddComponent<MeshRenderer>();
             meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            meshRenderer.receiveShadows = false;
+            // Grass uses the same main-light shadow lookup as the terrain.
+            // Keep casting disabled for the dense GPU path, but allow the
+            // fallback mesh renderer to receive mountain and terrain shadows.
+            meshRenderer.receiveShadows = true;
             Material sourceMaterial = material != null ? material : prototype != null ? prototype.material : null;
             runtimeMaterial = sourceMaterial != null ? new Material(sourceMaterial) : CreateDefaultMaterial();
             if (runtimeMaterial != null)
@@ -294,7 +297,7 @@ namespace Voyage.TerrainSystem
         void DrawBatch(Mesh drawMesh, Camera targetCamera, int count)
         {
             Graphics.DrawMeshInstanced(drawMesh, 0, runtimeMaterial, instanceBatch, count, instanceProperties,
-                UnityEngine.Rendering.ShadowCastingMode.Off, false, gameObject.layer, targetCamera, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
+                UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, targetCamera, UnityEngine.Rendering.LightProbeUsage.BlendProbes);
         }
 
         // Keep these equations in sync with Shaders/GrassDistance.hlsl.
@@ -402,7 +405,7 @@ namespace Voyage.TerrainSystem
             }
             runtimeMaterial.SetBuffer("_VoyageGrassMatrices", indirectVisibleBuffer);
             Graphics.DrawMeshInstancedIndirect(drawMesh, 0, runtimeMaterial, indirectBounds, indirectArgsBuffer, 0,
-                instanceProperties, UnityEngine.Rendering.ShadowCastingMode.Off, false, gameObject.layer, camera,
+                instanceProperties, UnityEngine.Rendering.ShadowCastingMode.Off, true, gameObject.layer, camera,
                 UnityEngine.Rendering.LightProbeUsage.BlendProbes);
             return true;
         }
@@ -734,8 +737,6 @@ namespace Voyage.TerrainSystem
                 // Appearance no longer changes at tile LOD boundaries. The
                 // shader's distance blend handles density and far animation.
                 runtimeMaterial.SetFloat("_DistantAlphaClip", 0f);
-                runtimeMaterial.SetFloat("_WindStrength", 0.48f);
-                runtimeMaterial.SetFloat("_WindSpeed", 1.15f);
                 runtimeMaterial.SetFloat("_BendStrength", 1f);
                 // Density is resolved by placement and LOD instance count.
                 // Clipping individual blades makes dense clumps look sparse.

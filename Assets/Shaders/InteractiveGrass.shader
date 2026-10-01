@@ -127,6 +127,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 float4 shadowCoord : TEXCOORD7;
                 half fogFactor : TEXCOORD8;
                 float densityFade : TEXCOORD9;
+                float bruiseAmount : TEXCOORD10;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -136,10 +137,11 @@ Shader "Voyage/Grass/InteractiveLit"
                 return (positionWS.xz - origin) / max(_VoyageGrassInteractionWorld.zz, 1.0);
             }
 
-            float2 SampleBend(float2 uv, out float temporaryWeight, out float recoveryAge)
+            float2 SampleBend(float2 uv, out float temporaryWeight, out float recoveryAge, out float bruiseAmount)
             {
                 temporaryWeight = 0.0;
                 recoveryAge = 1.0;
+                bruiseAmount = 0.0;
                 if (_VoyageGrassInteractionWorld.z <= 1.0) return 0.0;
 
                 float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
@@ -148,18 +150,23 @@ Shader "Voyage/Grass/InteractiveLit"
                 float4 temporary = SAMPLE_TEXTURE2D_LOD(_VoyageGrassInteraction, sampler_VoyageGrassInteraction, uv, 0);
                 temporaryWeight = temporary.b * inside * edgeFade;
                 recoveryAge = saturate(1.0 - temporary.a);
+                float temporaryBruise = temporary.a * inside * edgeFade;
 
                 float4 permanent = SAMPLE_TEXTURE2D_LOD(_VoyageGrassPermanentInteraction, sampler_VoyageGrassPermanentInteraction, uv, 0);
                 float permanentWeight = permanent.b * inside * edgeFade * 0.42;
+                float permanentBruise = permanent.b * inside * edgeFade * 0.42;
                 float2 temporaryDirection = temporary.rg;
                 float2 permanentDirection = permanent.rg;
                 float2 nearBend = (temporaryDirection + permanentDirection * 0.42);
                 float2 world = _VoyageGrassInteractionWorld.xy + (uv - 0.5) * _VoyageGrassInteractionWorld.z;
                 float2 farUV = (world - _VoyageGrassFarWorld.xy) / max(_VoyageGrassFarWorld.z, 1.0) + 0.5;
                 float farInside = step(0.0, farUV.x) * step(farUV.x, 1.0) * step(0.0, farUV.y) * step(farUV.y, 1.0);
-                float2 farBend = SAMPLE_TEXTURE2D_LOD(_VoyageGrassFarInteraction, sampler_VoyageGrassFarInteraction, farUV, 0).rg;
+                float4 farState = SAMPLE_TEXTURE2D_LOD(_VoyageGrassFarInteraction, sampler_VoyageGrassFarInteraction, farUV, 0);
+                float2 farBend = farState.rg;
                 farBend *= farInside * _VoyageGrassFarRecovery;
                 float nearBlend = smoothstep(0.0, 8.0, edgeDistance * _VoyageGrassInteractionWorld.z) * inside;
+                bruiseAmount = lerp(farState.a * farInside,
+                                    max(temporaryBruise, permanentBruise), nearBlend);
                 return lerp(farBend, nearBend, nearBlend);
             }
 
@@ -205,13 +212,15 @@ Shader "Voyage/Grass/InteractiveLit"
                 float tip = saturate(input.uv.y);
                 float temporaryWeight;
                 float recoveryAge;
+                float bruiseAmount;
                 // Stored, world-space contact state is the sole source of
                 // deformation. Moving/stopping the vehicle cannot move or
                 // erase an existing impression.
                 temporaryWeight = 0.0;
                 recoveryAge = 1.0;
+                bruiseAmount = 0.0;
                 float2 fieldBend = _FieldInteractionEnabled > 0.5
-                    ? SampleBend(FieldUV(bladeRootWS), temporaryWeight, recoveryAge) : 0.0;
+                    ? SampleBend(FieldUV(bladeRootWS), temporaryWeight, recoveryAge, bruiseAmount) : 0.0;
                 float2 interactionBend = fieldBend * _InteractionEnabled * _BendStrength;
                 float2 globalWindDirection = normalize(_VoyageGrassWind.xy + float2(0.0001, 0.0001));
                 float globalWindSpeed = _VoyageGrassWind.z > 0.0 ? _VoyageGrassWind.z : 1.0;
@@ -272,6 +281,7 @@ Shader "Voyage/Grass/InteractiveLit"
                 output.normalWS = NormalizeNormalPerVertex(normalize(baseNormalWS + normalTilt));
                 output.uv = input.uv;
                 output.instanceRandom = input.instanceRandom;
+                output.bruiseAmount = bruiseAmount;
                 output.farBlend = farBlend;
                 // Keep the debug channel separate from wind: a red pixel must
                 // mean direct tire influence, not merely a wind-bent blade.
@@ -316,6 +326,11 @@ Shader "Voyage/Grass/InteractiveLit"
                 randomVariation = lerp(randomVariation, 1.0h, input.farBlend * 0.82h);
                 grassColor *= macro * randomVariation;
                 half3 color = grassColor * environmentColor * environmentLight;
+                // Pressed areas gradually pick up a muted earth/brown tint,
+                // driven by the same near and distant pressure maps as bending.
+                half grassLuminance = dot(color, half3(0.299h, 0.587h, 0.114h));
+                half3 bruisedColor = grassLuminance * half3(0.82h, 0.69h, 0.49h);
+                color = lerp(color, bruisedColor, saturate(input.bruiseAmount) * 0.82h);
                 if (_VoyageGrassDebugStateMachine > 0.5)
                 {
                     float4 fieldSample = SAMPLE_TEXTURE2D_LOD(_VoyageGrassInteraction,

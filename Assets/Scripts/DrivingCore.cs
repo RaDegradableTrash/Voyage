@@ -14,13 +14,23 @@ public sealed class DrivingCore : MonoBehaviour
     static readonly Quaternion ReferenceVehicleRotation = Quaternion.Euler(0f, -152.683f, 0f);
     public static DrivingCore Instance { get; private set; }
     public PlayerCar Player { get; private set; }
+    public Transform ControlledTarget => Voyage.Exploration.ExplorationSession.Instance != null && Voyage.Exploration.ExplorationSession.Instance.OnFoot
+        ? Voyage.Exploration.ExplorationSession.Instance.Explorer.transform : Player != null ? Player.transform : null;
     public bool HudPaused { get; private set; }
     public float HudTargetDistance { get { return 0f; } }
     public string HudObjective { get { return "DRIVE"; } }
     public string HudMode { get { return "4X4"; } }
     public string HudStatus { get { return string.Empty; } }
     public bool HudStatusVisible { get { return false; } }
-    public float HudSpeedKmh { get { return Player == null ? 0f : Player.speedKmh; } }
+    public float HudSpeedKmh
+    {
+        get
+        {
+            if (Player == null) return 0f;
+            CarControl car = Player.GetComponent<CarControl>();
+            return car != null ? car.CurrentSpeedKmh : Player.speedKmh;
+        }
+    }
 
     FollowCamera cameraFollow;
     float resetCooldown;
@@ -40,15 +50,20 @@ public sealed class DrivingCore : MonoBehaviour
     readonly HashSet<Vector2Int> pendingTerrainCoordinates = new HashSet<Vector2Int>();
     readonly Queue<GameObject> pendingTerrainUnloads = new Queue<GameObject>();
     Coroutine terrainLoadRoutine;
+    bool terrainLoadRoutineRunning;
     Vector2Int streamedCenter;
     bool hasStreamedCenter;
     Vector2Int prefetchedCenter;
     bool hasPrefetchedCenter;
     int terrainWorkFrame = -1;
+    ThreadPriority previousLoadingPriority;
+    bool loadingBudgetApplied;
     static readonly ProfilerMarker InstantiateTileMarker = new ProfilerMarker("Voyage.Terrain.Instantiate");
     static readonly ProfilerMarker UnloadTileMarker = new ProfilerMarker("Voyage.Terrain.Unload");
     static readonly ProfilerMarker ActivateCollisionMarker = new ProfilerMarker("Voyage.Terrain.ActivateCollision");
     static readonly ProfilerMarker InitializeGrassMarker = new ProfilerMarker("Voyage.Terrain.InitializeGrass");
+    static readonly ProfilerMarker StreamUpdateMarker = new ProfilerMarker("Voyage.Terrain.StreamUpdate");
+    static readonly ProfilerMarker LodCollisionScanMarker = new ProfilerMarker("Voyage.Terrain.LodCollisionScan");
 
     bool TryBeginTerrainWork()
     {
@@ -84,7 +99,9 @@ public sealed class DrivingCore : MonoBehaviour
         // Use the original Cementery vehicle hierarchy. It contains the real
         // six WheelColliders and the reference chassis instead of a generated
         // four-wheel approximation.
-        GameObject carObject = PrefabRuntime.Spawn("RV1.0", "PLAYER VEHICLE", new Vector3(-24f, y, -24f), ReferenceVehicleRotation);
+        GameObject carObject = null;
+        yield return StartCoroutine(PrefabRuntime.SpawnAsync("RV1.0", "PLAYER VEHICLE",
+            new Vector3(-24f, y, -24f), ReferenceVehicleRotation, value => carObject = value));
         if (carObject == null) yield break;
         Player = carObject.GetComponent<PlayerCar>();
         if (Player == null) Player = carObject.AddComponent<PlayerCar>();
@@ -103,6 +120,14 @@ public sealed class DrivingCore : MonoBehaviour
             if (cameraFollow == null) cameraFollow = camera.gameObject.AddComponent<FollowCamera>();
             cameraFollow.SetTarget(Player.transform);
         }
+        var exploration = GetComponent<Voyage.Exploration.ExplorationSession>();
+        if (exploration == null) exploration = gameObject.AddComponent<Voyage.Exploration.ExplorationSession>();
+        exploration.Initialize(Player, cameraFollow);
+        // Async loading still integrates objects on the main thread. Use Unity's
+        // small gameplay budget after the spawn-critical assets are ready.
+        previousLoadingPriority = Application.backgroundLoadingPriority;
+        Application.backgroundLoadingPriority = ThreadPriority.Low;
+        loadingBudgetApplied = true;
     }
 
     void Update()
@@ -115,6 +140,7 @@ public sealed class DrivingCore : MonoBehaviour
             Time.timeScale = HudPaused ? 0f : 1f;
         }
         if (HudPaused) return;
+        if (Voyage.Exploration.ExplorationSession.Instance != null && Voyage.Exploration.ExplorationSession.Instance.OnFoot) return;
         if (ReadKeyDown(KeyCode.H))
         {
             headlightsOn = !headlightsOn;
@@ -148,24 +174,25 @@ public sealed class DrivingCore : MonoBehaviour
         var horizonRequest = Resources.LoadAsync<GameObject>("TerrainSystem/Horizon/TerrainHorizon");
         yield return horizonRequest;
         if (horizonRequest.asset != null)
-            Instantiate((GameObject)horizonRequest.asset, Vector3.zero, Quaternion.identity, transform);
+        {
+            Vector3 horizonPosition = terrainIndex.source != null
+                ? terrainIndex.source.GetRuntimePosition(Vector3.zero)
+                : Vector3.zero;
+            Instantiate((GameObject)horizonRequest.asset, horizonPosition, Quaternion.identity, transform);
+        }
         StreamTerrain(spawnPoint, true);
-        // Do not spawn a controllable vehicle into an empty streaming bubble.
-        // The visible radius must be ready before the player can outrun it.
-        while (!AreVisibleTerrainTilesReady(spawnPoint) &&
-               (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0 || terrainLoadRoutine != null))
+        // Do not spawn into an empty tile. The center tile is enough to place
+        // the vehicle safely; the surrounding visual/preload ring continues
+        // through the budgeted streaming coroutine after control is handed to
+        // the player.
+        float startupDeadline = Time.realtimeSinceStartup + 20f;
+        while (!AreVisibleTerrainTilesReady(spawnPoint) && terrainLoadRoutineRunning &&
+               Time.realtimeSinceStartup < startupDeadline)
             yield return null;
-        // Do not hand control to the vehicle while the rest of the initial
-        // preload ring is still instantiating. Starting the car here made the
-        // first few cell crossings compete with the startup queue and caused
-        // a repeating hitch that looked like a physics seam problem. The
-        // loading work remains budgeted across frames, so this is a short
-        // loading phase rather than one blocking frame.
-        while (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0 ||
-               terrainLoadRoutine != null)
-            yield return null;
+        if (!AreVisibleTerrainTilesReady(spawnPoint))
+            Debug.LogError("FBX TERRAIN // center tile did not become ready before startup timeout; continuing vehicle startup.");
         Physics.SyncTransforms();
-        Debug.Log("FBX TERRAIN // loaded " + loadedTerrainTiles.Count + " nearby modeled blocks");
+        Debug.Log("FBX TERRAIN // center tile ready; continuing background load (" + loadedTerrainTiles.Count + " tiles)");
         yield return null;
     }
 
@@ -178,23 +205,28 @@ public sealed class DrivingCore : MonoBehaviour
         for (int i = 0; i < terrainIndex.tiles.Count; i++)
         {
             TerrainTileRecord record = terrainIndex.tiles[i];
-            if (record == null || Mathf.Max(Mathf.Abs(record.coordinate.x - center.x),
-                                            Mathf.Abs(record.coordinate.y - center.y)) > settings.loadedRadius)
+            if (record == null || record.coordinate != center)
                 continue;
             found = true;
             GameObject tileObject;
             if (!loadedTerrainTiles.TryGetValue(record.coordinate, out tileObject) || tileObject == null)
                 return false;
-            TerrainTileRuntime tile = tileObject.GetComponent<TerrainTileRuntime>();
-            if (tile != null && !tile.GrassBuildFinished) return false;
+            // Grass GPU buffers are visual follow-up work. They must not delay
+            // vehicle spawn once the center terrain object itself exists.
         }
         return found;
     }
 
     void UpdateTerrainStreaming()
     {
+        using var streamUpdateScope = StreamUpdateMarker.Auto();
         if (terrainIndex == null || terrainIndex.settings == null) return;
-        Vector3 position = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
+        // LoadFbxTerrain owns the initial center-tile request. Avoid queuing the
+        // surrounding preload ring from Update before the car has spawned; that
+        // competes with the center tile needed to finish startup.
+        Transform target = ControlledTarget;
+        if (target == null) return;
+        Vector3 position = target.position;
         float visualDistance = terrainIndex.settings.GetVisualDistance();
         Shader.SetGlobalVector("_VoyageTerrainView", new Vector4(position.x, position.z,
             Mathf.Max(0f, visualDistance - terrainIndex.settings.tileSize), visualDistance));
@@ -234,8 +266,8 @@ public sealed class DrivingCore : MonoBehaviour
                 QueueTerrainCandidates(position, settings, lookAhead, true);
                 prefetchedCenter = center;
                 hasPrefetchedCenter = true;
-                if (terrainLoadRoutine == null && (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0))
-                    terrainLoadRoutine = StartCoroutine(ProcessTerrainLoads(settings));
+                if (!terrainLoadRoutineRunning && (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0))
+                    StartTerrainLoadRoutine(settings);
             }
             if (hasPrefetchedCenter && prefetchedCenter == center)
             {
@@ -252,7 +284,10 @@ public sealed class DrivingCore : MonoBehaviour
         hasStreamedCenter = true;
 
         int unloadRadius = Mathf.Max(settings.GetPreloadRadius() + 1, settings.unloadRadius);
-        QueueTerrainCandidates(position, settings, center, false);
+        // The initial Play Mode load needs only its spawn tile. Its preload
+        // neighborhood is requested after the vehicle exists and can provide
+        // a meaningful forward direction.
+        QueueTerrainCandidates(position, settings, center, false, force && Player == null);
         UpdateLoadedTerrainLods(position, settings, center);
 
         List<Vector2Int> stale = new List<Vector2Int>();
@@ -267,12 +302,20 @@ public sealed class DrivingCore : MonoBehaviour
             if (tile != null) pendingTerrainUnloads.Enqueue(tile);
             loadedTerrainTiles.Remove(stale[i]);
         }
-        if (terrainLoadRoutine == null && (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0))
-            terrainLoadRoutine = StartCoroutine(ProcessTerrainLoads(settings));
+        if (!terrainLoadRoutineRunning && (pendingPriorityTerrainLoads.Count > 0 || pendingTerrainLoads.Count > 0 || pendingTerrainUnloads.Count > 0))
+            StartTerrainLoadRoutine(settings);
+    }
+
+    void StartTerrainLoadRoutine(TerrainChunkSettings settings)
+    {
+        terrainLoadRoutineRunning = true;
+        terrainLoadRoutine = StartCoroutine(ProcessTerrainLoads(settings));
     }
 
     Vector3 GetTravelDirection()
     {
+        if (Voyage.Exploration.ExplorationSession.Instance != null && Voyage.Exploration.ExplorationSession.Instance.OnFoot)
+            return Vector3.ProjectOnPlane(Voyage.Exploration.ExplorationSession.Instance.Explorer.Velocity, Vector3.up).normalized;
         Vector3 direction = Vector3.zero;
         if (Player != null)
         {
@@ -288,7 +331,7 @@ public sealed class DrivingCore : MonoBehaviour
         return direction.sqrMagnitude > 0.001f ? direction.normalized : Vector3.zero;
     }
 
-    void QueueTerrainCandidates(Vector3 position, TerrainChunkSettings settings, Vector2Int center, bool priority)
+    void QueueTerrainCandidates(Vector3 position, TerrainChunkSettings settings, Vector2Int center, bool priority, bool centerOnly = false)
     {
         // The square preload radius is only an indexing convenience. Reject
         // corners outside the actual view circle before they enter the queue.
@@ -303,6 +346,7 @@ public sealed class DrivingCore : MonoBehaviour
             if (!terrainIndex.TryGet(new Vector2Int(x, y), out record) || record == null ||
                 loadedTerrainTiles.ContainsKey(record.coordinate) ||
                 pendingTerrainCoordinates.Contains(record.coordinate)) continue;
+            if (centerOnly && record.coordinate != center) continue;
             if (record.bounds.SqrDistance(position) > preloadDistanceSq) continue;
             candidates.Add(record);
         }
@@ -330,6 +374,8 @@ public sealed class DrivingCore : MonoBehaviour
 
     IEnumerator ProcessTerrainLoads(TerrainChunkSettings settings)
     {
+        try
+        {
         // Spread IO, initialization and destruction across frames instead
         // of blocking the camera's frame when crossing a streaming cell.
         yield return null;
@@ -355,7 +401,10 @@ public sealed class DrivingCore : MonoBehaviour
             TerrainTileRecord record = pendingPriorityTerrainLoads.Count > 0
                 ? pendingPriorityTerrainLoads.Dequeue()
                 : pendingTerrainLoads.Dequeue();
-            Vector3 viewer = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
+            // Clear this as soon as the record leaves its queue so an
+            // aborted async operation can be retried on the next stream pass.
+            pendingTerrainCoordinates.Remove(record.coordinate);
+            Vector3 viewer = ControlledTarget != null ? ControlledTarget.position : new Vector3(-24f, 0f, -24f);
             Vector2Int currentCenter = settings.WorldToTile(viewer);
             int loadRadius = settings.GetPreloadRadius();
             int distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
@@ -364,7 +413,7 @@ public sealed class DrivingCore : MonoBehaviour
                 GameObject prefab = null;
                 yield return TerrainPrefabStore.LoadAsync(record.resourcePath, value => prefab = value);
                 // Recheck after IO: the player may already be in another cell.
-                viewer = Player != null ? Player.transform.position : new Vector3(-24f, 0f, -24f);
+                viewer = ControlledTarget != null ? ControlledTarget.position : new Vector3(-24f, 0f, -24f);
                 currentCenter = settings.WorldToTile(viewer);
                 distance = Mathf.Max(Mathf.Abs(record.coordinate.x - currentCenter.x), Mathf.Abs(record.coordinate.y - currentCenter.y));
                 if (prefab != null && distance <= loadRadius && !loadedTerrainTiles.ContainsKey(record.coordinate))
@@ -375,8 +424,11 @@ public sealed class DrivingCore : MonoBehaviour
                     // serialization work off the main thread; only the
                     // completed object integration remains in the budgeted
                     // section below.
+                    Vector3 tilePosition = terrainIndex.source != null
+                        ? terrainIndex.source.GetRuntimePosition(record.bounds.center)
+                        : record.bounds.center;
                     AsyncInstantiateOperation<GameObject> instantiate =
-                        Object.InstantiateAsync(prefab, record.bounds.center, Quaternion.identity);
+                        Object.InstantiateAsync(prefab, tilePosition, Quaternion.identity);
                     // Awake and hierarchy integration can still touch the
                     // main thread. Keep that work below a small per-frame
                     // budget so crossing a cell cannot consume a whole
@@ -414,11 +466,20 @@ public sealed class DrivingCore : MonoBehaviour
             pendingTerrainCoordinates.Remove(record.coordinate);
             yield return null;
         }
-        terrainLoadRoutine = null;
+        }
+        finally
+        {
+            // A failed async load/instantiate must never leave startup waiting
+            // forever on a Coroutine handle that has already stopped.
+            terrainLoadRoutine = null;
+            terrainLoadRoutineRunning = false;
+        }
     }
 
     void OnDestroy()
     {
+        if (loadingBudgetApplied && Application.backgroundLoadingPriority == ThreadPriority.Low)
+            Application.backgroundLoadingPriority = previousLoadingPriority;
         Shader.SetGlobalVector("_VoyageTerrainView", Vector4.zero);
         foreach (GameObject tile in loadedTerrainTiles.Values)
             if (tile != null) Destroy(tile);
@@ -428,12 +489,11 @@ public sealed class DrivingCore : MonoBehaviour
 
     void UpdateLoadedTerrainLods(Vector3 position, TerrainChunkSettings settings, Vector2Int center)
     {
-        // LOD transitions do not need render-frame precision. Scanning every
-        // loaded tile each frame competes with the vehicle and grass systems,
-        // especially while a new ring is being integrated. Updating on
-        // alternating frames halves that steady-state work; collision
-        // activation is handled separately by the prioritized work queue.
-        if ((Time.frameCount & 1) != 0) return;
+        using var scanScope = LodCollisionScanMarker.Auto();
+        // LOD transitions do not need render-frame precision, so update them
+        // every other frame. Collision readiness is scanned every frame so
+        // a tile arriving at the boundary cannot wait for frame parity.
+        bool updateVisualLods = (Time.frameCount & 1) == 0;
         TerrainTileRuntime nextActivation = null;
         TerrainTileRuntime nextGrass = null;
         float activationDistance = float.MaxValue;
@@ -452,7 +512,7 @@ public sealed class DrivingCore : MonoBehaviour
         {
             TerrainTileRuntime tile = pair.Value == null ? null : pair.Value.GetComponent<TerrainTileRuntime>();
             if (tile == null) continue;
-            tile.UpdateVisualLod(position);
+            if (updateVisualLods) tile.UpdateVisualLod(position);
             float distance = tile.Bounds.SqrDistance(position);
             bool collisionWanted = tile.WantsCollision(position, settings);
             if (collisionWanted && !tile.CollisionEnabled && distance < activationDistance)

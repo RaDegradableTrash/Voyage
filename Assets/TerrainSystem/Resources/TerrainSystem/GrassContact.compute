@@ -2,7 +2,7 @@
 
 RWTexture2D<float4> _Field;
 float4 _StampA, _StampB, _StampDirection;
-float _StampRadius, _StampStrength;
+float _StampRadius, _StampStrength, _StampDamage;
 int _Resolution;
 int2 _PixelMin, _PixelMax;
 
@@ -18,5 +18,5 @@ void Stamp(uint3 thread : SV_DispatchThreadID)
     float pressure = coverage * _StampStrength;
     float4 old = _Field[pixel];
     if (pressure > old.b)
-        _Field[pixel] = float4(_StampDirection.xy * pressure, pressure, pressure);
+        _Field[pixel] = float4(_StampDirection.xy * pressure, pressure, max(old.a,_StampDamage*coverage));
 }

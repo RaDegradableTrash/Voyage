@@ -19,13 +19,10 @@ namespace Voyage.TerrainSystem
         {
             if (Application.isPlaying)
             {
-                // Runtime fallback tiles are generated while the vehicle is
-                // moving. Triangle rasterization allocates the complete LOD
-                // vertex/index arrays and can spike when a chunk enters the
-                // streaming ring. A coarse height sample has the same visual
-                // purpose for fallback grass, but keeps work bounded and
-                // independent of terrain mesh triangle count.
-                yield return BuildRuntimeSampled(bounds, ready);
+                // Sample only the owning tile's terrain mesh. Scene-wide
+                // physics queries can hit the vehicle or another tile and
+                // place grass at that unrelated surface height.
+                yield return BuildRuntimeSampled(filters, bounds, ready);
                 yield break;
             }
             const int n = 128;
@@ -66,45 +63,86 @@ namespace Voyage.TerrainSystem
             patch.density.SetPixels(pixels); patch.density.Apply(); ready(patch);
         }
 
-        static IEnumerator BuildRuntimeSampled(Bounds bounds, Action<GrassFlowPatch> ready)
+        static IEnumerator BuildRuntimeSampled(MeshFilter[] filters, Bounds bounds, Action<GrassFlowPatch> ready)
         {
-            const int n = 16;
+            const int n = 64;
             Color[] surfacePixels = new Color[n * n];
-            Color[] densityPixels = new Color[n * n];
             Vector3 min = bounds.min;
             Vector3 size = bounds.size;
-            float rayTop = bounds.center.y + 2000f;
-            float rayDistance = 4000f;
-            // Keep a small height field inside each tile. A single center
-            // sample makes every streamed tile a flat slab of grass, which is
-            // visible as staircase-like patches on slopes. Sixteen-by-sixteen
-            // samples are enough for bilinear filtering while remaining far
-            // cheaper than rasterizing the source mesh triangles.
-            for (int z = 0; z < n; z++)
+            float minTerrainY = float.PositiveInfinity;
+            float maxTerrainY = float.NegativeInfinity;
+
+            // Rasterize the owning tile's actual LOD0 triangles. Scene-wide
+            // Physics.Raycast can hit the vehicle or an overlapping tile and
+            // turn that unrelated collider height into a floating grass root.
+            // This remains independent of whether streamed terrain collision
+            // is currently enabled, while the shared frame budget prevents
+            // triangle work from stalling vehicle updates.
+            foreach (MeshFilter filter in filters)
             {
-                for (int x = 0; x < n; x++)
+                if (filter == null || filter.sharedMesh == null ||
+                    filter.name.IndexOf("skirt", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+
+                Mesh mesh = filter.sharedMesh;
+                Vector3[] vertices = mesh.vertices;
+                int[] triangles = mesh.triangles;
+                Matrix4x4 matrix = filter.transform.localToWorldMatrix;
+                for (int i = 0; i < vertices.Length; i++)
+                {
+                    float worldY = matrix.MultiplyPoint3x4(vertices[i]).y;
+                    minTerrainY = Mathf.Min(minTerrainY, worldY);
+                    maxTerrainY = Mathf.Max(maxTerrainY, worldY);
+                }
+                for (int triangle = 0; triangle + 2 < triangles.Length; triangle += 3)
                 {
                     while (!HasBudget()) yield return null;
-                    float px = min.x + (x + 0.5f) / n * size.x;
-                    float pz = min.z + (z + 0.5f) / n * size.z;
-                    RaycastHit hit;
-                    bool found = Physics.Raycast(new Vector3(px, rayTop, pz), Vector3.down,
-                        out hit, rayDistance, Physics.DefaultRaycastLayers,
-                        QueryTriggerInteraction.Ignore);
-                    int index = z * n + x;
-                    if (!found)
+                    Vector3 a = matrix.MultiplyPoint3x4(vertices[triangles[triangle]]);
+                    Vector3 b = matrix.MultiplyPoint3x4(vertices[triangles[triangle + 1]]);
+                    Vector3 c = matrix.MultiplyPoint3x4(vertices[triangles[triangle + 2]]);
+                    if (Mathf.Abs(Vector3.Cross(b - a, c - a).normalized.y) < 0.57f) continue;
+
+                    float denominator = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
+                    if (Mathf.Abs(denominator) < 0.000001f) continue;
+                    int x0 = Mathf.Clamp(Mathf.FloorToInt((Mathf.Min(a.x, Mathf.Min(b.x, c.x)) - min.x) / size.x * n), 0, n - 1);
+                    int x1 = Mathf.Clamp(Mathf.CeilToInt((Mathf.Max(a.x, Mathf.Max(b.x, c.x)) - min.x) / size.x * n), 0, n - 1);
+                    int z0 = Mathf.Clamp(Mathf.FloorToInt((Mathf.Min(a.z, Mathf.Min(b.z, c.z)) - min.z) / size.z * n), 0, n - 1);
+                    int z1 = Mathf.Clamp(Mathf.CeilToInt((Mathf.Max(a.z, Mathf.Max(b.z, c.z)) - min.z) / size.z * n), 0, n - 1);
+                    for (int z = z0; z <= z1; z++)
                     {
-                        surfacePixels[index] = new Color(0.5f, 1f, 0f, 1f);
-                        densityPixels[index] = Color.clear;
-                        continue;
+                        while (!HasBudget()) yield return null;
+                        float pz = min.z + (z + 0.5f) / n * size.z;
+                        for (int x = x0; x <= x1; x++)
+                        {
+                            float px = min.x + (x + 0.5f) / n * size.x;
+                            float u = ((b.z - c.z) * (px - c.x) + (c.x - b.x) * (pz - c.z)) / denominator;
+                            float v = ((c.z - a.z) * (px - c.x) + (a.x - c.x) * (pz - c.z)) / denominator;
+                            if (u < 0f || v < 0f || u + v > 1f) continue;
+
+                            float height = u * a.y + v * b.y + (1f - u - v) * c.y;
+                            int index = z * n + x;
+                            if (surfacePixels[index].g < 0.99f || height > surfacePixels[index].r)
+                                surfacePixels[index] = new Color(height, 1f, 0f, 1f);
+                        }
                     }
-                    float normalizedHeight = Mathf.InverseLerp(min.y, min.y + size.y, hit.point.y);
-                    surfacePixels[index] = new Color(normalizedHeight, 1f, 0f, 1f);
-                    float slope = Vector3.Angle(hit.normal, Vector3.up);
-                    float density = 1f - Mathf.InverseLerp(28f, 58f, slope);
-                    densityPixels[index] = Color.white * Mathf.Clamp01(density * 0.78f);
                 }
             }
+
+            if (float.IsPositiveInfinity(minTerrainY))
+            {
+                ready?.Invoke(null);
+                yield break;
+            }
+
+            // Terrain records use a very tall Y envelope for streaming and
+            // collision queries. A grass height map needs the mesh's real
+            // vertical range, otherwise sampling is unnecessarily imprecise
+            // and can lift roots when reconstructed from the broad tile bounds.
+            min.y = minTerrainY - 0.01f;
+            size.y = Mathf.Max(0.02f, maxTerrainY - minTerrainY + 0.02f);
+            for (int i = 0; i < surfacePixels.Length; i++)
+                if (surfacePixels[i].g > 0.5f)
+                    surfacePixels[i].r = Mathf.Clamp01((surfacePixels[i].r - min.y) / size.y);
+
             yield return null;
             GrassFlowPatch patch = ScriptableObject.CreateInstance<GrassFlowPatch>();
             patch.name = "Streamed meadow";
@@ -114,6 +152,9 @@ namespace Voyage.TerrainSystem
             patch.surface.filterMode = FilterMode.Bilinear;
             patch.surface.SetPixels(surfacePixels);
             patch.surface.Apply();
+            Color[] densityPixels = new Color[n * n];
+            for (int i = 0; i < surfacePixels.Length; i++)
+                densityPixels[i] = surfacePixels[i].g > 0.5f ? Color.white * 0.78f : Color.clear;
             patch.density = new Texture2D(n, n, TextureFormat.RGBA32, false, true)
             { wrapMode = TextureWrapMode.Clamp };
             patch.density.filterMode = FilterMode.Bilinear;
